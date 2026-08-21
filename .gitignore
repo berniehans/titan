@@ -1,0 +1,15 @@
+# OS
+Thumbs.db
+Desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Rust / Cargo
+engine/target/
+
+# downloads / fixtures
+testdata/*.gguf
+testdata/.cache/
