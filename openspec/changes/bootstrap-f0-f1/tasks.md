@@ -9,17 +9,17 @@
 - [x] 1.4 Verificar: `cargo build && cargo clippy -- -D warnings && cargo test` verde
 
 ## 2. Fixture
-- [ ] 2.1 Script tools/download_fixture.sh: descarga Qwen3-0.6B Q4_K_M GGUF (~400 MB) a testdata/, idempotente, registra SHA256 en testdata/CHECKSUMS.md
-- [ ] 2.2 Verificar descarga y checksum
+- [x] 2.1 Script tools/download_fixture.sh: descarga Qwen3-0.6B Q4_K_M GGUF (~400 MB) a testdata/, idempotente, registra SHA256 en testdata/CHECKSUMS.md
+- [x] 2.2 Verificar descarga y checksum
 
 ## 3. Parser GGUF (engine-io)
-- [ ] 3.1 Test fallido: parsear header fixture → magic "GGUF", version 3
-- [ ] 3.2 Implementar lectura de header + metadata KV (tipos u8..f64, string, array)
-- [ ] 3.3 Test fallido: tensor infos → nombre/dims/tipo/offset de todos los tensores del fixture
-- [ ] 3.4 Implementar tensor infos; validar contra gguf-dump de referencia
-- [ ] 3.5 Test fallido: mapear tensores por patrón de nombre (blk.N.*, token_embd, output)
-- [ ] 3.6 Implementar indexación por capa para carga streaming posterior
-- [ ] 3.7 Verificar: cargo test -p engine-io verde
+- [x] 3.1 Test fallido: parsear header fixture → magic "GGUF", version 3
+- [x] 3.2 Implementar lectura de header + metadata KV (tipos u8..f64, string, array)
+- [x] 3.3 Test fallido: tensor infos → nombre/dims/tipo/offset de todos los tensores del fixture
+- [x] 3.4 Implementar tensor infos; validar contra gguf-dump de referencia
+- [x] 3.5 Test fallido: mapear tensores por patrón de nombre (blk.N.*, token_embd, output)
+- [x] 3.6 Implementar indexación por capa para carga streaming posterior
+- [x] 3.7 Verificar: cargo test -p engine-io verde
 
 ## 4. Pinned memory (engine-cuda)
 - [ ] 4.1 Test fallido (#[ignore] sin GPU): reservar 256 MB pinned, escribir patrón, leer igual, Drop libera (contador debug)
