@@ -23,6 +23,10 @@ pub enum CudaError {
     #[error("CUDA memory copy operation failed in '{0}': {1:?}")]
     MemcpyFailed(&'static str, cudarc::driver::sys::CUresult),
 
+    /// CUDA event operation failed.
+    #[error("CUDA event operation failed in '{0}': {1:?}")]
+    EventFailed(&'static str, cudarc::driver::sys::CUresult),
+
     /// Invalid memory transfer or buffer size.
     #[error("Invalid buffer size: expected <= {expected}, got {actual}")]
     InvalidSize { expected: usize, actual: usize },
