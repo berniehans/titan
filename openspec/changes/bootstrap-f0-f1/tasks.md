@@ -27,6 +27,6 @@
 - [x] 4.3 Verificar test PASS en GPU local
 
 ## 5. Loader completo
-- [ ] 5.1 Test fallido: cargar fixture completo → suma bytes == tamaño archivo, tensores en regiones contiguas por capa
-- [ ] 5.2 Implementar loader: lee GGUF una vez, escribe tensores a pinned, loguea GB/s
-- [ ] 5.3 Gate F0-F1: fixture cargado <5 s, clippy limpio, todos los tests verdes
+- [x] 5.1 Test fallido: cargar fixture completo → suma bytes == tamaño archivo, tensores en regiones contiguas por capa
+- [x] 5.2 Implementar loader: lee GGUF una vez, escribe tensores a pinned, loguea GB/s
+- [x] 5.3 Gate F0-F1: fixture cargado <5 s, clippy limpio, todos los tests verdes

@@ -7,6 +7,10 @@ pub enum GgufError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// CUDA error occurred during pinned memory allocation or transfer.
+    #[error("CUDA error: {0}")]
+    Cuda(#[from] engine_cuda::CudaError),
+
     /// File does not start with magic bytes "GGUF".
     #[error("Invalid GGUF magic: expected b\"GGUF\", found {0:?}")]
     InvalidMagic([u8; 4]),

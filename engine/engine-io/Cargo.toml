@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-thiserror = "2.0"
+engine-cuda = { path = "../engine-cuda" }
+thiserror.workspace = true
+tracing.workspace = true
 

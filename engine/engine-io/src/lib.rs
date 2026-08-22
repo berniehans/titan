@@ -4,11 +4,13 @@
 
 pub mod error;
 pub mod layer;
+pub mod loader;
 pub mod reader;
 pub mod types;
 
 pub use error::GgufError;
 pub use layer::{classify_layer, LayerIndex};
+pub use loader::{load_to_pinned, LoadedLayout, LoadedPinned};
 pub use reader::GgufReader;
 pub use types::{GgmlType, GgufHeader, GgufType, GgufValue, TensorInfo};
 
