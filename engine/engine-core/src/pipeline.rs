@@ -2,12 +2,17 @@ use crate::error::EngineError;
 use cudarc::driver::CudaDevice;
 use engine_cuda::{CudaEvent, CudaStream, DeviceBuffer};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Execution statistics returned by `Pipeline::run`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PipelineStats {
     /// Total number of layers processed.
     pub layers: usize,
+    /// Total wall-clock elapsed time in milliseconds for `Pipeline::run`.
+    pub elapsed_ms: f64,
+    /// Per-layer GPU elapsed time in milliseconds measured via CUDA events.
+    pub layer_elapsed_ms: Vec<f32>,
 }
 
 /// Double-buffered CUDA pipeline driver for streaming layer transfers and compute.
@@ -52,6 +57,11 @@ impl Pipeline {
     /// Async H2D transfers execute on the transfer stream and stub computes execute on the compute stream.
     /// Overlap is coordinated via CUDA events without CPU busy-waiting or inner-loop stream synchronization.
     pub fn run(&self, layers: &[&[u8]]) -> Result<PipelineStats, EngineError> {
+        let start_instant = Instant::now();
+
+        let mut layer_starts = Vec::with_capacity(layers.len());
+        let mut layer_ends = Vec::with_capacity(layers.len());
+
         for (i, &layer) in layers.iter().enumerate() {
             if layer.len() > self.max_layer_bytes {
                 return Err(EngineError::InvalidLayerSize {
@@ -59,6 +69,11 @@ impl Pipeline {
                     actual: layer.len(),
                 });
             }
+
+            let start_event = CudaEvent::new(Arc::clone(&self.device))?;
+            let end_event = CudaEvent::new(Arc::clone(&self.device))?;
+
+            start_event.record(&self.transfer_stream)?;
 
             let slot_idx = i % 2;
 
@@ -78,14 +93,28 @@ impl Pipeline {
 
             // Stub compute stage: record an end-event per layer on COMPUTE stream
             self.compute_done[slot_idx].record(&self.compute_stream)?;
+
+            end_event.record(&self.compute_stream)?;
+
+            layer_starts.push(start_event);
+            layer_ends.push(end_event);
         }
 
         // Synchronize streams only at the very end
         self.transfer_stream.sync()?;
         self.compute_stream.sync()?;
 
+        let elapsed_ms = start_instant.elapsed().as_secs_f64() * 1000.0;
+
+        let mut layer_elapsed_ms = Vec::with_capacity(layers.len());
+        for (start, end) in layer_starts.iter().zip(layer_ends.iter()) {
+            layer_elapsed_ms.push(end.elapsed_ms(start)?);
+        }
+
         Ok(PipelineStats {
             layers: layers.len(),
+            elapsed_ms,
+            layer_elapsed_ms,
         })
     }
 
