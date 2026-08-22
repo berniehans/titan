@@ -37,3 +37,23 @@ fn test_device_buffer_roundtrip() -> Result<(), CudaError> {
 
     Ok(())
 }
+
+#[test]
+#[ignore]
+fn test_device_buffer_async_copy() -> Result<(), CudaError> {
+    let device = CudaDevice::new(0)?;
+    let stream = CudaStream::new(Arc::clone(&device))?;
+
+    const SIZE: usize = 1024 * 1024;
+    let dev_buf = DeviceBuffer::alloc(Arc::clone(&device), SIZE)?;
+
+    let src_host = vec![0xABu8; SIZE];
+    dev_buf.copy_from_host_async(&stream, &src_host)?;
+    stream.sync()?;
+
+    let mut dst_host = vec![0u8; SIZE];
+    dev_buf.copy_to_host(&stream, &mut dst_host)?;
+
+    assert_eq!(src_host, dst_host);
+    Ok(())
+}

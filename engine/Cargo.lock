@@ -24,6 +24,11 @@ version = "0.1.0"
 [[package]]
 name = "engine-core"
 version = "0.1.0"
+dependencies = [
+ "cudarc",
+ "engine-cuda",
+ "thiserror",
+]
 
 [[package]]
 name = "engine-cuda"
