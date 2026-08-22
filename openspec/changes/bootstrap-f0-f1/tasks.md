@@ -22,9 +22,9 @@
 - [x] 3.7 Verificar: cargo test -p engine-io verde
 
 ## 4. Pinned memory (engine-cuda)
-- [ ] 4.1 Test fallido (#[ignore] sin GPU): reservar 256 MB pinned, escribir patrón, leer igual, Drop libera (contador debug)
-- [ ] 4.2 Implementar wrapper RAII cudaMallocHost/cudaFreeHost alineado a 4096 B con // SAFETY:
-- [ ] 4.3 Verificar test PASS en GPU local
+- [x] 4.1 Test fallido (#[ignore] sin GPU): reservar 256 MB pinned, escribir patrón, leer igual, Drop libera (contador debug)
+- [x] 4.2 Implementar wrapper RAII cudaMallocHost/cudaFreeHost alineado a 4096 B con // SAFETY:
+- [x] 4.3 Verificar test PASS en GPU local
 
 ## 5. Loader completo
 - [ ] 5.1 Test fallido: cargar fixture completo → suma bytes == tamaño archivo, tensores en regiones contiguas por capa
