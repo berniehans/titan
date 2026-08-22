@@ -18,4 +18,12 @@ pub enum CudaError {
     /// CUDA stream operation failed.
     #[error("CUDA stream operation failed in '{0}': {1:?}")]
     StreamFailed(&'static str, cudarc::driver::sys::CUresult),
+
+    /// CUDA memory copy failed.
+    #[error("CUDA memory copy operation failed in '{0}': {1:?}")]
+    MemcpyFailed(&'static str, cudarc::driver::sys::CUresult),
+
+    /// Invalid memory transfer or buffer size.
+    #[error("Invalid buffer size: expected <= {expected}, got {actual}")]
+    InvalidSize { expected: usize, actual: usize },
 }

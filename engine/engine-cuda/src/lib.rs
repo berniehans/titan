@@ -1,7 +1,9 @@
+pub mod device_buffer;
 pub mod error;
 pub mod pinned_host;
 pub mod streams;
 
+pub use device_buffer::DeviceBuffer;
 pub use error::CudaError;
 pub use pinned_host::PinnedHost;
 pub use streams::CudaStream;
