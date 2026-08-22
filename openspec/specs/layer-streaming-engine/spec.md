@@ -1,42 +1,42 @@
 # Specification: Layer-Streaming Engine Core
 
-Capacidad central del sistema: ejecutar LLMs cuyos pesos no caben en VRAM, transmitiéndolos por capa (o experto) desde RAM pinned hacia buffers dobles en GPU.
+Central system capability: run LLMs whose weights do not fit in VRAM by streaming them per layer (or expert) from pinned RAM into double-buffered GPU memory.
 
 ## ADDED Requirements
 
-### Requirement: Carga única de pesos a RAM pinned
-El sistema SHALL cargar todos los tensores del modelo GGUF desde el NVMe a memoria host pinned (cudaMallocHost) UNA sola vez al inicio, y SHALL NUNCA leer del disco durante la generación.
+### Requirement: Single weight load into pinned RAM
+The system SHALL load all GGUF model tensors from NVMe into pinned host memory (cudaMallocHost) ONCE at startup, and SHALL NEVER read from disk during generation.
 
-#### Scenario: Carga de fixture 0.6B
-- **WHEN** se inicia la carga de un GGUF Q4_K_M de ~400 MB
-- **THEN** los tensores quedan en regiones pinned contiguas por capa en <5 s
-- **AND** la suma de bytes cargados es igual al tamaño del archivo
-- **AND** ningún read() ocurre durante el loop de generación (verificable con trace)
+#### Scenario: 0.6B fixture load
+- **WHEN** loading a ~400 MB Q4_K_M GGUF begins
+- **THEN** tensors land in contiguous pinned regions per layer in <5 s
+- **AND** the sum of loaded bytes equals the file size
+- **AND** no read() occurs during the generation loop (verifiable via trace)
 
-### Requirement: Pipeline doble búfer con solapamiento
-El sistema SHALL mantener dos streams CUDA (transferencia y cómputo) sincronizados por eventos, de modo que la copia H2D de la capa N+1 se solape con la ejecución del kernel de la capa N.
+### Requirement: Double-buffered pipelining with overlap
+The system SHALL maintain two CUDA streams (transfer and compute) synchronized by events, so that the H2D copy of layer N+1 overlaps execution of layer N's kernel.
 
-#### Scenario: Solapamiento medido con Nsight
-- **WHEN** se ejecuta el benchmark de pipeline con modelo dummy de 8 capas
-- **THEN** el trace muestra ≥80% de la ventana de cómputo cubierta por transferencia concurrente
-- **AND** el tiempo total por capa < (t_copy + t_kernel) secuencial
+#### Scenario: Overlap measured with Nsight
+- **WHEN** the pipeline benchmark runs with a dummy 8-layer model
+- **THEN** the trace shows ≥80% of the compute window covered by concurrent transfer
+- **AND** total time per layer < sequential (t_copy + t_kernel)
 
-#### Scenario: Orden de dependencias
-- **WHEN** compute evalúa la capa N
-- **THEN** espera el evento copy_done[N] antes de lanzar kernels sobre ese buffer
-- **AND** no hay busy-waiting en la CPU
+#### Scenario: Dependency ordering
+- **WHEN** compute evaluates layer N
+- **THEN** it waits on the copy_done[N] event before launching kernels on that buffer
+- **AND** there is no CPU busy-waiting
 
-### Requirement: Descuantización al vuelo en GPU
-Los pesos Q4_K_M SHALL descuantizarse dentro de los kernels GPU (shared memory/registers), sin materializar versiones FP16 completas en VRAM.
+### Requirement: On-the-fly GPU dequantization
+Q4_K_M weights SHALL be dequantized inside the GPU kernels (shared memory/registers), without materializing full FP16 copies in VRAM.
 
-#### Scenario: Paridad numérica
-- **WHEN** se compara dequant GPU vs referencia CPU bloque a bloque
-- **THEN** error máximo < 0.01 por elemento
+#### Scenario: Numerical parity
+- **WHEN** GPU dequant is compared block-by-block against the CPU reference
+- **THEN** maximum error is < 0.01 per element
 
-### Requirement: Throughput predecible por escala
-El sistema SHALL documentar el throughput real medido por escala de modelo, sin promesas teóricas sin benchmark.
+### Requirement: Predictable throughput at scale
+The system SHALL document real measured throughput per model scale, without theoretical promises lacking benchmarks.
 
-#### Scenario: Denso 14B Q4 en PCIe x8
-- **WHEN** se genera texto con un denso 14B Q4 (~8.5 GB) residente en RAM
-- **THEN** throughput esperado ≈ 1.4 tok/s (medido, no estimado)
-- **AND** el primer token generado es válido end-to-end (topología completa de capas)
+#### Scenario: Dense 14B Q4 on PCIe x8
+- **WHEN** generating text with a dense 14B Q4 (~8.5 GB) resident in RAM
+- **THEN** expected throughput ≈ 1.4 tok/s (measured, not estimated)
+- **AND** the first generated token is valid end-to-end (full layer topology)

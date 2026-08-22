@@ -1,36 +1,36 @@
 # Titan
 
-Motor de inferencia LLM en Rust + CUDA para modelos GGUF cuyos pesos **no caben en VRAM**: los tensores residen en RAM pinned (NVMe → host una sola vez) y se transmiten por capa hacia la GPU con pipeline de doble búfer.
+Rust + CUDA LLM inference engine for GGUF models whose weights **do not fit in VRAM**: tensors live in pinned RAM (NVMe → host once) and stream layer-by-layer to the GPU through a double-buffered pipeline.
 
-## Estado actual — Fase 0-1 (bootstrap)
+## Current state — Phase 0-1 (bootstrap)
 
-| Componente | Estado |
+| Component | Status |
 |---|---|
-| Cargo workspace (5 crates) + toolchain estable + CI | ✅ |
-| Parser GGUF v3 (header, metadata KV, tensor infos, layer index) | ✅ TDD |
-| RAM pinned RAII (`cuMemAllocHost`/`cuMemFreeHost`, alineado 4096 B) | ✅ TDD, GPU |
-| Loader single-pass NVMe → pinned con métrica GB/s | ✅ (~400 MB en <1 s) |
-| Streaming por capa, doble búfer CUDA, kernels dequant, KV cache | ⏳ próximas fases |
+| Cargo workspace (5 crates) + stable toolchain + CI | ✅ |
+| GGUF v3 parser (header, metadata KV, tensor infos, layer index) | ✅ TDD |
+| Pinned RAM RAII (`cuMemAllocHost`/`cuMemFreeHost`, 4096 B aligned) | ✅ TDD, GPU |
+| Single-pass NVMe → pinned loader with GB/s metric | ✅ (~400 MB in <1 s) |
+| Per-layer streaming, CUDA double buffering, dequant kernels, KV cache | ⏳ next phases |
 
-**Hardware de referencia:** RTX 3060 6 GB · objetivo: denso 14B Q4_K_M (~8.5 GB en RAM) a ≈1.4 tok/s medidos sobre PCIe x8.
+**Reference hardware:** RTX 3060 6 GB · target: dense 14B Q4_K_M (~8.5 GB in RAM) at ≈1.4 tok/s measured over PCIe x8.
 
-## Arquitectura
+## Architecture
 
 ```
 engine/
-├── engine-api        # contratos públicos del motor
-├── engine-core       # orquestación y loop de generación
-├── engine-io         # parser GGUF v3 + loader a pinned memory
-├── engine-cuda       # FFI CUDA: pinned host RAII (próx.: streams, kernels)
-└── engine-kvcache    # cache KV para atención
+├── engine-api        # public engine contracts
+├── engine-core       # orchestration and generation loop
+├── engine-io         # GGUF v3 parser + pinned-memory loader
+├── engine-cuda       # CUDA FFI: pinned host RAII (next: streams, kernels)
+└── engine-kvcache    # KV cache for attention
 ```
 
-Principio central ([spec](openspec/specs/layer-streaming-engine/spec.md)): los pesos se leen del disco **una sola vez** al inicio; durante la generación no hay `read()`. La copia H2D de la capa N+1 se solapa con el cómputo de la capa N mediante dos streams sincronizados por eventos. Los pesos Q4_K_M se descuantizan dentro de los kernels GPU, sin materializar FP16 en VRAM.
+Core principle ([spec](openspec/specs/layer-streaming-engine/spec.md)): weights are read from disk **once** at startup; there is no `read()` during generation. The H2D copy of layer N+1 overlaps layer N's compute via two event-synchronized streams. Q4_K_M weights are dequantized inside the GPU kernels, without materializing FP16 copies in VRAM.
 
-## Uso
+## Usage
 
 ```bash
-# 1. Descargar fixture de prueba (Qwen3-0.6B Q4_K_M, ~400 MB, idempotente, con SHA256)
+# 1. Download the test fixture (Qwen3-0.6B Q4_K_M, ~400 MB, idempotent, SHA256-verified)
 bash tools/download_fixture.sh
 
 # 2. Build + lint
@@ -38,19 +38,19 @@ cd engine
 cargo build --workspace
 cargo clippy --workspace -- -D warnings
 
-# 3. Tests CPU
+# 3. CPU tests
 cargo test --workspace
 
-# 4. Tests GPU (requieren CUDA device local; marcados #[ignore])
+# 4. GPU tests (require a local CUDA device; marked #[ignore])
 cargo test --workspace -- --ignored
 ```
 
-Los tests que dependen del fixture GGUF hacen *skip* automático si el archivo no está presente (p. ej. en CI); localmente corren completo.
+Tests that depend on the GGUF fixture skip automatically when the file is absent (e.g. in CI); locally they run in full.
 
 ## CI
 
-GitHub Actions: `cargo fmt --check`, `clippy -D warnings`, `cargo test` (CPU). Los tests GPU corren en hardware local.
+GitHub Actions: `cargo fmt --check`, `clippy -D warnings`, `cargo test` (CPU). GPU tests run on local hardware.
 
-## Desarrollo
+## Development
 
-Spec-driven con [OpenSpec](openspec/constitution.md): cada fase es un change en `openspec/changes/` con proposal, tasks y gate verificable antes de marcar done.
+Spec-driven with [OpenSpec](openspec/constitution.md): each phase is a change under `openspec/changes/` with a proposal, tasks, and a verifiable gate before marking it done.
