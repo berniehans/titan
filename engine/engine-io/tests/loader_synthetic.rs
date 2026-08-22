@@ -1,7 +1,7 @@
+use engine_io::{GgmlType, GgufReader, LoadedLayout};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
-use engine_io::{GgmlType, GgufReader, LoadedLayout};
 
 fn get_fixture_path() -> PathBuf {
     if let Ok(env_path) = std::env::var("ENGINE_TESTDATA") {
@@ -22,7 +22,9 @@ fn get_fixture_path() -> PathBuf {
             return c.canonicalize().unwrap_or_else(|_| c.clone());
         }
     }
-    panic!("Fixture file Qwen3-0.6B-Q4_K_M.gguf not found at any candidate path. Set ENGINE_TESTDATA to point to it.");
+    panic!(
+        "Fixture file Qwen3-0.6B-Q4_K_M.gguf not found at any candidate path. Set ENGINE_TESTDATA to point to it."
+    );
 }
 
 #[test]
@@ -33,7 +35,10 @@ fn test_5_1_loaded_layout_accounting() {
     let reader = GgufReader::open(&fixture).expect("Failed to open GGUF file");
     let layout = LoadedLayout::from_reader(&reader).expect("Failed to create LoadedLayout");
 
-    assert!(layout.total_size_bytes() > 0, "total_size_bytes must be > 0");
+    assert!(
+        layout.total_size_bytes() > 0,
+        "total_size_bytes must be > 0"
+    );
 
     // Key assertion: metadata size + loaded data size == total file size
     assert_eq!(
@@ -76,7 +81,9 @@ fn test_5_1_loaded_layout_accounting() {
     assert!(!layers.is_empty(), "Model must have layers");
 
     for &layer_num in &layers {
-        let layer_spans = layout.layer_spans(layer_num).expect("Layer spans must exist");
+        let layer_spans = layout
+            .layer_spans(layer_num)
+            .expect("Layer spans must exist");
         let layer_tensors = reader.layer_index().by_layer(layer_num).unwrap();
         assert_eq!(layer_spans.len(), layer_tensors.len());
 
@@ -87,7 +94,9 @@ fn test_5_1_loaded_layout_accounting() {
             expected_layer_size += tensor.size_bytes;
         }
 
-        let (range_start, range_size) = layout.layer_range(layer_num).expect("Layer range must exist");
+        let (range_start, range_size) = layout
+            .layer_range(layer_num)
+            .expect("Layer range must exist");
         assert_eq!(range_start, layer_tensors[0].offset);
         assert_eq!(range_size, expected_layer_size);
     }

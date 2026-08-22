@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
 use crate::types::TensorInfo;
+use std::collections::BTreeMap;
 
 /// Classifies whether a tensor belongs to a transformer layer (e.g. "blk.N.*").
 ///

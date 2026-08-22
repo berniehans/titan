@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use engine_io::GgufReader;
+use std::path::PathBuf;
 
 fn get_fixture_path() -> PathBuf {
     if let Ok(env_path) = std::env::var("ENGINE_TESTDATA") {
@@ -20,7 +20,9 @@ fn get_fixture_path() -> PathBuf {
             return c.canonicalize().unwrap_or_else(|_| c.clone());
         }
     }
-    panic!("Fixture file Qwen3-0.6B-Q4_K_M.gguf not found at any candidate path. Set ENGINE_TESTDATA to point to it.");
+    panic!(
+        "Fixture file Qwen3-0.6B-Q4_K_M.gguf not found at any candidate path. Set ENGINE_TESTDATA to point to it."
+    );
 }
 
 #[test]
@@ -33,8 +35,16 @@ fn test_3_1_parse_header_of_fixture() {
 
     assert_eq!(header.magic, "GGUF", "Magic header must be 'GGUF'");
     assert_eq!(header.version, 3, "GGUF version must be 3");
-    assert!(header.tensor_count > 0, "Tensor count must be > 0, got {}", header.tensor_count);
-    assert!(header.metadata_kv_count > 0, "Metadata KV count must be > 0, got {}", header.metadata_kv_count);
+    assert!(
+        header.tensor_count > 0,
+        "Tensor count must be > 0, got {}",
+        header.tensor_count
+    );
+    assert!(
+        header.metadata_kv_count > 0,
+        "Metadata KV count must be > 0, got {}",
+        header.metadata_kv_count
+    );
 }
 
 #[test]
@@ -60,8 +70,14 @@ fn test_3_3_tensor_infos_and_spans() {
         "Known tensor 'token_embd.weight' must exist"
     );
     let embd_tensor = token_embd.unwrap();
-    assert!(!embd_tensor.dims.is_empty(), "token_embd.weight dims must not be empty");
-    assert!(embd_tensor.size_bytes > 0, "token_embd.weight size_bytes must be > 0");
+    assert!(
+        !embd_tensor.dims.is_empty(),
+        "token_embd.weight dims must not be empty"
+    );
+    assert!(
+        embd_tensor.size_bytes > 0,
+        "token_embd.weight size_bytes must be > 0"
+    );
 
     // Check all tensor spans
     let tensor_data_offset = reader.tensor_data_offset();
@@ -78,8 +94,16 @@ fn test_3_3_tensor_infos_and_spans() {
 
     for t in tensors {
         assert!(!t.name.is_empty(), "Tensor name must not be empty");
-        assert!(!t.dims.is_empty(), "Tensor dims must not be empty for {}", t.name);
-        assert!(t.size_bytes > 0, "Tensor size_bytes must be > 0 for {}", t.name);
+        assert!(
+            !t.dims.is_empty(),
+            "Tensor dims must not be empty for {}",
+            t.name
+        );
+        assert!(
+            t.size_bytes > 0,
+            "Tensor size_bytes must be > 0 for {}",
+            t.name
+        );
 
         let tensor_end = t.offset + t.size_bytes;
         if tensor_end > max_tensor_end {
@@ -133,13 +157,22 @@ fn test_3_5_layer_pattern_and_index() {
     assert!(!layers.is_empty(), "Model should have layers");
     // Verify layers are 0, 1, 2, ...
     for (i, &layer_num) in layers.iter().enumerate() {
-        assert_eq!(i, layer_num, "Layer index must be consecutive starting at 0");
+        assert_eq!(
+            i, layer_num,
+            "Layer index must be consecutive starting at 0"
+        );
     }
 
     let mut counted_layer_tensors = 0;
     for &idx in &layers {
-        let layer_tensors = layer_idx.by_layer(idx).expect("Layer tensors must exist for indexed layer");
-        assert!(!layer_tensors.is_empty(), "Layer {} should have tensors", idx);
+        let layer_tensors = layer_idx
+            .by_layer(idx)
+            .expect("Layer tensors must exist for indexed layer");
+        assert!(
+            !layer_tensors.is_empty(),
+            "Layer {} should have tensors",
+            idx
+        );
         for t in layer_tensors {
             let prefix = format!("blk.{}.", idx);
             assert!(
@@ -153,9 +186,14 @@ fn test_3_5_layer_pattern_and_index() {
     }
 
     let non_layer_tensors = layer_idx.non_layer_tensors();
-    assert!(!non_layer_tensors.is_empty(), "Model should have non-layer tensors");
     assert!(
-        non_layer_tensors.iter().any(|t| t.name == "token_embd.weight"),
+        !non_layer_tensors.is_empty(),
+        "Model should have non-layer tensors"
+    );
+    assert!(
+        non_layer_tensors
+            .iter()
+            .any(|t| t.name == "token_embd.weight"),
         "non_layer_tensors must contain 'token_embd.weight'"
     );
 
@@ -177,21 +215,28 @@ fn test_metadata_qwen3() {
     assert!(!metadata.is_empty(), "Metadata should not be empty");
 
     // Architecture
-    let arch = metadata.get("general.architecture").expect("general.architecture must exist");
+    let arch = metadata
+        .get("general.architecture")
+        .expect("general.architecture must exist");
     assert_eq!(arch.as_str(), Some("qwen3"));
 
     // Quantization version
     if let Some(quant_ver) = metadata.get("general.quantization_version") {
-        assert!(quant_ver.as_u32().is_some() || quant_ver.as_u64().is_some() || quant_ver.as_i32().is_some());
+        assert!(
+            quant_ver.as_u32().is_some()
+                || quant_ver.as_u64().is_some()
+                || quant_ver.as_i32().is_some()
+        );
     }
 
     // Tokenizer tokens array
     if let Some(tokens) = metadata.get("tokenizer.ggml.tokens") {
         let token_list = tokens.as_string_list();
-        assert!(token_list.is_some(), "tokenizer.ggml.tokens must be a string array");
+        assert!(
+            token_list.is_some(),
+            "tokenizer.ggml.tokens must be a string array"
+        );
         let list = token_list.unwrap();
         assert!(!list.is_empty(), "Token list must not be empty");
     }
 }
-
-

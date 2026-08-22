@@ -185,9 +185,9 @@ fn compute_tensor_size(dims: &[u64], tensor_type: GgmlType, name: &str) -> Resul
     }
 
     let num_blocks = d0 / block_elems;
-    let mut total_bytes = num_blocks.checked_mul(type_size).ok_or_else(|| {
-        GgufError::InvalidTensorShape(format!("Tensor '{name}': size overflow"))
-    })?;
+    let mut total_bytes = num_blocks
+        .checked_mul(type_size)
+        .ok_or_else(|| GgufError::InvalidTensorShape(format!("Tensor '{name}': size overflow")))?;
 
     for &d in &dims[1..] {
         total_bytes = total_bytes.checked_mul(d).ok_or_else(|| {

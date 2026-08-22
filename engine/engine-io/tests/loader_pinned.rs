@@ -1,7 +1,7 @@
+use engine_cuda::PinnedHost;
+use engine_io::{GgufReader, load_to_pinned};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use engine_cuda::PinnedHost;
-use engine_io::{load_to_pinned, GgufReader};
 
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -24,7 +24,9 @@ fn get_fixture_path() -> PathBuf {
             return c.canonicalize().unwrap_or_else(|_| c.clone());
         }
     }
-    panic!("Fixture file Qwen3-0.6B-Q4_K_M.gguf not found at any candidate path. Set ENGINE_TESTDATA to point to it.");
+    panic!(
+        "Fixture file Qwen3-0.6B-Q4_K_M.gguf not found at any candidate path. Set ENGINE_TESTDATA to point to it."
+    );
 }
 
 #[test]
@@ -40,7 +42,8 @@ fn test_5_2_load_fixture_to_pinned() {
     let tensor_data_offset = reader.tensor_data_offset();
 
     {
-        let loaded = load_to_pinned(&reader, &fixture).expect("Failed to load fixture to pinned host memory");
+        let loaded = load_to_pinned(&reader, &fixture)
+            .expect("Failed to load fixture to pinned host memory");
 
         // Assert size matches file data area
         assert_eq!(
@@ -62,12 +65,20 @@ fn test_5_2_load_fixture_to_pinned() {
         );
 
         // Assert known tensor slices
-        let embd_info = reader.get_tensor("token_embd.weight").expect("token_embd.weight info");
-        let embd_slice = loaded.tensor("token_embd.weight").expect("token_embd.weight slice");
+        let embd_info = reader
+            .get_tensor("token_embd.weight")
+            .expect("token_embd.weight info");
+        let embd_slice = loaded
+            .tensor("token_embd.weight")
+            .expect("token_embd.weight slice");
         assert_eq!(embd_slice.len(), embd_info.size_bytes as usize);
 
-        let norm_info = reader.get_tensor("output_norm.weight").expect("output_norm.weight info");
-        let norm_slice = loaded.tensor("output_norm.weight").expect("output_norm.weight slice");
+        let norm_info = reader
+            .get_tensor("output_norm.weight")
+            .expect("output_norm.weight info");
+        let norm_slice = loaded
+            .tensor("output_norm.weight")
+            .expect("output_norm.weight slice");
         assert_eq!(norm_slice.len(), norm_info.size_bytes as usize);
 
         // Non-existent tensor returns None

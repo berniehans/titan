@@ -1,6 +1,6 @@
+use engine_io::{GgmlType, GgufError, GgufReader, GgufType};
 use std::fs::File;
 use std::io::Write;
-use engine_io::{GgmlType, GgufError, GgufReader, GgufType};
 
 struct SyntheticTensor {
     name: String,
@@ -40,20 +40,34 @@ impl GgufBuilder {
     }
 
     fn add_scalar_kv(mut self, key: &str, val_type: GgufType, val_bytes: &[u8]) -> Self {
-        self.kv_entries.push((key.to_string(), val_type as u32, val_bytes.to_vec()));
+        self.kv_entries
+            .push((key.to_string(), val_type as u32, val_bytes.to_vec()));
         self
     }
 
-    fn add_array_kv(mut self, key: &str, elem_type: GgufType, count: u64, data_bytes: &[u8]) -> Self {
+    fn add_array_kv(
+        mut self,
+        key: &str,
+        elem_type: GgufType,
+        count: u64,
+        data_bytes: &[u8],
+    ) -> Self {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&(elem_type as u32).to_le_bytes());
         bytes.extend_from_slice(&count.to_le_bytes());
         bytes.extend_from_slice(data_bytes);
-        self.kv_entries.push((key.to_string(), GgufType::Array as u32, bytes));
+        self.kv_entries
+            .push((key.to_string(), GgufType::Array as u32, bytes));
         self
     }
 
-    fn add_tensor(mut self, name: &str, dims: Vec<u64>, ggml_type: GgmlType, data: Vec<u8>) -> Self {
+    fn add_tensor(
+        mut self,
+        name: &str,
+        dims: Vec<u64>,
+        ggml_type: GgmlType,
+        data: Vec<u8>,
+    ) -> Self {
         let offset = self.tensors.iter().map(|t| t.data.len() as u64).sum();
         self.tensors.push(SyntheticTensor {
             name: name.to_string(),
@@ -118,7 +132,8 @@ impl GgufBuilder {
         let temp_dir = std::env::temp_dir();
         let file_path = temp_dir.join(format!("test_{}_{}.gguf", prefix, std::process::id()));
         let mut file = File::create(&file_path).expect("Create temp file");
-        file.write_all(&self.build_bytes()).expect("Write temp file");
+        file.write_all(&self.build_bytes())
+            .expect("Write temp file");
         file_path
     }
 }
@@ -165,8 +180,18 @@ fn test_all_scalar_and_array_types() {
         .add_array_kv("k_str_arr", GgufType::String, 3, &string_array_data)
         .add_array_kv("k_u32_arr", GgufType::Uint32, 3, &u32_array_data)
         .add_array_kv("k_f32_arr", GgufType::Float32, 3, &f32_array_data)
-        .add_tensor("token_embd.weight", vec![4, 2], GgmlType::F32, vec![0u8; 32]) // 4 * 2 * 4 bytes = 32 bytes
-        .add_tensor("blk.0.attn_q.weight", vec![4, 2], GgmlType::F32, vec![0u8; 32])
+        .add_tensor(
+            "token_embd.weight",
+            vec![4, 2],
+            GgmlType::F32,
+            vec![0u8; 32],
+        ) // 4 * 2 * 4 bytes = 32 bytes
+        .add_tensor(
+            "blk.0.attn_q.weight",
+            vec![4, 2],
+            GgmlType::F32,
+            vec![0u8; 32],
+        )
         .write_to_temp_file("scalars_and_arrays");
 
     let reader = GgufReader::open(&path).expect("Open synthetic file");
@@ -243,7 +268,9 @@ fn test_unsupported_version() {
 #[test]
 fn test_invalid_value_type() {
     let mut builder = GgufBuilder::new();
-    builder.kv_entries.push(("bad_key".to_string(), 999, vec![0]));
+    builder
+        .kv_entries
+        .push(("bad_key".to_string(), 999, vec![0]));
     let path = builder.write_to_temp_file("bad_val_type");
 
     let result = GgufReader::open(&path);

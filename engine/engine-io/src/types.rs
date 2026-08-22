@@ -284,13 +284,41 @@ impl GgmlType {
     /// Number of elements per block (block size in elements).
     pub fn block_elements(&self) -> usize {
         match self {
-            Self::F32 | Self::F16 | Self::BF16 | Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::F64 => 1,
-            Self::Q4_0 | Self::Q4_1 | Self::Q5_0 | Self::Q5_1 | Self::Q8_0 | Self::Q8_1
-            | Self::IQ4_NL | Self::MXFP4 | Self::NVFP4 | Self::Q1_0 | Self::Q2_0 => 32,
-            Self::Q2_K | Self::Q3_K | Self::Q4_K | Self::Q5_K | Self::Q6_K | Self::Q8_K
-            | Self::IQ2_XXS | Self::IQ2_XS | Self::IQ3_XXS | Self::IQ1_S
-            | Self::IQ3_S | Self::IQ2_S | Self::IQ4_XS | Self::IQ1_M
-            | Self::TQ1_0 | Self::TQ2_0 => 256,
+            Self::F32
+            | Self::F16
+            | Self::BF16
+            | Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::I64
+            | Self::F64 => 1,
+            Self::Q4_0
+            | Self::Q4_1
+            | Self::Q5_0
+            | Self::Q5_1
+            | Self::Q8_0
+            | Self::Q8_1
+            | Self::IQ4_NL
+            | Self::MXFP4
+            | Self::NVFP4
+            | Self::Q1_0
+            | Self::Q2_0 => 32,
+            Self::Q2_K
+            | Self::Q3_K
+            | Self::Q4_K
+            | Self::Q5_K
+            | Self::Q6_K
+            | Self::Q8_K
+            | Self::IQ2_XXS
+            | Self::IQ2_XS
+            | Self::IQ3_XXS
+            | Self::IQ1_S
+            | Self::IQ3_S
+            | Self::IQ2_S
+            | Self::IQ4_XS
+            | Self::IQ1_M
+            | Self::TQ1_0
+            | Self::TQ2_0 => 256,
         }
     }
 
