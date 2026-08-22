@@ -14,4 +14,8 @@ pub enum CudaError {
     /// CUDA host memory free failed.
     #[error("CUDA memory free failed in '{0}'")]
     FreeFailed(&'static str),
+
+    /// CUDA stream operation failed.
+    #[error("CUDA stream operation failed in '{0}': {1:?}")]
+    StreamFailed(&'static str, cudarc::driver::sys::CUresult),
 }
