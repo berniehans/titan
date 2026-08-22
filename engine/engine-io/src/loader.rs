@@ -150,9 +150,12 @@ impl LoadedPinned {
 /// Loads the tensor data blob from a GGUF model file into page-locked (pinned) host memory.
 ///
 /// Reads the tensor data blob from disk starting at `reader.tensor_data_offset()`,
-/// allocates a `PinnedHost` buffer of the exact layout size, copies the bytes into pinned host memory,
+/// allocates a `PinnedHost` buffer of the exact layout size, reads the bytes directly into pinned host memory,
 /// and logs the transfer throughput metric in GB/s.
-pub fn load_to_pinned<P: AsRef<Path>>(reader: &GgufReader, path: P) -> Result<LoadedPinned, GgufError> {
+pub fn load_to_pinned<P: AsRef<Path>>(
+    reader: &GgufReader,
+    path: P,
+) -> Result<LoadedPinned, GgufError> {
     let layout = LoadedLayout::from_reader(reader)?;
     let data_blob_size = layout.total_size_bytes();
 
@@ -161,11 +164,8 @@ pub fn load_to_pinned<P: AsRef<Path>>(reader: &GgufReader, path: P) -> Result<Lo
     let mut file = File::open(path)?;
     file.seek(SeekFrom::Start(reader.tensor_data_offset()))?;
 
-    let mut temp_buf = vec![0u8; data_blob_size as usize];
-    file.read_exact(&mut temp_buf)?;
-
     let mut host = PinnedHost::alloc(data_blob_size as usize)?;
-    host.as_mut_slice().copy_from_slice(&temp_buf);
+    file.read_exact(host.as_mut_slice())?;
 
     let elapsed = start_time.elapsed();
     let seconds = elapsed.as_secs_f64();
