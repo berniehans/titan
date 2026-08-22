@@ -7,6 +7,10 @@ use crate::error::GgufError;
 use crate::layer::LayerIndex;
 use crate::types::{GgmlType, GgufHeader, GgufType, GgufValue, TensorInfo};
 
+/// Upper bound for GGUF string lengths (keys, tensor names, metadata strings).
+/// Real-world values are far below this; anything larger indicates corruption.
+const MAX_STRING_LEN: u64 = 64 * 1024 * 1024;
+
 /// Reader and parser for GGUF model files.
 #[derive(Debug, Clone)]
 pub struct GgufReader {
@@ -270,6 +274,12 @@ fn read_f64<R: Read>(reader: &mut R) -> Result<f64, GgufError> {
 
 fn read_string<R: Read>(reader: &mut R) -> Result<String, GgufError> {
     let len = read_u64(reader)?;
+    // Guard against malformed headers: a corrupted `len` must not trigger a
+    // huge allocation before EOF is detected. Real GGUF string values (keys,
+    // names, metadata) are far below this bound.
+    if len > MAX_STRING_LEN {
+        return Err(GgufError::UnexpectedEof("string bytes"));
+    }
     let mut buf = vec![0u8; len as usize];
     reader.read_exact(&mut buf).map_err(|e| {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
