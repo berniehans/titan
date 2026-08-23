@@ -1,0 +1,17 @@
+[package]
+name = "engine-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+engine-kvcache = { path = "../engine-kvcache" }
+axum.workspace = true
+tokio.workspace = true
+tokio-macros.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
