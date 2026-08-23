@@ -1,3 +1,4 @@
+pub mod dequant;
 pub mod error;
 pub mod pipeline;
 
