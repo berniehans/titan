@@ -5,6 +5,10 @@ edition = "2024"
 
 [dependencies]
 engine-kvcache = { path = "../engine-kvcache" }
+engine-core = { path = "../engine-core" }
+engine-io = { path = "../engine-io" }
+engine-cuda = { path = "../engine-cuda" }
+cudarc.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tokio-macros.workspace = true

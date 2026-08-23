@@ -5,6 +5,7 @@
 ///
 /// The forward pass is a deterministic placeholder (see `session`).
 pub mod models;
+pub mod runtime;
 pub mod scheduler;
 pub mod server;
 pub mod session;
@@ -15,7 +16,7 @@ pub use models::{
     CompletionUsage,
 };
 pub use scheduler::BatchScheduler;
-pub use server::KVConfig;
+pub use server::{KVConfig, RealServerCfg, build_router, build_router_real};
 pub use session::GenerationSession;
 pub use sse::{chunk_frame, done_frame};
 

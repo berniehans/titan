@@ -83,15 +83,9 @@ fn decode_tokens(vocab: u32, prompt: &str, max_tokens: u32) -> Vec<u32> {
     tokens
 }
 
-/// Builds the SSE event sequence for a streaming completion:
+/// Builds the SSE event sequence for a streaming completion from a token list:
 /// one `data: {json}` event per token, then the `data: [DONE]` terminal event.
-pub fn stream_events(cfg: Arc<KVConfig>, body: &CompletionRequest) -> Vec<Event> {
-    let max_tokens = if body.max_tokens == 0 {
-        cfg.default_max_tokens
-    } else {
-        body.max_tokens
-    };
-    let tokens = decode_tokens(cfg.vocab, &body.prompt, max_tokens);
+fn tokens_to_events(prompt: &str, model: &str, tokens: &[u32]) -> Vec<Event> {
     let length = "length".to_string();
 
     let mut events = Vec::with_capacity(tokens.len() + 1);
@@ -107,16 +101,53 @@ pub fn stream_events(cfg: Arc<KVConfig>, body: &CompletionRequest) -> Vec<Event>
             },
         }];
         let chunk = CompletionChunk {
-            id: completion_id(&body.prompt),
+            id: completion_id(prompt),
             object: "text_completion".to_string(),
             created: 1u64,
-            model: body.model.clone(),
+            model: model.to_string(),
             choices,
         };
         events.push(data_event(serialize(&chunk)));
     }
     events.push(done_event());
     events
+}
+
+/// Builds the SSE event sequence for a streaming completion (synthetic decode).
+pub fn stream_events(cfg: Arc<KVConfig>, body: &CompletionRequest) -> Vec<Event> {
+    let max_tokens = if body.max_tokens == 0 {
+        cfg.default_max_tokens
+    } else {
+        body.max_tokens
+    };
+    let tokens = decode_tokens(cfg.vocab, &body.prompt, max_tokens);
+    tokens_to_events(&body.prompt, &body.model, &tokens)
+}
+
+/// Builds a non-streaming completion response from a token list.
+fn tokens_to_completion(prompt: &str, model: &str, tokens: &[u32]) -> CompletionResponse {
+    let mut text = String::new();
+    for t in tokens {
+        text.push_str(&token_text(*t));
+    }
+    let completion_tokens = tokens.len() as u32;
+    let choices = vec![CompletionChoice {
+        text,
+        index: 0,
+        finish_reason: "length".to_string(),
+    }];
+    CompletionResponse {
+        id: completion_id(prompt),
+        object: "text_completion".to_string(),
+        created: 1u64,
+        model: model.to_string(),
+        choices,
+        usage: CompletionUsage {
+            prompt_tokens: 1,
+            completion_tokens,
+            total_tokens: 1 + completion_tokens,
+        },
+    }
 }
 
 /// Builds a non-streaming completion response via the scheduler decode loop.
@@ -127,29 +158,7 @@ pub fn build_completion(cfg: Arc<KVConfig>, body: &CompletionRequest) -> Complet
         body.max_tokens
     };
     let tokens = decode_tokens(cfg.vocab, &body.prompt, max_tokens);
-
-    let mut text = String::new();
-    for t in &tokens {
-        text.push_str(&token_text(*t));
-    }
-    let completion_tokens = tokens.len() as u32;
-    let choices = vec![CompletionChoice {
-        text,
-        index: 0,
-        finish_reason: "length".to_string(),
-    }];
-    CompletionResponse {
-        id: completion_id(&body.prompt),
-        object: "text_completion".to_string(),
-        created: 1u64,
-        model: body.model.clone(),
-        choices,
-        usage: CompletionUsage {
-            prompt_tokens: 1,
-            completion_tokens,
-            total_tokens: 1 + completion_tokens,
-        },
-    }
+    tokens_to_completion(&body.prompt, &body.model, &tokens)
 }
 
 async fn handle_completion(
@@ -163,10 +172,54 @@ async fn handle_completion(
     }
 }
 
+/// Runtime-backed server config: a real, fixture-derived model behind the
+/// OpenAI-compatible surface. The `Mutex` serialises the (non re-entrant) CUDA
+/// pipeline across axum worker threads.
+pub struct RealServerCfg {
+    /// Stub vocabulary border for token ids.
+    pub vocab: u32,
+    /// Completion budget applied when a request omits max_tokens.
+    pub default_max_tokens: u32,
+    /// The real model runtime (device + dequantizer pipeline + loaded weights).
+    pub model: crate::runtime::SharedRealModel,
+}
+
+/// Runs one completion through the real model runtime.
+fn decode_tokens_real(cfg: &RealServerCfg, prompt: &str, max_tokens: u32) -> Vec<u32> {
+    let model = cfg.model.lock().expect("real model lock");
+    crate::runtime::decode_run(&model, cfg.vocab, prompt, max_tokens).expect("real decode run")
+}
+
+async fn handle_real_completion(
+    State(cfg): State<Arc<RealServerCfg>>,
+    Json(body): Json<CompletionRequest>,
+) -> Response {
+    let max_tokens = if body.max_tokens == 0 {
+        cfg.default_max_tokens
+    } else {
+        body.max_tokens
+    };
+    let tokens = decode_tokens_real(&cfg, &body.prompt, max_tokens);
+    if body.stream {
+        to_sse(tokens_to_events(&body.prompt, &body.model, &tokens)).into_response()
+    } else {
+        JsonResponse::<CompletionResponse>(tokens_to_completion(&body.prompt, &body.model, &tokens))
+            .into_response()
+    }
+}
+
 /// Builds the axum router serving /v1/completions.
 pub fn build_router(cfg: Arc<KVConfig>) -> Router {
     Router::new()
         .route("/v1/completions", post(handle_completion))
+        .with_state(cfg)
+}
+
+/// Builds the axum router serving /v1/completions backed by a real model
+/// runtime (the flujo-completo path exercised by the `#[ignore]` GPU E2E).
+pub fn build_router_real(cfg: Arc<RealServerCfg>) -> Router {
+    Router::new()
+        .route("/v1/completions", post(handle_real_completion))
         .with_state(cfg)
 }
 

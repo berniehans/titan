@@ -274,6 +274,10 @@ name = "engine-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "cudarc",
+ "engine-core",
+ "engine-cuda",
+ "engine-io",
  "engine-kvcache",
  "futures-core",
  "futures-util",
