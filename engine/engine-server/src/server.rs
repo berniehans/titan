@@ -1,13 +1,23 @@
-//! axum wiring: OpenAI-compatible completion route (task-2 milestone).
+//! axum wiring: OpenAI-compatible completion route with SSE streaming
+//! (task-3 milestone).
 //!
-//! `build_completion` now runs the deterministic decode loop through the
-//! [`BatchScheduler`] backed by a fresh [`PagedKvCache`] per request. This
-//! replaces the task-1 placeholder token enumeration.
+//! - Non-streaming: `build_completion` returns the OpenAI-compatible JSON.
+//! - Streaming: `stream_events` emits one SSE `data: {json}\n\n` chunk per
+//!   generated token followed by the terminal `data: [DONE]\n\n`, all driven
+//!   by the deterministic decode loop (`BatchScheduler` + `GenerationSession`).
+//!
+//! A client that drops the SSE connection cancels its session; see
+//! `scheduler::cancel` which frees the session's KV blocks.
 
-use crate::models::{CompletionChoice, CompletionRequest, CompletionResponse, CompletionUsage};
+use crate::models::{
+    ChunkChoice, CompletionChoice, CompletionChunk, CompletionRequest, CompletionResponse,
+    CompletionUsage,
+};
 use crate::scheduler::BatchScheduler;
+use crate::sse::{data_event, done_event, to_sse};
 use axum::Router;
 use axum::extract::{Json, State};
+use axum::response::sse::Event;
 use axum::response::{IntoResponse, Json as JsonResponse, Response};
 use axum::routing::post;
 use engine_kvcache::PagedKvCacheConfig;
@@ -44,6 +54,15 @@ fn completion_id(prompt: &str) -> String {
     format!("cmpl-{hash:x}")
 }
 
+/// Serializes a serde model to a compact JSON string.
+fn serialize<T>(value: &T) -> String
+where
+    T: serde::Serialize,
+{
+    let bytes = serde_json::to_vec(value).expect("serialize json");
+    String::from_utf8(bytes).expect("utf8")
+}
+
 /// Runs one completion to completion on a fresh scheduler; returns the
 /// generated token sequence (excluding the prompt token).
 fn decode_tokens(vocab: u32, prompt: &str, max_tokens: u32) -> Vec<u32> {
@@ -62,6 +81,42 @@ fn decode_tokens(vocab: u32, prompt: &str, max_tokens: u32) -> Vec<u32> {
         tokens.extend(scheduler.advance());
     }
     tokens
+}
+
+/// Builds the SSE event sequence for a streaming completion:
+/// one `data: {json}` event per token, then the `data: [DONE]` terminal event.
+pub fn stream_events(cfg: Arc<KVConfig>, body: &CompletionRequest) -> Vec<Event> {
+    let max_tokens = if body.max_tokens == 0 {
+        cfg.default_max_tokens
+    } else {
+        body.max_tokens
+    };
+    let tokens = decode_tokens(cfg.vocab, &body.prompt, max_tokens);
+    let length = "length".to_string();
+
+    let mut events = Vec::with_capacity(tokens.len() + 1);
+    let last = tokens.len() - 1;
+    for (i, t) in tokens.iter().enumerate() {
+        let choices = vec![ChunkChoice {
+            index: i as u32,
+            text: token_text(*t),
+            finish_reason: if i == last {
+                Some(length.clone())
+            } else {
+                None
+            },
+        }];
+        let chunk = CompletionChunk {
+            id: completion_id(&body.prompt),
+            object: "text_completion".to_string(),
+            created: 1u64,
+            model: body.model.clone(),
+            choices,
+        };
+        events.push(data_event(serialize(&chunk)));
+    }
+    events.push(done_event());
+    events
 }
 
 /// Builds a non-streaming completion response via the scheduler decode loop.
@@ -101,8 +156,11 @@ async fn handle_completion(
     State(cfg): State<Arc<KVConfig>>,
     Json(body): Json<CompletionRequest>,
 ) -> Response {
-    // Task 2 scope: non-streaming JSON only; SSE lands in task 3.
-    JsonResponse::<CompletionResponse>(build_completion(cfg, &body)).into_response()
+    if body.stream {
+        to_sse(stream_events(cfg, &body)).into_response()
+    } else {
+        JsonResponse::<CompletionResponse>(build_completion(cfg, &body)).into_response()
+    }
 }
 
 /// Builds the axum router serving /v1/completions.
@@ -178,5 +236,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn streaming_frames_chunks_then_done() {
+        let (client, base) = spawn().await;
+        let mut res = client
+            .post(&(base + "/v1/completions"))
+            .header("content-type", "application/json")
+            .body(r#"{"model":"test","prompt":"stream me","max_tokens":4,"stream":true}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+
+        let mut saw_data = false;
+        let mut saw_done = false;
+        while let Some(chunk) = res.chunk().await.unwrap() {
+            let text = String::from_utf8(chunk.to_vec()).unwrap();
+            // Each event body is a JSON object serialized on a data: line.
+            assert!(
+                text.starts_with("data: "),
+                "expected `data: ...` framing, got: {text:?}"
+            );
+            if text.contains("[DONE]") {
+                saw_done = true;
+            } else {
+                // A token chunk: data: {"id":...,"choices":[...]}\n\n
+                let json = text.trim_start_matches("data: ").trim_end();
+                let _: serde_json::Value =
+                    serde_json::from_str(json).expect("token chunk should be JSON");
+                saw_data = true;
+            }
+        }
+        assert!(saw_data, "expected at least one token chunk");
+        assert!(saw_done, "stream must terminate with [DONE] marker");
     }
 }

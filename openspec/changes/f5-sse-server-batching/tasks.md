@@ -13,9 +13,9 @@
 - [x] 2.3 Gates green
 
 ## 3. SSE streaming
-- [ ] 3.1 Failing tests: chunk framing `data: {json}\n\n`, first chunk role/content_shape, terminal `data: [DONE]\n\n`; client drop cancels session (KV blocks freed)
-- [ ] 3.2 Implement SSE via axum; wire to scheduler
-- [ ] 3.3 Gates green
+- [x] 3.1 Failing tests: chunk framing `data: {json}\n\n`, first chunk role/content_shape, terminal `data: [DONE]\n\n`; client drop cancels session (KV blocks freed)
+- [x] 3.2 Implement SSE via axum; wire to scheduler
+- [x] 3.3 Gates green
 
 ## 4. E2E integration (full flow)
 - [ ] 4.1 #[ignore] test (fixture-dependent): download-fixture → load_to_pinned → Pipeline::with_dequantizer → server; two concurrent SSE clients receive interleaved but per-session-correct deterministic outputs; non-streaming request also correct
