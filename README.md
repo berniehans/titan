@@ -2,15 +2,23 @@
 
 Rust + CUDA LLM inference engine for GGUF models whose weights **do not fit in VRAM**: tensors live in pinned RAM (NVMe → host once) and stream layer-by-layer to the GPU through a double-buffered pipeline.
 
-## Current state — Phase 0-1 (bootstrap)
+## Current state — Phase 0-2 done, Phase 3 in progress
 
 | Component | Status |
 |---|---|
 | Cargo workspace (5 crates) + stable toolchain + CI | ✅ |
 | GGUF v3 parser (header, metadata KV, tensor infos, layer index) | ✅ TDD |
+| Error-path hardening: malformed headers, truncation matrix, allocation-bomb guards (`MetadataTooLarge`) | ✅ 13 tests |
 | Pinned RAM RAII (`cuMemAllocHost`/`cuMemFreeHost`, 4096 B aligned) | ✅ TDD, GPU |
 | Single-pass NVMe → pinned loader with GB/s metric | ✅ (~400 MB in <1 s) |
-| Per-layer streaming, CUDA double buffering, dequant kernels, KV cache | ⏳ next phases |
+| CUDA stream / event / VRAM `DeviceBuffer` RAII primitives | ✅ GPU-tested |
+| **Double-buffered pipeline** (ping-pong slots, event-gated compute, no CPU busy-wait) | ✅ 8-layer ordering test |
+| Benchmark: pipelined vs sequential | ✅ 10.43 ms < 10.77 ms on RTX 3060 |
+| Q4_K_M layout + CPU reference dequantizer | ✅ TDD |
+| GPU dequant kernel + parity gate (<0.01/elem), Nsight overlap trace | ⏳ Phase 3 |
+| KV cache, SSE server, batching | ⏳ later phases |
+
+**Test suite:** 20 CPU suites green in CI; 9+ GPU integration tests run locally (`#[ignore]`).
 
 **Reference hardware:** RTX 3060 6 GB · target: dense 14B Q4_K_M (~8.5 GB in RAM) at ≈1.4 tok/s measured over PCIe x8.
 
@@ -20,8 +28,8 @@ Rust + CUDA LLM inference engine for GGUF models whose weights **do not fit in V
 engine/
 ├── engine-api        # public engine contracts
 ├── engine-core       # orchestration and generation loop
-├── engine-io         # GGUF v3 parser + pinned-memory loader
-├── engine-cuda       # CUDA FFI: pinned host RAII (next: streams, kernels)
+├── engine-io         # GGUF v3 parser + pinned-memory loader (error-path hardened)
+├── engine-cuda       # CUDA FFI: pinned host, streams, events, VRAM buffers RAII
 └── engine-kvcache    # KV cache for attention
 ```
 
