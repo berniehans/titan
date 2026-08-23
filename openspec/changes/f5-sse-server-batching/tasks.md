@@ -18,11 +18,11 @@
 - [x] 3.3 Gates green
 
 ## 4. E2E integration (full flow)
-- [ ] 4.1 #[ignore] test (fixture-dependent): download-fixture → load_to_pinned → Pipeline::with_dequantizer → server; two concurrent SSE clients receive interleaved but per-session-correct deterministic outputs; non-streaming request also correct
-- [ ] 4.2 Verify PASS locally (GPU + PATH trick)
-- [ ] 4.3 CI-safe variant: same E2E against synthetic in-memory layout (no fixture/GPU) runs in CI
+- [x] 4.1 #[ignore] test (fixture-dependent): download-fixture → load_to_pinned → Pipeline::with_dequantizer → server; two concurrent SSE clients receive interleaved but per-session-correct deterministic outputs; non-streaming request also correct
+- [x] 4.2 Verify PASS locally (GPU + PATH trick)
+- [x] 4.3 CI-safe variant: same E2E against synthetic in-memory layout (no fixture/GPU) runs in CI
 
 ## 5. Bench + gate
-- [ ] 5.1 KV append/read throughput measured through the real generation-loop path (median of isolated runs) → docs/BENCHMARKS.md Phase 4 row filled with REAL numbers
-- [ ] 5.2 Full gates green: fmt, clippy -D warnings, cargo test --workspace, GPU --ignored
-- [ ] 5.3 README status row + tasks.md checkboxes closed only after verification
+- [x] 5.1 KV append/read throughput measured through the real generation-loop path (median of isolated runs) → docs/BENCHMARKS.md Phase 4 row filled with REAL numbers
+- [x] 5.2 Full gates green: fmt, clippy -D warnings, cargo test --workspace, GPU --ignored
+- [x] 5.3 README status row + tasks.md checkboxes closed only after verification

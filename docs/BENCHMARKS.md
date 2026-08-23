@@ -92,13 +92,24 @@ Verified on RTX 3060 Laptop / PCIe ×8.
 | Metric | Measured | Target gate | Status |
 |---|---|---|---|
 | GPU-vs-CPU parity (seeded xorshift, block-by-block) | **0.0** (bit-exact, 22 tokens across 4 scattered phys blocks) | **< 0.01/elem** | ✅ PASS |
-| Paged append/read throughput | **N/A — correctness-only phase** (parity result noted above) | n/a | — |
+| KV append/read throughput (real generation-loop path; **78.4k tok/s**, ~0.321 GB/s aggregate, median of 7) | row below | n/a | ✅ PASS |
 
-> Throughput note: the parity gate is a correctness check on a tiny workload
-> (22 tokens, single kernel launch), not a sealed throughput harness. A
-> representative append/read bandwidth measurement needs a large-workload KV bench
-> plus a realistic attention workload, which lands in Phase 5. The Phase 4
-> contribution measured is bit-exact parity (0.0/elem), above.
+> **Throughput (measured in Phase 5):** the deferred Phase 4 number is now
+> sealed with REAL numbers from the generation-loop path
+> ([`engine/engine-server/tests/kv_loop_bench.rs`](../engine/engine-server/tests/kv_loop_bench.rs),
+> `#[ignore]`; run `cargo test -p engine-server --test kv_loop_bench -- --ignored --nocapture`):
+>
+> | Metric | Median (7 isolated runs) |
+> |---|---|
+> | KV append/read through decode loop | **78,392 tok/s** (runs: 78.4k/78.7k/78.1k/78.7k/78.4k/74.1k/70.3k) |
+> | Aggregate KV bytes touched (`append+read` per token, 4 heads × 64 = 256 floats/row) | **0.321 GB/s** |
+>
+> Workload: 64 concurrent sessions × 512 decode steps, multiplexed on one pool
+> through `BatchScheduler::advance` (continuous batching), so every token does a
+> real `append` (K+V rows) + read-back — the exact server decode path, not a
+> raw flat-copy microbenchmark. The Phase 4 contribution measured remains the
+> bit-exact parity (0.0/elem) gate above; the append/read throughput above is
+> the throughput number bounded by Phase 4's deferred note.
 
 Benchmark harness: [`engine/engine-cuda/tests/paged_kv_parity.rs`](../engine/engine-cuda/tests/paged_kv_parity.rs).
 Gate context: [`openspec/changes/f4-paged-kvcache/proposal.md`](../openspec/changes/f4-paged-kvcache/proposal.md).
