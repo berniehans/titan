@@ -11,6 +11,13 @@ pub enum EngineError {
     #[error("Layer byte length {actual} exceeds maximum allowed size {expected}")]
     InvalidLayerSize { expected: usize, actual: usize },
 
+    /// A dequantizer is configured but the layer length is not a multiple of
+    /// the Q4_K_M super-block size (144 bytes).
+    #[error(
+        "Layer byte length {actual} is not a multiple of {block_bytes} required for Q4_K_M dequantization"
+    )]
+    LayerNotDequantAligned { block_bytes: usize, actual: usize },
+
     /// CUDA driver error from cudarc.
     #[error("CUDA driver error: {0}")]
     Driver(#[from] cudarc::driver::DriverError),
