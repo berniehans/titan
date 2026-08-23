@@ -1,3 +1,4 @@
+use cudarc::driver::sys::CUresult;
 use thiserror::Error;
 
 /// Errors that can occur during CUDA operations in `engine-cuda`.
@@ -17,15 +18,27 @@ pub enum CudaError {
 
     /// CUDA stream operation failed.
     #[error("CUDA stream operation failed in '{0}': {1:?}")]
-    StreamFailed(&'static str, cudarc::driver::sys::CUresult),
+    StreamFailed(&'static str, CUresult),
 
     /// CUDA memory copy failed.
     #[error("CUDA memory copy operation failed in '{0}': {1:?}")]
-    MemcpyFailed(&'static str, cudarc::driver::sys::CUresult),
+    MemcpyFailed(&'static str, CUresult),
 
     /// CUDA event operation failed.
     #[error("CUDA event operation failed in '{0}': {1:?}")]
-    EventFailed(&'static str, cudarc::driver::sys::CUresult),
+    EventFailed(&'static str, CUresult),
+
+    /// CUDA kernel compilation failed.
+    #[error("CUDA kernel compilation failed: {0}")]
+    KernelCompile(String),
+
+    /// CUDA kernel module load / symbol resolution failed.
+    #[error("CUDA kernel load failed in '{0}': {1:?}")]
+    KernelLoad(&'static str, CUresult),
+
+    /// CUDA kernel launch failed.
+    #[error("CUDA kernel launch failed in '{0}': {1:?}")]
+    KernelLaunch(&'static str, CUresult),
 
     /// Invalid memory transfer or buffer size.
     #[error("Invalid buffer size: expected <= {expected}, got {actual}")]
