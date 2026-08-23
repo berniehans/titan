@@ -35,6 +35,7 @@ name = "engine-cuda"
 version = "0.1.0"
 dependencies = [
  "cudarc",
+ "engine-kvcache",
  "thiserror",
 ]
 

@@ -114,6 +114,12 @@ impl PagedKvCache {
         self.block_table.len()
     }
 
+    /// Ordered physical block IDs backing `seq` (row of the block table).
+    /// Returns `None` for an unknown sequence id.
+    pub fn seq_block_table(&self, seq: usize) -> Option<&[u32]> {
+        self.block_table.get(seq).map(|v| v.as_slice())
+    }
+
     /// Creates a new sequence with its own block-table row. Returns its id.
     pub fn new_sequence(&mut self) -> usize {
         let id = self.block_table.len();
