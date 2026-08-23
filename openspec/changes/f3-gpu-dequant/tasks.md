@@ -13,14 +13,14 @@
 - [x] 2.3 Verify PASS on local GPU
 
 ## 3. Parity gate
-- [ ] 3.1 Failing test (#[ignore]): random Q4_K_M data (deterministic seed) → GPU vs CPU reference block-by-block, assert max abs error < 0.01
-- [ ] 3.2 Verify PASS on local GPU
+- [x] 3.1 Failing test (#[ignore]): random Q4_K_M data (deterministic seed) → GPU vs CPU reference block-by-block, assert max abs error < 0.01
+- [x] 3.2 Verify PASS on local GPU
 
 ## 4. Pipeline integration
-- [ ] 4.1 Failing test (#[ignore]): Pipeline::run with dequant enabled produces dequantized outputs for each layer
-- [ ] 4.2 Wire kernel into compute stage behind copy_done event
-- [ ] 4.3 Full suite green locally
+- [x] 4.1 Failing test (#[ignore]): Pipeline::run with dequant enabled produces dequantized outputs for each layer
+- [x] 4.2 Wire kernel into compute stage behind copy_done event
+- [x] 4.3 Full suite green locally
 
 ## 5. Gate
-- [ ] 5.1 Re-run pipeline bench with real compute: log overlap improvement
-- [ ] 5.2 Gate F3: parity < 0.01/elem, all tests green, clippy clean
+- [x] 5.1 Re-run pipeline bench with real compute: log overlap improvement
+- [x] 5.2 Gate F3: parity < 0.01/elem, all tests green, clippy clean

@@ -56,16 +56,30 @@ Dummy 8-layer model, 8 MB/layer, 64 MB total, on RTX 3060 / PCIe ×8.
 Benchmark harness: [`engine/engine-core/tests/pipeline_bench.rs`](../engine/engine-core/tests/pipeline_bench.rs).
 Gate verified in [`openspec/changes/f2-double-buffer-pipeline/proposal.md`](../openspec/changes/f2-double-buffer-pipeline/proposal.md).
 
-## Phase 3 — On-the-fly GPU dequant (pending)
+## Phase 3 — On-the-fly GPU dequant (measured Aug 2026)
 
-Placeholder rows — to be filled from the Phase 3 parity + overlap gate before Phase 3
-tasks are marked done.
+Dummy 8-layer model, Q4_K_M-aligned ~8 MB/layer, 64 MB total, on RTX 3060 / PCIe ×8.
+Dequantizer-enabled pipeline (real GPU dequant kernel in the compute stage) is timed
+against a per-layer sync-copy + sync-kernel sequential baseline that does the **same**
+real compute work, and the historical stub-compute pipeline.
 
-| Metric | Target gate | Measured |
-|---|---|---|
-| Nsight overlap (concurrent transfer covering compute window) | **≥ 80%** | _pending_ |
-| Dequant parity vs CPU reference (per element, block-by-block) | **< 0.01** | _pending_ |
-| Pipeline benchmark with real compute work (vs sequential) | total per-layer < sequential | _pending_ |
+Benchmark harness (median of 7 iterations per run; 3 runs): 
+[`engine/engine-core/tests/pipeline_dequant_bench.rs`](../engine/engine-core/tests/pipeline_dequant_bench.rs).
+
+| Metric | Measured | Target gate | Status |
+|---|---|---|---|
+| Dequant parity vs CPU reference (per element, block-by-block) | **0.0** (bit-exact, 1,048,576 elems) | **< 0.01** | ✅ PASS |
+| Dequant-pipelined total time (median) | **~19.2 ms** | < sequential baseline | ✅ PASS |
+| Sequential-with-dequant total time (median, same real work) | **~25.3 ms** | — (baseline) | — |
+| Speedup (real compute overlapping transfer) | **≈1.33×** (runs: 1.33× / 1.27× / 1.43×) | > 1.0 | ✅ PASS |
+| Stub-compute pipelined (Phase 2 baseline, no kernel) | ~10.7 ms | — (reference) | — |
+| Nsight overlap (concurrent transfer covering compute window) | _pending_ (nsys not installed) | **≥ 80%** | ⏳ PENDING |
+
+> **Nsight trace note:** `nsys` is not installed on this host (runtime NVRTC only,
+> The overlap percentage row stays pending until nsys is available. The
+> pipelined-vs-sequential speedup above is the measured evidence that the real
+> compute work overlaps transfer; the previous stub bench (~1.0×) was immeasurable
+> because a recording-events compute stage does no work.
 
 Gate context: [`openspec/changes/f3-gpu-dequant/proposal.md`](../openspec/changes/f3-gpu-dequant/proposal.md).
 

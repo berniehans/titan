@@ -15,7 +15,7 @@ Rust + CUDA LLM inference engine for GGUF models whose weights **do not fit in V
 | **Double-buffered pipeline** (ping-pong slots, event-gated compute, no CPU busy-wait) | ✅ 8-layer ordering test |
 | Benchmark: pipelined vs sequential | ✅ 10.43 ms < 10.77 ms on RTX 3060 |
 | Q4_K_M layout + CPU reference dequantizer | ✅ TDD |
-| GPU dequant kernel + parity gate (<0.01/elem), Nsight overlap trace | ⏳ Phase 3 |
+| GPU dequant kernel + parity gate (<0.01/elem, measured bit-exact 0.0) | ✅ done; Nsight overlap trace ⏳ pending |
 | KV cache, SSE server, batching | ⏳ later phases |
 
 **Test suite:** 20 CPU suites green in CI; 9+ GPU integration tests run locally (`#[ignore]`).
