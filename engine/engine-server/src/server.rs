@@ -1,14 +1,16 @@
-//! axum wiring: OpenAI-compatible completion route (task-1 skeleton).
+//! axum wiring: OpenAI-compatible completion route (task-2 milestone).
 //!
-//! Serves `POST /v1/completions` returning the OpenAI-compatible JSON shape
-//! (id, object, choices[0].text, usage) from a deterministic stub. A later
-//! milestone wires the real decode loop (session + batch scheduler).
+//! `build_completion` now runs the deterministic decode loop through the
+//! [`BatchScheduler`] backed by a fresh [`PagedKvCache`] per request. This
+//! replaces the task-1 placeholder token enumeration.
 
 use crate::models::{CompletionChoice, CompletionRequest, CompletionResponse, CompletionUsage};
+use crate::scheduler::BatchScheduler;
 use axum::Router;
 use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Json as JsonResponse, Response};
 use axum::routing::post;
+use engine_kvcache::PagedKvCacheConfig;
 use std::sync::Arc;
 
 /// Engine scalar configuration for the CPU reference path.
@@ -24,6 +26,15 @@ fn token_text(token: u32) -> String {
     format!(" token-{token}")
 }
 
+/// Deterministic stub prompt to starting token id.
+fn prompt_token(prompt: &str, vocab: u32) -> u32 {
+    let mut hash: u32 = 2166136261;
+    for byte in prompt.as_bytes() {
+        hash = (hash ^ (*byte as u32)).wrapping_mul(16777619);
+    }
+    hash.wrapping_rem(vocab) + 1
+}
+
 /// Deterministic request id for a prompt.
 fn completion_id(prompt: &str) -> String {
     let mut hash: u64 = 1469598103934665603;
@@ -33,18 +44,34 @@ fn completion_id(prompt: &str) -> String {
     format!("cmpl-{hash:x}")
 }
 
-/// Builds a completion response from the placeholder decode loop (task 1).
-///
-/// Deterministic stub producing exactly `max_tokens` tokens in [1, vocab) so
-/// the endpoint has a reproducible response shape before the batch scheduler
-/// lands.
+/// Runs one completion to completion on a fresh scheduler; returns the
+/// generated token sequence (excluding the prompt token).
+fn decode_tokens(vocab: u32, prompt: &str, max_tokens: u32) -> Vec<u32> {
+    let cfg = PagedKvCacheConfig {
+        n_blocks: 1,
+        block_tokens: max_tokens as usize + 1,
+        heads: 1,
+        head_dim: 1,
+    };
+    let mut scheduler = BatchScheduler::new(cfg).expect("kv pool");
+    scheduler
+        .add(vocab, prompt_token(prompt, vocab), max_tokens)
+        .expect("session");
+    let mut tokens = Vec::<u32>::with_capacity(max_tokens as usize);
+    while scheduler.active_count() > 0 {
+        tokens.extend(scheduler.advance());
+    }
+    tokens
+}
+
+/// Builds a non-streaming completion response via the scheduler decode loop.
 pub fn build_completion(cfg: Arc<KVConfig>, body: &CompletionRequest) -> CompletionResponse {
     let max_tokens = if body.max_tokens == 0 {
         cfg.default_max_tokens
     } else {
         body.max_tokens
     };
-    let tokens: Vec<u32> = (0..max_tokens).map(|i| (i % cfg.vocab) + 1).collect();
+    let tokens = decode_tokens(cfg.vocab, &body.prompt, max_tokens);
 
     let mut text = String::new();
     for t in &tokens {
@@ -74,6 +101,7 @@ async fn handle_completion(
     State(cfg): State<Arc<KVConfig>>,
     Json(body): Json<CompletionRequest>,
 ) -> Response {
+    // Task 2 scope: non-streaming JSON only; SSE lands in task 3.
     JsonResponse::<CompletionResponse>(build_completion(cfg, &body)).into_response()
 }
 

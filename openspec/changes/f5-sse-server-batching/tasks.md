@@ -8,9 +8,9 @@
 - [x] 1.3 Gates green
 
 ## 2. GenerationSession + batching (CPU-first)
-- [ ] 2.1 Failing tests: single session produces deterministic next-token stubs from (dequantized layer digest, token id) using PagedKvCache append/read each step; multi-session batch advances all sessions without head-of-line blocking; finished session exits cleanly
-- [ ] 2.2 Implement GenerationSession + BatchScheduler (continuous batching semantics)
-- [ ] 2.3 Gates green
+- [x] 2.1 Failing tests: single session produces deterministic next-token stubs from (dequantized layer digest, token id) using PagedKvCache append/read each step; multi-session batch advances all sessions without head-of-line blocking; finished session exits cleanly
+- [x] 2.2 Implement GenerationSession + BatchScheduler (continuous batching semantics)
+- [x] 2.3 Gates green
 
 ## 3. SSE streaming
 - [ ] 3.1 Failing tests: chunk framing `data: {json}\n\n`, first chunk role/content_shape, terminal `data: [DONE]\n\n`; client drop cancels session (KV blocks freed)
