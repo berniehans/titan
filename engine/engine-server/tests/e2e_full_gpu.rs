@@ -57,8 +57,7 @@ fn fixture_path() -> Option<PathBuf> {
 fn build_model(
     window_bytes: usize,
 ) -> Result<(SharedRealModel, GgufReader, LoadedPinned), DynError> {
-    let fixture =
-        fixture_path().ok_or("fixture not present (GPU E2E requires the GGUF)")?;
+    let fixture = fixture_path().ok_or("fixture not present (GPU E2E requires the GGUF)")?;
     let reader = GgufReader::open(&fixture)?;
     let pinned = load_to_pinned(&reader, &fixture)?;
     let _device = CudaDevice::new(0)?;
