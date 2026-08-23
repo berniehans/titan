@@ -50,6 +50,9 @@ dependencies = [
 [[package]]
 name = "engine-kvcache"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "libloading"
