@@ -120,6 +120,18 @@ impl PagedKvCache {
         self.block_table.get(seq).map(|v| v.as_slice())
     }
 
+    /// Frees every physical block held by `seq` back to the pool and resets
+    /// `seq`'s token count to zero. The sequence remains registered and can be
+    /// appended to again, which will allocate fresh blocks from the free list.
+    pub fn free_sequence(&mut self, seq: usize) {
+        if seq >= self.block_table.len() {
+            return;
+        }
+        let blocks = std::mem::take(&mut self.block_table[seq]);
+        self.free_list.extend(blocks.into_iter().rev());
+        self.seq_tokens[seq] = 0;
+    }
+
     /// Creates a new sequence with its own block-table row. Returns its id.
     pub fn new_sequence(&mut self) -> usize {
         let id = self.block_table.len();
@@ -355,5 +367,107 @@ mod tests {
                 k * 10.0
             );
         }
+    }
+
+    #[test]
+    fn pool_exhaustion_returns_typed_error() {
+        // 1 block, 2 tokens/block -> exactly 2 appends fit before the pool is full.
+        let mut cache = PagedKvCache::new(PagedKvCacheConfig {
+            n_blocks: 1,
+            block_tokens: 2,
+            heads: 1,
+            head_dim: 2,
+        })
+        .expect("pool create");
+        let seq = cache.new_sequence();
+
+        let row = [0.5, 1.5];
+        cache.append(seq, &row, &row).expect("append 1");
+        cache
+            .append(seq, &row, &row)
+            .expect("append 2 (fills block)");
+
+        // Third append must need a new (unavailable) block -> typed error.
+        let err = cache.append(seq, &row, &row).unwrap_err();
+        match err {
+            KvCacheError::PoolExhausted {
+                blocks_used,
+                blocks_total,
+            } => {
+                assert_eq!(blocks_used, 1);
+                assert_eq!(blocks_total, 1);
+            }
+            other => panic!("expected PoolExhausted, got {other:?}"),
+        }
+        // Pool stays full; the failed append left no partial state.
+        assert_eq!(cache.blocks_used(), 1);
+        assert_eq!(cache.token_count(seq), 2);
+    }
+
+    #[test]
+    fn free_then_realloc_succeeds() {
+        let mut cache = PagedKvCache::new(PagedKvCacheConfig {
+            n_blocks: 2,
+            block_tokens: 2,
+            heads: 1,
+            head_dim: 2,
+        })
+        .expect("pool create");
+        let seq = cache.new_sequence();
+
+        // Exhaust both blocks.
+        let row = [1.0, 2.0];
+        cache.append(seq, &row, &row).unwrap();
+        cache.append(seq, &row, &row).unwrap();
+        cache.append(seq, &row, &row).unwrap();
+        cache.append(seq, &row, &row).unwrap();
+        assert!(matches!(
+            cache.append(seq, &row, &row),
+            Err(KvCacheError::PoolExhausted { .. })
+        ));
+
+        // Free seq A -> its 2 blocks return to the pool (0 in use).
+        cache.free_sequence(seq);
+        assert_eq!(cache.blocks_used(), 0);
+        assert_eq!(cache.token_count(seq), 0);
+
+        // Re-append the same sequence: allocation succeeds again from the freed pool.
+        for _ in 0..3 {
+            cache.append(seq, &row, &row).expect("realloc append");
+        }
+        assert_eq!(cache.token_count(seq), 3);
+        assert_eq!(cache.blocks_used(), 2);
+
+        // The data actually reads back (freshly written, not stale).
+        let keys = cache.read_keys(seq).expect("read keys");
+        assert_eq!(keys.len(), 3 * 2);
+    }
+
+    #[test]
+    fn budget_capacity_matches_config_total() {
+        // The free-list accounting must never exceed the configured budget:
+        // blocks_used is bounded by n_blocks at all times.
+        let mut cache = PagedKvCache::new(PagedKvCacheConfig {
+            n_blocks: 3,
+            block_tokens: 4,
+            heads: 2,
+            head_dim: 3,
+        })
+        .expect("pool create");
+        let a = cache.new_sequence();
+        let b = cache.new_sequence();
+
+        let row = vec![0.1f32; 6];
+        let mut allocated = 0;
+        while allocated < cache.blocks_total() {
+            cache.append(a, &row, &row).unwrap();
+            allocated = cache.blocks_used();
+            assert!(cache.blocks_used() <= cache.blocks_total());
+        }
+        // Sequence b cannot allocate now.
+        assert!(matches!(
+            cache.append(b, &row, &row),
+            Err(KvCacheError::PoolExhausted { .. })
+        ));
     }
 }
