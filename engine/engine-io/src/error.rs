@@ -35,6 +35,11 @@ pub enum GgufError {
     #[error("Unexpected EOF while parsing {0}")]
     UnexpectedEof(&'static str),
 
+    /// A metadata structure (string, array, or count) declares a length that
+    /// exceeds the safe bound; rejecting it avoids an unbounded allocation.
+    #[error("Declared {what} length ({len}) exceeds the safe bound")]
+    MetadataTooLarge { what: &'static str, len: u64 },
+
     /// Invalid alignment value.
     #[error("Invalid alignment: {0}")]
     InvalidAlignment(u64),

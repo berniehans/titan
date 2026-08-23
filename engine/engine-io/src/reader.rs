@@ -10,6 +10,11 @@ use crate::types::{GgmlType, GgufHeader, GgufType, GgufValue, TensorInfo};
 /// Upper bound for GGUF string lengths (keys, tensor names, metadata strings).
 /// Real-world values are far below this; anything larger indicates corruption.
 const MAX_STRING_LEN: u64 = 64 * 1024 * 1024;
+/// Upper bound for the number of items in a single metadata array.
+const MAX_ARRAY_ITEMS: u64 = 1 << 22;
+/// Upper bound for top-level counts (KV entries, tensor infos) and per-tensor
+/// dimension counts declared in the header.
+const MAX_STRUCT_COUNT: u64 = 1 << 24;
 
 /// Reader and parser for GGUF model files.
 #[derive(Debug, Clone)]
@@ -43,9 +48,11 @@ impl GgufReader {
 
         // 3. Tensor count (int64/uint64)
         let tensor_count = read_u64(&mut reader)?;
+        ensure_bounded(tensor_count, MAX_STRUCT_COUNT, "tensor count")?;
 
         // 4. Metadata KV count (int64/uint64)
         let metadata_kv_count = read_u64(&mut reader)?;
+        ensure_bounded(metadata_kv_count, MAX_STRUCT_COUNT, "metadata KV count")?;
 
         let header = GgufHeader {
             magic: "GGUF".to_string(),
@@ -69,6 +76,7 @@ impl GgufReader {
         for _ in 0..tensor_count {
             let name = read_string(&mut reader)?;
             let n_dims = read_u32(&mut reader)?;
+            ensure_bounded(n_dims as u64, MAX_STRUCT_COUNT, "tensor dims")?;
             let mut dims = Vec::with_capacity(n_dims as usize);
             for _ in 0..n_dims {
                 dims.push(read_u64(&mut reader)?);
@@ -278,7 +286,10 @@ fn read_string<R: Read>(reader: &mut R) -> Result<String, GgufError> {
     // huge allocation before EOF is detected. Real GGUF string values (keys,
     // names, metadata) are far below this bound.
     if len > MAX_STRING_LEN {
-        return Err(GgufError::UnexpectedEof("string bytes"));
+        return Err(GgufError::MetadataTooLarge {
+            what: "string",
+            len,
+        });
     }
     let mut buf = vec![0u8; len as usize];
     reader.read_exact(&mut buf).map_err(|e| {
@@ -309,6 +320,7 @@ fn read_value<R: Read>(reader: &mut R, value_type: GgufType) -> Result<GgufValue
             let elem_type_raw = read_u32(reader)?;
             let elem_type = GgufType::try_from(elem_type_raw)?;
             let count = read_u64(reader)?;
+            ensure_bounded(count, MAX_ARRAY_ITEMS, "array")?;
             let mut items = Vec::with_capacity(count as usize);
             for _ in 0..count {
                 items.push(read_value(reader, elem_type)?);
@@ -316,4 +328,13 @@ fn read_value<R: Read>(reader: &mut R, value_type: GgufType) -> Result<GgufValue
             Ok(GgufValue::Array(items))
         }
     }
+}
+
+/// Rejects a declared length/count that exceeds `limit` before the caller can
+/// use it to size an allocation. Returns a bounded error; never panics.
+fn ensure_bounded(count: u64, limit: u64, what: &'static str) -> Result<(), GgufError> {
+    if count > limit {
+        return Err(GgufError::MetadataTooLarge { what, len: count });
+    }
+    Ok(())
 }
