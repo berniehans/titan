@@ -118,9 +118,9 @@ pub fn forward_digest(model: &RealModel) -> Result<u64, EngineError> {
     let n_bytes = last_floats * std::mem::size_of::<f32>();
     let mut raw = vec![0u8; n_bytes];
     out.copy_to_host(model.pipeline.transfer_stream(), &mut raw)?;
-    let floats: Vec<f32> = raw
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    let floats: Vec<f32> = (0..(raw.len() - 3))
+        .step_by(4)
+        .map(|i| f32::from_le_bytes([raw[i], raw[i + 1], raw[i + 2], raw[i + 3]]))
         .collect();
     Ok(digest_floats(floats.as_slice()))
 }

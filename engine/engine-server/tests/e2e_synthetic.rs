@@ -20,6 +20,7 @@ use std::sync::Arc;
 /// Spawns a real axum server on an ephemeral 127.0.0.1 port inside `rt` and
 /// returns a client + base URL. The server task outlives this fn because the
 /// shared runtime is held by the test.
+#[expect(dead_code)]
 fn spawn(cfg: Arc<KVConfig>, base: &str) -> Client {
     let (client, _) = build_base(cfg, base);
     client
@@ -91,7 +92,6 @@ fn e2e_two_concurrent_sse_sessions_per_session_correct() {
     // session must come back with its own correct, deterministic token stream.
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let (a, b, a_solo) = rt.block_on(async {
-        let client = Client::new();
         let handle_a = tokio::spawn(collect_stream(
             Client::new(),
             base.clone(),

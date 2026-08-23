@@ -35,7 +35,7 @@ const SESSIONS: usize = 64;
 const TOKENS_PER_SESSION: usize = 512;
 
 /// Median of a sorted sample (in-place).
-fn median_ms(sorted_ms: &mut Vec<f64>) -> f64 {
+fn median_ms(sorted_ms: &mut [f64]) -> f64 {
     sorted_ms.sort_by(|a, b| a.partial_cmp(b).expect("f64 cmp"));
     sorted_ms[sorted_ms.len() / 2]
 }
