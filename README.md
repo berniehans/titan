@@ -2,7 +2,7 @@
 
 Rust + CUDA LLM inference engine for GGUF models whose weights **do not fit in VRAM**: tensors live in pinned RAM (NVMe → host once) and stream layer-by-layer to the GPU through a double-buffered pipeline.
 
-## Current state — Phase 0-2 done, Phase 3 in progress
+## Current state — Phase 0-4 done, Phase 5 (batching) next
 
 | Component | Status |
 |---|---|
@@ -16,6 +16,7 @@ Rust + CUDA LLM inference engine for GGUF models whose weights **do not fit in V
 | Benchmark: pipelined vs sequential | ✅ 10.43 ms < 10.77 ms on RTX 3060 |
 | Q4_K_M layout + CPU reference dequantizer | ✅ TDD |
 | GPU dequant kernel + parity gate (<0.01/elem, measured bit-exact 0.0) | ✅ done; Nsight overlap trace ⏳ pending |
+| **Resident KV cache + PagedAttention** (paged block pool, block-table indirection, GPU append/gather; parity 0.0/elem) | ✅ done (engine-kvcache + engine-cuda) |
 | KV cache, SSE server, batching | ⏳ later phases |
 
 **Test suite:** 20 CPU suites green in CI; 9+ GPU integration tests run locally (`#[ignore]`).

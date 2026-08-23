@@ -83,6 +83,26 @@ Benchmark harness (median of 7 iterations per run; 3 runs):
 
 Gate context: [`openspec/changes/f3-gpu-dequant/proposal.md`](../openspec/changes/f3-gpu-dequant/proposal.md).
 
+## Phase 4 — Resident KV cache + PagedAttention (measured Aug 2026)
+
+CPU reference (`engine-kvcache`) and GPU kernels (`append_kv` + paged-read gather,
+NVRTC) implemented TDD first, then parity-gated against the CPU reference.
+Verified on RTX 3060 Laptop / PCIe ×8.
+
+| Metric | Measured | Target gate | Status |
+|---|---|---|---|
+| GPU-vs-CPU parity (seeded xorshift, block-by-block) | **0.0** (bit-exact, 22 tokens across 4 scattered phys blocks) | **< 0.01/elem** | ✅ PASS |
+| Paged append/read throughput | **N/A — correctness-only phase** (parity result noted above) | n/a | — |
+
+> Throughput note: the parity gate is a correctness check on a tiny workload
+> (22 tokens, single kernel launch), not a sealed throughput harness. A
+> representative append/read bandwidth measurement needs a large-workload KV bench
+> plus a realistic attention workload, which lands in Phase 5. The Phase 4
+> contribution measured is bit-exact parity (0.0/elem), above.
+
+Benchmark harness: [`engine/engine-cuda/tests/paged_kv_parity.rs`](../engine/engine-cuda/tests/paged_kv_parity.rs).
+Gate context: [`openspec/changes/f4-paged-kvcache/proposal.md`](../openspec/changes/f4-paged-kvcache/proposal.md).
+
 ## Later phases — Predictable throughput at scale (target)
 
 Dense 14B Q4_K_M (~8.5 GB resident in RAM), PCIe ×8, RTX 3060.
