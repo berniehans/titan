@@ -59,17 +59,28 @@ fn ggml_to_bank(t: GgmlType) -> Option<TensorType> {
 }
 
 fn bank_tensor<'a>(read: &GgufReader, pinned: &'a LoadedPinned, name: &str) -> Tensor<'a> {
-    let info = read.get_tensor(name).unwrap_or_else(|| panic!("missing {name}"));
+    let info = read
+        .get_tensor(name)
+        .unwrap_or_else(|| panic!("missing {name}"));
     assert_eq!(info.dims.len(), 2, "{name} not 2-D");
-    let ty = ggml_to_bank(info.ggml_type)
-        .unwrap_or_else(|| panic!("unsupported quant for {name}"));
-    let data = pinned.tensor(name).unwrap_or_else(|| panic!("{name} bytes"));
-    Tensor { ty, data, ne0: info.dims[0] as usize, ne1: info.dims[1] as usize, n_rot: 0 }
+    let ty = ggml_to_bank(info.ggml_type).unwrap_or_else(|| panic!("unsupported quant for {name}"));
+    let data = pinned
+        .tensor(name)
+        .unwrap_or_else(|| panic!("{name} bytes"));
+    Tensor {
+        ty,
+        data,
+        ne0: info.dims[0] as usize,
+        ne1: info.dims[1] as usize,
+        n_rot: 0,
+    }
 }
 
 /// F32 1-D norm weights as a `Vec<f32>`.
 fn f32_norm(pinned: &LoadedPinned, name: &str) -> Vec<f32> {
-    let b = pinned.tensor(name).unwrap_or_else(|| panic!("{name} bytes"));
+    let b = pinned
+        .tensor(name)
+        .unwrap_or_else(|| panic!("{name} bytes"));
     b.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
@@ -178,7 +189,9 @@ fn rel_l2(a: &[f32], b: &[f32]) -> f64 {
 /// RED gate test. Runs the real block and asserts the 6.6 gate against the
 /// golden. **Expected to fail on the rel-L2 leg** — pinned so a future i8-dot
 /// engine (or a re-baselined bound) can flip it to green with evidence.
+/// `#[ignore]` like every real-fixture test in this repo; run with `-- --ignored`.
 #[test]
+#[ignore] // requires the real Qwen3 fixture (gitignored testdata)
 fn single_layer_golden_gate_cpu_reference() {
     let Some(fixture) = get_fixture_path() else {
         eprintln!("SKIP: real fixture not present; cannot run layer-0 gate");
@@ -203,7 +216,9 @@ fn single_layer_golden_gate_cpu_reference() {
     let kn = f32_norm(&pinned, "blk.0.attn_k_norm.weight");
     let fn_ = f32_norm(&pinned, "blk.0.ffn_norm.weight");
 
-    let h2 = block_cpu(&x, &cfg, &an, &qn, &kn, &fn_, &wq, &wk, &wv, &wo, &wgate, &wup, &wdown);
+    let h2 = block_cpu(
+        &x, &cfg, &an, &qn, &kn, &fn_, &wq, &wk, &wv, &wo, &wgate, &wup, &wdown,
+    );
     assert_eq!(h2.len(), cfg.hidden_size as usize, "block output width");
 
     let got: Vec<f32> = GOLD_IDX.iter().map(|&i| h2[i]).collect();

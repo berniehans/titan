@@ -141,7 +141,11 @@ pub fn dequant_col(ty: TensorType, data: &[u8], ne0: usize) -> Vec<f32> {
 /// across `ne0` elements — so a single-token embedding is a row-lookup on the
 /// (often quantized, e.g. Q6_K) table, not a matmul.
 pub fn embed_lookup(t: &Tensor, token: usize) -> Vec<f32> {
-    assert!(token < t.ne1, "token {token} out of embedding rows {}", t.ne1);
+    assert!(
+        token < t.ne1,
+        "token {token} out of embedding rows {}",
+        t.ne1
+    );
     let cb = match t.ty {
         TensorType::F32 => t.ne0 * 4,
         TensorType::F16 => t.ne0 * 2,

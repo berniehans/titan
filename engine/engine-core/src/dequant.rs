@@ -86,6 +86,7 @@ pub fn dequant_q4k_cpu(src: &[u8]) -> Vec<f32> {
 /// Dequant (llama.cpp `dequantize_row_q6_K`): each 32-element lane relates to
 /// `n` (0 or 128) and `l`; `qN = ((ql nibble) | ((qh bits)&3)<<4) - 32`; the
 /// value is `y = d * scales[k] * q` (left-to-right fp32 multiplications).
+#[allow(clippy::identity_op)] // >0 shifts kept explicit to mirror llama.cpp's 4-lane unpack
 pub fn dequant_q6k_cpu(src: &[u8]) -> Vec<f32> {
     assert_eq!(src.len(), 210, "Q6_K block dequant expects 210 bytes");
     let d = f16_to_f32(u16::from_le_bytes([src[208], src[209]]));
@@ -101,9 +102,8 @@ pub fn dequant_q6k_cpu(src: &[u8]) -> Vec<f32> {
     for _half in 0..2 {
         for l in 0..32 {
             let is = l / 16;
-            let q1 = (((ql[ql_off + l] & 0x0F) as i32)
-                | ((qh[qh_off + l] as i32 >> 0) & 3) << 4)
-                - 32;
+            let q1 =
+                (((ql[ql_off + l] & 0x0F) as i32) | ((qh[qh_off + l] as i32 >> 0) & 3) << 4) - 32;
             let q2 = (((ql[ql_off + l + 32] & 0x0F) as i32)
                 | ((qh[qh_off + l] as i32 >> 2) & 3) << 4)
                 - 32;
@@ -160,8 +160,14 @@ mod q6k_sanity {
         let r = dequant_q6k_cpu(&b);
         // Independent expectation (fp16 d=0x016f, int8 scales, q=-32..):
         let want = [
-            -1.6406178474e-03, -1.4765560627e-02, 1.9687414169e-02, -3.2812356949e-03,
-            1.3124942780e-02, -2.6249885559e-02, 1.4765560627e-02, 5.2499771118e-02,
+            -1.640_617_8e-3,
+            -1.476_556_1e-2,
+            1.968_741_4e-2,
+            -3.281_235_7e-3,
+            1.312_494_3e-2,
+            -2.624_988_6e-2,
+            1.476_556_1e-2,
+            5.249_977e-2,
         ];
         for (a, e) in r[..8].iter().zip(want.iter()) {
             assert!((a - e).abs() < 2e-7, "q6 elem mismatch: {a} vs {e}");
