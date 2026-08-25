@@ -1,0 +1,20 @@
+[project]
+name = "tools"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Bernie Benitez", email = "95459612+berniehans@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "gguf>=0.19.0",
+    "huggingface-hub>=1.28.0",
+]
+
+[project.scripts]
+tools = "tools:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"

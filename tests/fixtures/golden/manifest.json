@@ -1,0 +1,31 @@
+{
+ "schema": 1,
+ "data": [
+  {
+   "name": "metadata.json",
+   "kind": "config",
+   "size": 6395063,
+   "sha256": "d971bde74d273af88d10a3b2494fa5f8da297b2568400d6fcf834d47fcd2703f"
+  },
+  {
+   "name": "logits/*.bin",
+   "kind": "logits-zlib",
+   "count": 0,
+   "compressed_bytes": 0
+  },
+  {
+   "name": "activations/activations.json",
+   "kind": "activations",
+   "size": 503,
+   "sha256": "2dffd19d7607aa80d819bd2f6d1806eaad609651e2ecfbfabca2db2b8ef4ab4d"
+  }
+ ],
+ "params": {
+  "temp": 0,
+  "seed": 42,
+  "no_warmup": true,
+  "add_bos": false
+ },
+ "reference": "llama.cpp cb1adf8",
+ "prompts": []
+}
