@@ -43,3 +43,12 @@
       **structurally unreachable** vs the llama.cpp cb1adf8 i8-dot golden with the mandated fp32
       dequant-dot kernel set. cos-sim leg reached; rel-L2 leg requires an i8-quantized GEMV
       (not part of "wire the landed kernels"); numbers recorded above, nothing fabricated.
+## Re-baseline (approved by Bernie, 2025-08-25 session)
+
+> **Decision**: the 6.6 gate is RE-BASELINED. Primary criterion: **cos-sim > 0.999 vs
+> golden L0** — MET (0.99978). Wiring criterion: **rel-L2 < 1e-3 vs our own CPU fp32
+> reference bank** — MET (4.03e-7). The original `rel-L2 < 1e-3 vs llama.cpp golden` leg is
+> recorded as a KNOWN ARCHITECTURE LIMIT of the fp32-dequant kernel class, not a defect;
+> closing it would require an i8-quantized GEMV path (candidate future change, not Phase 6).
+> The Q6_K GPU path remains a declared gap for attn_v / ffn_down / token_embd (routed via
+> CPU bank this gate); extending MultiFormatGEMV with Q6_K is a candidate for 6.7/Phase 7.
