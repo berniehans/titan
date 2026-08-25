@@ -18,3 +18,6 @@ testdata/.cache/
 engine/f2_trace.nsys-rep
 engine/f2_trace.sqlite
 engine/f2_trace_*.csv
+
+# local working artifacts (bot session plans, traces, scratch) — never pushed
+local-artifacts/
