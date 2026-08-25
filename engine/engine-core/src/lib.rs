@@ -1,5 +1,6 @@
 pub mod dequant;
 pub mod error;
+pub mod forward_cpu;
 pub mod pipeline;
 pub mod tokenizer;
 
