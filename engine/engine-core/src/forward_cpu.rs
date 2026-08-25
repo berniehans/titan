@@ -165,9 +165,23 @@ pub fn rms_norm(x: &[f32], w: &[f32], eps: f32) -> Vec<f32> {
     x.iter().zip(w).map(|(&xi, &wi)| xi * scale * wi).collect()
 }
 
+/// RMSNorm over elementwise sum `(x[i] + residual[i])`, scaled by `w`.
+pub fn rms_norm_residual(x: &[f32], residual: &[f32], w: &[f32], eps: f32) -> Vec<f32> {
+    assert_eq!(x.len(), residual.len());
+    let sum_x: Vec<f32> = x.iter().zip(residual).map(|(&xi, &ri)| xi + ri).collect();
+    rms_norm(&sum_x, w, eps)
+}
+
 /// SwiGLU gated activation: `silu(x) = x / (1 + exp(-x))`.
 pub fn silu(x: &[f32]) -> Vec<f32> {
     x.iter().map(|&v| v / (1.0 + (-v).exp())).collect()
+}
+
+/// SwiGLU gating: `y[i] = silu(gate[i]) * up[i]`.
+pub fn swiglu(gate: &[f32], up: &[f32]) -> Vec<f32> {
+    assert_eq!(gate.len(), up.len());
+    let g = silu(gate);
+    g.iter().zip(up).map(|(&gi, &ui)| gi * ui).collect()
 }
 
 /// Qwen3 NeoX **partial** rotary position embedding (per ggml `rope_yarn`).
@@ -190,6 +204,26 @@ pub fn rope_neox_partial(x: &[f32], pos: u32, n_dims: usize, freq_base: f32) -> 
         y[k + half] = x0 * s + x1 * c;
     }
     y
+}
+
+/// CPU fused twin for the norm/rope/swiglu pipeline:
+/// (a) `y = rms_norm_residual(x, residual, w, eps)`;
+/// (b) `y = rope_neox_partial(&y, pos, n_dims, freq_base)`;
+/// (c) `swiglu(&y, up)`.
+#[allow(clippy::too_many_arguments)]
+pub fn fused_norm_rope_swiglu(
+    x: &[f32],
+    residual: &[f32],
+    w: &[f32],
+    eps: f32,
+    pos: u32,
+    n_dims: usize,
+    freq_base: f32,
+    up: &[f32],
+) -> Vec<f32> {
+    let y = rms_norm_residual(x, residual, w, eps);
+    let y = rope_neox_partial(&y, pos, n_dims, freq_base);
+    swiglu(&y, up)
 }
 
 /// Latent dot product between two vectors in fp64 (attention score).

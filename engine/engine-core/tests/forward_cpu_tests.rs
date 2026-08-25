@@ -7,7 +7,8 @@
 //! explicitly.
 
 use engine_core::forward_cpu::{
-    Tensor, TensorType, dequant_col, matmul, rms_norm, rope_neox_partial, silu,
+    dequant_col, fused_norm_rope_swiglu, matmul, rms_norm, rms_norm_residual, rope_neox_partial,
+    silu, swiglu, Tensor, TensorType,
 };
 
 fn f32_eq(a: f32, b: f32, tol: f32) -> bool {
@@ -159,3 +160,143 @@ fn silu_hand_computed() {
         5e-7
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 6.4 CPU reference twins & fused pipeline tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_rms_norm_residual_hand_computed() {
+    let x = [3.0f32, 4.0f32];
+    let residual = [1.0f32, -1.0f32];
+    let w = [1.0f32, 2.0f32];
+    let eps = 1e-5f32;
+
+    // Independent reference (f64): sum of squares of (x[i] + res[i]) in double
+    let x_res0 = x[0] as f64 + residual[0] as f64; // 4.0
+    let x_res1 = x[1] as f64 + residual[1] as f64; // 3.0
+    let s = x_res0 * x_res0 + x_res1 * x_res1; // 25.0
+    let mean = (s / 2.0) as f32; // 12.5
+    let scale = 1.0f32 / (mean + eps).sqrt();
+    let expected0 = (x_res0 as f32) * scale * w[0];
+    let expected1 = (x_res1 as f32) * scale * w[1];
+
+    let y = rms_norm_residual(&x, &residual, &w, eps);
+    assert!(f32_eq(y[0], expected0, 1e-6), "y0 {} vs {}", y[0], expected0);
+    assert!(f32_eq(y[1], expected1, 1e-6), "y1 {} vs {}", y[1], expected1);
+
+    // Residual actually participates (differs from plain rms_norm of x)
+    let plain = rms_norm(&x, &w, eps);
+    assert!(
+        (y[0] - plain[0]).abs() > 1e-3 || (y[1] - plain[1]).abs() > 1e-3,
+        "residual must actively participate and differ from plain rms_norm"
+    );
+}
+
+#[test]
+fn test_rope_inplace_via_fused_hand_computed() {
+    let n = 16;
+    let n_dims = 8;
+    let base = 10000.0f32;
+    let pos = 3u32;
+
+    let buf: Vec<f32> = (0..n).map(|i| (i as f32 + 1.0) * 0.5).collect();
+
+    // Hand-computed reference in f64 for rotary section:
+    let mut rot = buf.clone();
+    for k in 0..4 {
+        let theta = pos as f64 * (base as f64).powf(-2.0 * k as f64 / 8.0);
+        let c = theta.cos() as f32;
+        let s = theta.sin() as f32;
+        let x0 = buf[k];
+        let x1 = buf[k + 4];
+        rot[k] = x0 * c - x1 * s;
+        rot[k + 4] = x0 * s + x1 * c;
+    }
+    // indices >= 8 unchanged
+
+    let residual = vec![0.0f32; n];
+    let eps = 1e-5f32;
+    let ss: f64 = buf.iter().map(|&v| (v * v) as f64).sum();
+    let scale = (1.0f64 / (ss / n as f64 + eps as f64).sqrt()) as f32;
+    // Scale w and up to cancel out norm and swiglu so rotary section is isolated
+    let w: Vec<f32> = vec![1.0 / scale; n];
+    let up: Vec<f32> = rot.iter().map(|&r| 1.0 + (-r).exp()).collect();
+
+    let y = fused_norm_rope_swiglu(&buf, &residual, &w, eps, pos, n_dims, base, &up);
+
+    // Assert each of the 8 affected within 1e-5
+    for k in 0..8 {
+        assert!(
+            f32_eq(y[k], rot[k], 1e-5),
+            "affected element {k}: y {} vs rot {}",
+            y[k],
+            rot[k]
+        );
+    }
+    // Assert each of the 8 untouched within 1e-5
+    for k in 8..16 {
+        assert!(
+            f32_eq(y[k], buf[k], 1e-5),
+            "untouched element {k}: y {} vs buf {}",
+            y[k],
+            buf[k]
+        );
+    }
+}
+
+#[test]
+fn test_swiglu_hand_computed() {
+    let gate = [0.0f32, 1.0f32, 2.0f32, -0.5f32];
+    let up = [2.0f32, 3.0f32, 4.0f32, 5.0f32];
+
+    let mut expected = [0.0f32; 4];
+    for i in 0..4 {
+        let v = gate[i] as f64;
+        let silu_v = v / (1.0 + (-v).exp());
+        expected[i] = (silu_v * up[i] as f64) as f32;
+    }
+
+    let y = swiglu(&gate, &up);
+    assert_eq!(y.len(), 4);
+    for i in 0..4 {
+        assert!(
+            f32_eq(y[i], expected[i], 1e-5),
+            "element {i}: y {} vs expected {}",
+            y[i],
+            expected[i]
+        );
+    }
+}
+
+#[test]
+fn test_fused_matches_composed_twins() {
+    let n = 32;
+    let x: Vec<f32> = (0..n).map(|i| (i as f32) * 0.13 - 3.0).collect();
+    let residual: Vec<f32> = (0..n).map(|i| ((i * 7 % 5) as f32) * 0.5).collect();
+    let w: Vec<f32> = (0..n).map(|i| 0.5 + (i as f32) * 0.05).collect();
+    let up: Vec<f32> = (0..n).map(|i| 1.2 - (i as f32) * 0.02).collect();
+    let eps = 1e-5f32;
+    let pos = 5u32;
+    let n_dims = 16usize;
+    let freq_base = 500000.0f32;
+
+    // Explicit composition:
+    let y_norm = rms_norm_residual(&x, &residual, &w, eps);
+    let y_rot = rope_neox_partial(&y_norm, pos, n_dims, freq_base);
+    let composed = swiglu(&y_rot, &up);
+
+    // Fused twin:
+    let fused = fused_norm_rope_swiglu(&x, &residual, &w, eps, pos, n_dims, freq_base, &up);
+
+    assert_eq!(fused.len(), n);
+    for i in 0..n {
+        assert!(
+            f32_eq(fused[i], composed[i], 1e-5),
+            "element {i}: fused {} vs composed {}",
+            fused[i],
+            composed[i]
+        );
+    }
+}
+
