@@ -385,6 +385,8 @@ pub struct LayerParams {
 /// than transliterated from CUDA kernels, serving as an independent numerical authority
 /// that GPU kernel parity validates against. Supports GQA head grouping and causal masking.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_range_loop)]
+#[allow(clippy::manual_is_multiple_of)]
 pub fn sdpa_decode(
     pool: &[f32],
     block_table: &[u32],

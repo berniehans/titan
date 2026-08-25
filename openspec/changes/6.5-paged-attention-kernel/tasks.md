@@ -21,5 +21,5 @@
 - [x] 3.3 Record numbers (cos-sim, max seq, budget); verify PASS — cos-sim=0.99999999999956 (cfg A, min over 1..2048), cos-sim=0.99999999999964 (cfg B, min over 1..1024); max seq=2048; zero runtime cudaMalloc (live allocs before=4 after=4); verified PASS on local RTX 3060.
 
 ## 4. Gate
-- [ ] 4.1 Full suite green (CPU + GPU `--ignored`, clippy -D warnings)
-- [ ] 4.2 Gate sealed: parity ≥ 0.9999 across scattered 1–2048, no cudaMalloc at runtime
+- [x] 4.1 Full suite green (CPU + GPU `--ignored`, clippy -D warnings)
+- [x] 4.2 Gate sealed: parity ≥ 0.9999 across scattered 1–2048, no cudaMalloc at runtime — REAL: cos-sim=0.99999999999956 (cfg A 1..2048) & 0.99999999999964 (cfg B 1..1024); zero runtime cudaMalloc (live allocs before=4 after=4); fmt --check clean; clippy --workspace --all-targets -- -D warnings clean (exit 0, 0 errors); CPU suite 80 passed 0 failed; GPU --ignored single-threaded 34 passed 0 failed.

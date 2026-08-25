@@ -14,7 +14,7 @@ use engine_core::forward_cpu::sdpa_decode;
 use engine_cuda::{CudaError, CudaStream, DeviceBuffer, PagedAttention};
 use std::sync::Arc;
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn build_case(
     device: &Arc<CudaDevice>,
     stream: &CudaStream,

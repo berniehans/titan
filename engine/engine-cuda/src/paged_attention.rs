@@ -132,7 +132,7 @@ impl PagedAttention {
                 actual: n_head_kv,
             });
         }
-        if n_head % n_head_kv != 0 {
+        if !n_head.is_multiple_of(n_head_kv) {
             return Err(CudaError::InvalidSize {
                 expected: n_head_kv,
                 actual: n_head % n_head_kv,
