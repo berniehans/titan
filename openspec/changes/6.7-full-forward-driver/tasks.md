@@ -16,10 +16,10 @@
 > **RoPE root cause fixed (was a real bug):** Qwen3 NeoX-Partial RoPE rotates the **full head dim (n_rot = head_dim = 128)**, NOT head_dim/2=64 as the earlier design assumed. With n_rot=64, positional rotation at pos≥1 collapsed cos-sim vs golden to 0.577 (prompt 01); with n_rot=128 it recovers to 0.9986 and the whole set to the ≥0.99 class. Documented in `forward_driver.rs` / `forward_cpu.rs`.
 
 ## 2. Single-token decode entry point
-- [ ] 2.1 Failing test: `run_decode` (one token) reuses resident KV and emits next-token logits
-- [ ] 2.2 Implement decode: single-topology step (GEMV+attn+norm+swiglu+down+logits)
-- [ ] 2.3 Failing test: ≥10 teacher-forced tokens cumulative logits drift within tolerance vs golden (checkpoint at each token)
-- [ ] 2.4 Record drift curve; verify PASS
+- [x] 2.1 Single-token decode reusing resident KV emits next-token logits: dec-vs-CPU-fp32 **cos=1.000000 / max rel-L2 6.319e-6** (gate rel-L2<1e-3), and dec == full prefill **bit-identical (rel-L2=0, cos=1.0)** across all 12 prompts. Test: `engine-core/tests/decode_drift_gate.rs` (`decode_reuses_resident_kv_and_emits_logits`).
+- [x] 2.2 Implement `ForwardDriver` struct and `decode`/`step_one` single-topology step over resident KV; `run_prefill` re-wrapped over the same struct (working path byte-identical, rel-L2=0), `n_rot=head_dim`=128 kept.
+- [x] 2.3 Teacher-forced drift curve: **85 checkpoints** (gate >=10) across 12 prompts, prefill=1 token + sequential `decode` reusing resident KV; per-step vs own CPU fp32 reference: min cos=**1.000000**, max rel-L2=**1.044e-5** (gate <1e-3). Per-prompt full drift table recorded in the test's printed output (real NVRTC GPU run, release). Test: `teacher_forced_drift_curve_10_checkpoints`. Drift mapping declared in test doc-comment: goldens pin only final positions; per-step drift is measured against the model's own CPU fp32 reference, and final-position decode cos vs llama.cpp golden matches the group-1 class gap (min 0.991370).
+- [x] 2.4 PASS: both group-2 GPU tests green local (RTX 3060, `cargo test --release --test decode_drift_gate -- --ignored --test-threads=1` → 2 passed).
 
 ## 3. VRAM guards + additive safety
 - [ ] 3.1 Failing test: per-kernel declared worst-case asserted ≤ budget (resident pingpong + kv_pool + activations + logits ≤ 5.2 GB)
