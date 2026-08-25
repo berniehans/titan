@@ -3,9 +3,9 @@
 > Execute via bot coder (`hermes -p coder`). Strict TDD. One commit per task.
 
 ## 1. Layout + CPU reference (engine-core)
-- [ ] 1.1 Failing test: parse a hand-built block_q4_K buffer (known values) through CPU reference dequant → exact expected floats
-- [ ] 1.2 Implement `dequant.rs`: Q4_K_M super-block layout (8x32, 6-bit scales/mins, fp16 d/dmin), `dequant_q4k_cpu(src: &[u8], n_elements) -> Vec<f32>`
-- [ ] 1.3 Cross-check reference against fixture tensors from engine-io (metadata gives rope freqs etc.; verify element count matches tensor dims)
+- [x] 1.1 Failing test: parse a hand-built block_q4_K buffer (known values) through CPU reference dequant → exact expected floats
+- [x] 1.2 Implement `dequant.rs`: Q4_K_M super-block layout (8x32, 6-bit scales/mins, fp16 d/dmin), `dequant_q4k_cpu(src: &[u8], n_elements) -> Vec<f32>`
+- [x] 1.3 Cross-check reference against fixture tensors from engine-io (metadata gives rope freqs etc.; verify element count matches tensor dims)
 
 ## 2. GPU kernel (engine-cuda)
 - [x] 2.1 Failing test (#[ignore]): launch dequant kernel on synthetic Q4_K_M device buffer, read back floats
