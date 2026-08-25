@@ -1,0 +1,21 @@
+Hello
+Hello world
+The quick brown fox jumps over the lazy dog
+don't stop believing
+She's singing 'Hey Jude' while it's raining
+42 is the answer to everything, isn't it?
+Testing numbers: 123 4567 89012
+Universal Studios Hollywood
+Let me code in Rust every day.
+  double  spaces and tabs	here
+CAPS AND lower MiXeD CaSe
+Don't Worry, Be Happy. (Really!)
+a-b+c/d*e=f;g:h<doc>
+The year is 2024 and prices rose by 3.5%
+newline here
+and here
+trailing spaces   
+question? answer! maybe; wait, what??
+123abc456def:789
+The FTSE-100 index traded 23,456 units.
+In 1999 J.R.R. Tolkien's works I've never read_under_score.

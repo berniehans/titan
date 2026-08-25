@@ -1,0 +1,46 @@
+# Tasks: p7-moe-expert-streaming (master)
+
+> Execute via bot coder. Strict TDD. One commit per task group. GPU tests `#[ignore]` + `%LOCALAPPDATA%/Temp` PATH trick for NVRTC. Policy reference: FreeToken local clone `%LOCALAPPDATA%/hermes/workspace/_ref/FreeToken`; detailed notes `docs/freetoken-reference.md`. NO code changes until each sub-change has its own proposal/tasks approved.
+
+## 1. Bandwidth profiler (sub-change 7.1)
+- [ ] 1.1 Schema + writer for `benchbw.json` (GPU-name keyed, versioned) — RED first
+- [ ] 1.2 STREAM host-read measurement
+- [ ] 1.3 Linear pinned↔device copy measurement
+- [ ] 1.4 Overlapped CPU-GEMV + PCIe-gather measurement (contended DRAM)
+- [ ] 1.5 fetch_fraction resolver: `pcie_ov / (pcie_ov + cpu_ov)`, clamp [0,1], cache hit/miss logic
+- Gate: repeat-run variance within declared tolerance; graceful skip without CUDA
+
+## 2. Host expert banks (sub-change 7.2)
+> NOTE (coder advisory): 7.2 banks and 7.3 GPU slot cache must draw from shared bank descriptors — single allocation owner to avoid double-allocating against F2's existing pinned prefill buffers.
+- [ ] 2.1 Pinned allocator RAII + fallback-to-pageable flag
+- [ ] 2.2 Per-(layer,expert) slice view over bank memory
+- [ ] 2.3 Stream GGUF expert tensors into banks
+- Gate: copy round-trip exact; leak-free; fallback flagged
+
+## 3. GPU slot cache + capped-fetch LRU (sub-change 7.3)
+- [ ] 3.1 RED: routing rewrite model test on synthetic access patterns
+- [ ] 3.2 NVRTC kernel: slot assignment, id rewrite (hit/fetched/-1 overflow), recency
+- [ ] 3.3 Device-side stat accumulators (missing_full, fetched, active per layer)
+- [ ] 3.4 Balanced-rounding fetch count (`_balanced_fetch` semantics): floor-or-ceil minimizing the longer overlapping side; regression test replicating upstream's ceil-over-fetch case (0.415 × 3 misses → fetch 1)
+- Gate: zero host syncs in decode loop asserted; parity vs CPU model
+
+## 4. CPU executor + overlap (sub-change 7.4)
+- [ ] 4.1 CPU GEMV over host banks reusing 6.2/6.3 arithmetic
+- [ ] 4.2 Threaded overlap: PCIe fetch ∥ CPU compute, merge buffers
+- Gate: merged == sequential bitwise on synthetic routing; timing proves overlap
+
+## 5. Budget planner + prefill double buffer (sub-change 7.5)
+- [ ] 5.1 MoE-first planner (KV reserve → greedy experts → floors → hard assert ≤ budget), integrated with F4 pool enforcement
+- [ ] 5.2 Two-buffer prefill pipeline; auto-disable when slots < 2×experts_per_layer
+- Gate: planner rejects impossible budgets arithmetically; E2E VRAM ≤ 5.2 GB asserted
+
+## 6. Hybrid scheduler + E2E (sub-change 7.6)
+- [ ] 6.1 Config surface: moe_backend ∈ {offload, cpu, hybrid}; startup choice rule from 7.1 profile (>2× ⇒ hybrid)
+- [ ] 6.2 Wire modes into forward driver beside 6.7/6.8 stack (additive)
+- [ ] 6.3 SSE telemetry: miss-rate, fetch/cpu split per layer
+- [ ] 6.4 E2E generation on largest fitting MoE GGUF fixture
+- Gate: 3 modes E2E green; coherent SSE text; telemetry consistent; PLUS hard per-layer miss-rate upper bound on the fixture (not just mean) so trivial top-k sparsity can't pass silently
+
+## 7. Benchmarks seal (sub-change 7.7)
+- [ ] 7.1 BENCHMARKS.md: per-mode tok/s, miss-rate vs cache-size sweep, fetch-fraction sensitivity, VRAM per stage
+- Gate: real measured numbers only; regression baselines recorded
