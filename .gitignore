@@ -13,3 +13,8 @@ engine/target/
 # downloads / fixtures
 testdata/*.gguf
 testdata/.cache/
+
+# nsys traces (large binaries, regenerated on demand)
+engine/f2_trace.nsys-rep
+engine/f2_trace.sqlite
+engine/f2_trace_*.csv
