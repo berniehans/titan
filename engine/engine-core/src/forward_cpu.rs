@@ -379,6 +379,100 @@ pub struct LayerParams {
     pub freq_base: f32,
 }
 
+/// Phase 6.5 CPU scaled-dot-product attention (SDPA) reference over a paged KV pool.
+///
+/// Written directly from the mathematical scaled-dot-product attention formula rather
+/// than transliterated from CUDA kernels, serving as an independent numerical authority
+/// that GPU kernel parity validates against. Supports GQA head grouping and causal masking.
+#[allow(clippy::too_many_arguments)]
+pub fn sdpa_decode(
+    pool: &[f32],
+    block_table: &[u32],
+    block_tokens: usize,
+    seq_tokens: usize,
+    query: &[f32],
+    n_head: usize,
+    n_head_kv: usize,
+    head_dim: usize,
+    causal: bool,
+    query_pos: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; n_head * head_dim];
+    if seq_tokens == 0 || n_head == 0 || head_dim == 0 {
+        return out;
+    }
+    assert!(n_head_kv > 0 && n_head % n_head_kv == 0);
+    let group = n_head / n_head_kv;
+    let row_len = n_head_kv * head_dim;
+    let floats_per_token = 2 * row_len;
+    let floats_per_block = block_tokens * floats_per_token;
+    let scale = 1.0f64 / (head_dim as f64).sqrt();
+
+    for qh in 0..n_head {
+        let hk = qh / group;
+        let query_head = &query[qh * head_dim..(qh + 1) * head_dim];
+
+        let mut scores = vec![f64::NEG_INFINITY; seq_tokens];
+        let mut max_score = f64::NEG_INFINITY;
+
+        for t in 0..seq_tokens {
+            if causal && t > query_pos {
+                continue;
+            }
+            let block_idx = t / block_tokens;
+            let slot = t % block_tokens;
+            let phys = block_table[block_idx] as usize;
+            let base = phys * floats_per_block + slot * floats_per_token;
+            let key_row = &pool[base + hk * head_dim..base + (hk + 1) * head_dim];
+            let score = dot_f64(query_head, key_row) * scale;
+            scores[t] = score;
+            if score > max_score {
+                max_score = score;
+            }
+        }
+
+        let mut weights = vec![0.0f64; seq_tokens];
+        if max_score.is_finite() {
+            let mut sum_exp = 0.0f64;
+            for t in 0..seq_tokens {
+                if scores[t].is_finite() {
+                    let e = (scores[t] - max_score).exp();
+                    weights[t] = e;
+                    sum_exp += e;
+                }
+            }
+            if sum_exp > 0.0 {
+                for w in weights.iter_mut() {
+                    *w /= sum_exp;
+                }
+            }
+        }
+
+        let mut out_h = vec![0.0f64; head_dim];
+        for t in 0..seq_tokens {
+            let wt = weights[t];
+            if wt == 0.0 {
+                continue;
+            }
+            let block_idx = t / block_tokens;
+            let slot = t % block_tokens;
+            let phys = block_table[block_idx] as usize;
+            let base = phys * floats_per_block + slot * floats_per_token;
+            let val_row =
+                &pool[base + row_len + hk * head_dim..base + row_len + (hk + 1) * head_dim];
+            for (d, &v) in val_row.iter().enumerate() {
+                out_h[d] += wt * (v as f64);
+            }
+        }
+
+        for d in 0..head_dim {
+            out[qh * head_dim + d] = out_h[d] as f32;
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
