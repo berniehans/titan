@@ -8,4 +8,5 @@ cudarc.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+engine-core = { path = "../engine-core" }
 engine-kvcache = { path = "../engine-kvcache" }
