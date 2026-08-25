@@ -11,7 +11,7 @@
 
 use cudarc::driver::CudaDevice;
 use engine_cuda::{
-    CudaError, CudaStream, DeviceBuffer, NormRope, MODE_NORM, MODE_ROPE, MODE_SWIGLU,
+    CudaError, CudaStream, DeviceBuffer, MODE_NORM, MODE_ROPE, MODE_SWIGLU, NormRope,
 };
 use std::sync::Arc;
 
@@ -119,18 +119,7 @@ fn run_mode(
     d_up.copy_from_host(stream, &f32_bytes(&up))?;
 
     norm_rope.launch(
-        stream,
-        &d_x,
-        &d_res,
-        &d_w,
-        &d_up,
-        &d_out,
-        EPS,
-        N,
-        N_DIMS,
-        FREQ_BASE,
-        POS,
-        mode,
+        stream, &d_x, &d_res, &d_w, &d_up, &d_out, EPS, N, N_DIMS, FREQ_BASE, POS, mode,
     )?;
 
     let mut out_bytes = vec![0u8; byte_len];

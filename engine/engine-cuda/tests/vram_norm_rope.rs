@@ -13,7 +13,7 @@
 
 use cudarc::driver::CudaDevice;
 use cudarc::driver::sys;
-use engine_cuda::{CudaError, CudaStream, DeviceBuffer, NormRope, MODE_FUSED};
+use engine_cuda::{CudaError, CudaStream, DeviceBuffer, MODE_FUSED, NormRope};
 use std::sync::Arc;
 
 const BUDGET_GB: f64 = 5.2 * 1024.0 * 1024.0 * 1024.0;
@@ -90,7 +90,8 @@ fn vram_worst_case_norm_rope_guard() -> Result<(), CudaError> {
 
     // Assert architecture split sanity
     assert!(
-        DECLARED_PINGPONG_BYTES + DECLARED_RESIDENT_KV_BYTES + DECLARED_ACTIVATIONS_BYTES <= BUDGET_GB,
+        DECLARED_PINGPONG_BYTES + DECLARED_RESIDENT_KV_BYTES + DECLARED_ACTIVATIONS_BYTES
+            <= BUDGET_GB,
         "Architecture split sanity check failed: {} + {} + {} > {}",
         DECLARED_PINGPONG_BYTES,
         DECLARED_RESIDENT_KV_BYTES,

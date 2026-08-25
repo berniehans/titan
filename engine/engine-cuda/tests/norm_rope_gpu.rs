@@ -144,18 +144,7 @@ fn test_fused_norm_rope_swiglu_parity() -> Result<(), CudaError> {
     d_up.copy_from_host(&stream, &f32_bytes(&up))?;
 
     norm_rope.launch(
-        &stream,
-        &d_x,
-        &d_res,
-        &d_w,
-        &d_up,
-        &d_x,
-        EPS,
-        N,
-        N_DIMS,
-        FREQ_BASE,
-        POS,
-        MODE_FUSED,
+        &stream, &d_x, &d_res, &d_w, &d_up, &d_x, EPS, N, N_DIMS, FREQ_BASE, POS, MODE_FUSED,
     )?;
 
     let mut out_bytes = vec![0u8; byte_len];

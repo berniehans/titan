@@ -7,8 +7,8 @@
 //! explicitly.
 
 use engine_core::forward_cpu::{
-    dequant_col, fused_norm_rope_swiglu, matmul, rms_norm, rms_norm_residual, rope_neox_partial,
-    silu, swiglu, Tensor, TensorType,
+    Tensor, TensorType, dequant_col, fused_norm_rope_swiglu, matmul, rms_norm, rms_norm_residual,
+    rope_neox_partial, silu, swiglu,
 };
 
 fn f32_eq(a: f32, b: f32, tol: f32) -> bool {
@@ -182,8 +182,18 @@ fn test_rms_norm_residual_hand_computed() {
     let expected1 = (x_res1 as f32) * scale * w[1];
 
     let y = rms_norm_residual(&x, &residual, &w, eps);
-    assert!(f32_eq(y[0], expected0, 1e-6), "y0 {} vs {}", y[0], expected0);
-    assert!(f32_eq(y[1], expected1, 1e-6), "y1 {} vs {}", y[1], expected1);
+    assert!(
+        f32_eq(y[0], expected0, 1e-6),
+        "y0 {} vs {}",
+        y[0],
+        expected0
+    );
+    assert!(
+        f32_eq(y[1], expected1, 1e-6),
+        "y1 {} vs {}",
+        y[1],
+        expected1
+    );
 
     // Residual actually participates (differs from plain rms_norm of x)
     let plain = rms_norm(&x, &w, eps);
@@ -299,4 +309,3 @@ fn test_fused_matches_composed_twins() {
         );
     }
 }
-
