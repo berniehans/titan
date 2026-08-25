@@ -39,38 +39,22 @@ fn q8_block(d: f32, base: i32) -> Vec<u8> {
 /// One F16 tensor column as raw fp16 LE bytes.
 fn f16_col(n: usize) -> Vec<u8> {
     (0..n)
-        .map(|i| f16_bits((i as f32) * 0.25 - 4.0).to_le_bytes())
-        .flatten()
+        .flat_map(|i| f16_bits((i as f32) * 0.25 - 4.0).to_le_bytes())
         .collect()
 }
 
-/// Approximate positive fp16 bit pattern (finite normal range).
+/// Exact fp16 bit pattern for a finite normal-range fp32 value (truncated
+/// mantissa, no rounding — fine for controlled test data).
 fn f16_bits(v: f32) -> u16 {
-    // Simple round-to-nearest encode for |v| in a normal fp16 range.
-    let abs = v.abs();
-    let sign = if v < 0.0 { 0x8000u16 } else { 0 };
-    let (mut exp, mut mant) = (0u16, 0u16);
-    let mut x = abs;
-    if x == 0.0 {
-        return sign;
+    if v == 0.0 {
+        return 0;
     }
-    // binary exponent
-    let e = x.log2().floor() as i32;
-    let mut exp_field = (e + 15) as u16;
-    // normalize [1,2)
-    while x >= 2.0 {
-        x *= 0.5;
-    }
-    while x < 1.0 {
-        x *= 2.0;
-    }
-    let m = ((x - 1.0) * 1024.0).round() as u16;
-    if m >= 1024 {
-        mant = 0;
-        exp_field += 1;
-    } else {
-        mant = m;
-    }
+    let sign = if v < 0.0 { 0x8000u16 } else { 0u16 };
+    let a = v.abs();
+    let e = a.log2().floor() as i32;
+    let norm = a / 2.0f32.powi(e); // in [1, 2)
+    let mant = (((norm - 1.0) * 1024.0) as u16) & 0x3FF;
+    let exp_field = (e + 15) as u16;
     sign | (exp_field << 10) | mant
 }
 
@@ -140,13 +124,11 @@ fn gemv_q4k_gpu_matches_cpu_reference() -> Result<(), CudaError> {
 
     // CPU reference: dequant each column's single block, then dot.
     let deq = dequant_col(TensorType::Q4K, &Q4K_BLOCK, NE0);
-    for j in 0..NE1 {
+    for (j, g) in got.iter().enumerate() {
         let expected = dot(&deq, &x);
         assert!(
-            (got[j] - expected).abs() < 1e-3,
-            "col {j}: GPU {} != CPU {}",
-            got[j],
-            expected
+            (g - expected).abs() < 1e-3,
+            "col {j}: GPU {g} != CPU {expected}"
         );
     }
     Ok(())
@@ -165,23 +147,22 @@ fn gemv_q8_gpu_matches_cpu_reference() -> Result<(), CudaError> {
     let d = 2.0f32;
     let mut w = Vec::new();
     for j in 0..NE1 {
-        for b in 0..8 {
-            w.extend_from_slice(&q8_block(d, (j as i32) * 128 + b as i32 * 32));
+        for b in 0..8i32 {
+            let base = (j as i32) * 128 + b * 32;
+            w.extend_from_slice(&q8_block(d, base));
         }
     }
     let x = input_x(NE0);
     let got = run_gemv(&gemv, &stream, GemvFormat::Q8, &w, &x, NE0, NE1)?;
 
     // CPU reference dequant via engine-core Q8 path.
-    for j in 0..NE1 {
+    for (j, g) in got.iter().enumerate() {
         let col = &w[j * 8 * 34..(j + 1) * 8 * 34];
         let deq = dequant_col(TensorType::Q8, col, NE0);
         let expected = dot(&deq, &x);
         assert!(
-            (got[j] - expected).abs() < 1e-3,
-            "col {j}: GPU {} != CPU {}",
-            got[j],
-            expected
+            (g - expected).abs() < 1e-3,
+            "col {j}: GPU {g} != CPU {expected}"
         );
     }
     Ok(())
@@ -197,21 +178,19 @@ fn f16_gpu_matches_cpu_reference() -> Result<(), CudaError> {
     let gemv = MultiFormatGEMV::new(Arc::clone(&device))?;
 
     let mut w = Vec::new();
-    for j in 0..NE1 {
+    for _ in 0..NE1 {
         w.extend_from_slice(&f16_col(NE0));
     }
     let x = input_x(NE0);
     let got = run_gemv(&gemv, &stream, GemvFormat::F16, &w, &x, NE0, NE1)?;
 
-    for j in 0..NE1 {
+    for (j, g) in got.iter().enumerate() {
         let col = &w[j * NE0 * 2..(j + 1) * NE0 * 2];
         let deq = dequant_col(TensorType::F16, col, NE0);
         let expected = dot(&deq, &x);
         assert!(
-            (got[j] - expected).abs() < 1e-3,
-            "col {j}: GPU {} != CPU {}",
-            got[j],
-            expected
+            (g - expected).abs() < 1e-3,
+            "col {j}: GPU {g} != CPU {expected}"
         );
     }
     Ok(())

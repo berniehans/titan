@@ -30,5 +30,5 @@
   - llama golden L0 activations are the layer-0 **residual output** truncated to 6 elems — not comparable to an attention Q matmul (different dims/semantics); full single-layer parity vs golden is change 6.6.
 
 ## 4. Gate
-- [ ] 4.1 Full suite green (clippy -D warnings, CPU suite, GPU `--ignored`)
-- [ ] 4.2 Gate sealed: rel-L2 < 1e-3 vs both references on all 3 formats
+- [x] 4.1 Full suite green (clippy -D warnings, CPU suite, GPU `--ignored`)
+- [x] 4.2 Gate sealed: rel-L2 < 1e-3 vs both references on all 3 formats
