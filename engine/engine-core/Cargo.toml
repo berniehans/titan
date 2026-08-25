@@ -10,5 +10,6 @@ cudarc.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+flate2 = "1.0"
 serde_json.workspace = true
 

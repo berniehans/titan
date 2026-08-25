@@ -17,7 +17,8 @@
 //! - **RoPE (Qwen3, NeoX partial)**: `ops.cpp::ggml_rope_cache_init` +
 //!   `rope_yarn` with `GGML_ROPE_TYPE_NEOX`; pair element `k` with
 //!   `k + n_dims/2`, `theta = pos*base^(-2k/n_dims)`, rotate only the first
-//!   `n_dims` elements (`n_dims = head_dim/2` for Qwen3), rest unchanged.
+//!   `n_dims` elements (`n_dims = head_dim` for Qwen3; the head_dim/2 partial
+//!   assumption was falsified by the 6.7 golden gate), rest unchanged.
 //! - **Q4_K dequant**: reused from `crate::dequant::dequant_q4k_cpu` (same
 //!   `vec_dot_q4_K_q8_K` scale/min convention in `ggml/src/ggml-quants.c`).
 //! - **Q8_0 / F16 dequant**: `ggml-quants.c::dequantize_row_q8_0`
