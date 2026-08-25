@@ -36,7 +36,7 @@
 //! order, which two conforming implementations agree on bit-for-bit. silu and
 //! non-zero RoPE are validated separately by unit tests / the layer-0 checks.
 
-use crate::dequant::dequant_q4k_cpu;
+use crate::dequant::{dequant_q4k_cpu, dequant_q6k_cpu};
 
 /// Tensor quantization formats understood by the CPU bank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +49,8 @@ pub enum TensorType {
     Q8,
     /// Q4_K: 256-element super-blocks (144 bytes).
     Q4K,
+    /// Q6_K: 256-element super-blocks (210 bytes).
+    Q6K,
 }
 
 /// A 2-D weight matrix stored GGUF-style: `dims[0] = ne0` (contiguous,
@@ -122,7 +124,33 @@ pub fn dequant_col(ty: TensorType, data: &[u8], ne0: usize) -> Vec<f32> {
             }
             out
         }
+        TensorType::Q6K => {
+            assert_eq!(data.len(), (ne0 / 256) * 210);
+            let mut out = Vec::with_capacity(ne0);
+            for blk in data.chunks_exact(210) {
+                out.extend_from_slice(&dequant_q6k_cpu(blk));
+            }
+            out
+        }
     }
+}
+
+/// Dequantizes the embedding row for `token` into `ne0` fp32 values.
+///
+/// GGUF embeddings store rows along `ne1` (`dims[1]`), each row contiguous
+/// across `ne0` elements — so a single-token embedding is a row-lookup on the
+/// (often quantized, e.g. Q6_K) table, not a matmul.
+pub fn embed_lookup(t: &Tensor, token: usize) -> Vec<f32> {
+    assert!(token < t.ne1, "token {token} out of embedding rows {}", t.ne1);
+    let cb = match t.ty {
+        TensorType::F32 => t.ne0 * 4,
+        TensorType::F16 => t.ne0 * 2,
+        TensorType::Q8 => (t.ne0 / 32) * 34,
+        TensorType::Q4K => (t.ne0 / 256) * 144,
+        TensorType::Q6K => (t.ne0 / 256) * 210,
+    };
+    let row = &t.data[token * cb..(token + 1) * cb];
+    dequant_col(t.ty, row, t.ne0)
 }
 
 /// FP32 sequential dot-product matmul over a dequantized weight column.
@@ -137,6 +165,7 @@ pub fn matmul(out: &mut [f32], t: &Tensor, x: &[f32]) {
         TensorType::F16 => t.ne0 * 2,
         TensorType::Q8 => (t.ne0 / 32) * 34,
         TensorType::Q4K => (t.ne0 / 256) * 144,
+        TensorType::Q6K => (t.ne0 / 256) * 210,
     };
     for (j, o) in out.iter_mut().enumerate() {
         let col = &t.data[j * cb..(j + 1) * cb];
