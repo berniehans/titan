@@ -241,6 +241,8 @@ version = "0.1.0"
 dependencies = [
  "cudarc",
  "engine-cuda",
+ "engine-io",
+ "serde_json",
  "thiserror",
 ]
 

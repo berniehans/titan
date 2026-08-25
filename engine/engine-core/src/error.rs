@@ -21,4 +21,19 @@ pub enum EngineError {
     /// CUDA driver error from cudarc.
     #[error("CUDA driver error: {0}")]
     Driver(#[from] cudarc::driver::DriverError),
+
+    /// Error sourced from GGUF/metadata parsing (`engine-io`).
+    #[error("GGUF error: {0}")]
+    Gguf(#[from] engine_io::GgufError),
+
+    /// A tokenizer pre-tokenization reached an unsupported (non-ASCII) input.
+    ///
+    /// The ported Qwen2 pre-tokenizer intentionally covers only ASCII; anything
+    /// else must be handled by a future full-Unicode pass.
+    #[error("tokenizer: unsupported non-ASCII input at byte {0}")]
+    NonAsciiInput(usize),
+
+    /// Tokenizer tried to decode an unknown token id (out of vocabulary range).
+    #[error("tokenizer: unknown token id {0} for decode")]
+    UnknownToken(u32),
 }

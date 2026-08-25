@@ -44,6 +44,14 @@ pub enum GgufError {
     #[error("Invalid alignment: {0}")]
     InvalidAlignment(u64),
 
+    /// A required metadata key is missing from the GGUF header.
+    #[error("Missing required metadata key '{0}'")]
+    MissingMetadata(String),
+
+    /// An optional metadata value had an unexpected type.
+    #[error("Unexpected metadata type for key '{0}'")]
+    UnexpectedMetadataType(String),
+
     /// Tensor shape / dimensions are invalid.
     #[error("Invalid tensor shape for '{0}'")]
     InvalidTensorShape(String),

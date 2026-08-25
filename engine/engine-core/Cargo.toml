@@ -5,6 +5,10 @@ edition = "2024"
 
 [dependencies]
 engine-cuda = { path = "../engine-cuda" }
+engine-io = { path = "../engine-io" }
 cudarc.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 

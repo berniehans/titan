@@ -2,12 +2,14 @@
 //!
 //! I/O library for reading GGUF models and binary weights.
 
+pub mod config;
 pub mod error;
 pub mod layer;
 pub mod loader;
 pub mod reader;
 pub mod types;
 
+pub use config::ModelConfig;
 pub use error::GgufError;
 pub use layer::{LayerIndex, classify_layer};
 pub use loader::{LoadedLayout, LoadedPinned, load_to_pinned};
