@@ -46,6 +46,11 @@ impl SamplerParams {
             seed: None,
         }
     }
+
+    /// Returns true if temperature <= 1e-4.
+    pub fn is_greedy(&self) -> bool {
+        self.temperature <= 1e-4
+    }
 }
 
 /// Simple fast 64-bit Xorshift PRNG for reproducible sampling without heavy dependencies.
@@ -230,6 +235,157 @@ impl Sampler {
 
         // Fallback to top token
         probs.first().map(|p| p.0 as u32).unwrap_or(0)
+    }
+
+    /// Computes greedy argmax of raw logits.
+    pub fn argmax(logits: &[f32]) -> u32 {
+        let mut best_idx = 0;
+        let mut best_val = f32::NEG_INFINITY;
+        for (i, &v) in logits.iter().enumerate() {
+            if v > best_val {
+                best_val = v;
+                best_idx = i;
+            }
+        }
+        best_idx as u32
+    }
+
+    /// Generates a uniform random float in [0.0, 1.0).
+    pub fn sample_uniform(&mut self) -> f32 {
+        self.rng.next_f32()
+    }
+
+    /// Samples a token from an explicit probability distribution vector.
+    pub fn sample_from_probs(&mut self, probs: &[f32]) -> u32 {
+        let r = self.sample_uniform();
+        let mut acc = 0.0f32;
+        for (idx, &prob) in probs.iter().enumerate() {
+            acc += prob;
+            if r <= acc {
+                return idx as u32;
+            }
+        }
+        (probs.len().saturating_sub(1)) as u32
+    }
+
+    /// Computes full softmax distribution over vocabulary applying temperature, top-k, and top-p.
+    pub fn compute_distribution(
+        &self,
+        logits: &[f32],
+        context_tokens: &[u32],
+        params: &SamplerParams,
+    ) -> Vec<f32> {
+        let vocab_size = logits.len();
+        if vocab_size == 0 {
+            return Vec::new();
+        }
+
+        let mut filtered: Vec<(usize, f32)> = logits
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, l)| l.is_finite())
+            .collect();
+
+        if filtered.is_empty() {
+            return vec![1.0 / vocab_size as f32; vocab_size];
+        }
+
+        // Repetition penalty
+        if params.repetition_penalty > 1.0 && !context_tokens.is_empty() {
+            let pen = params.repetition_penalty;
+            for &tok in context_tokens {
+                let idx = tok as usize;
+                if idx < vocab_size {
+                    for cand in &mut filtered {
+                        if cand.0 == idx {
+                            if cand.1 > 0.0 {
+                                cand.1 /= pen;
+                            } else {
+                                cand.1 *= pen;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if params.temperature <= 1e-4 {
+            let mut best_idx = 0;
+            let mut best_logit = f32::NEG_INFINITY;
+            for &(idx, logit) in &filtered {
+                if logit > best_logit {
+                    best_logit = logit;
+                    best_idx = idx;
+                }
+            }
+            let mut one_hot = vec![0.0f32; vocab_size];
+            one_hot[best_idx] = 1.0;
+            return one_hot;
+        }
+
+        let inv_temp = 1.0 / params.temperature;
+        for cand in &mut filtered {
+            cand.1 *= inv_temp;
+        }
+
+        filtered.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        if params.top_k > 0 && params.top_k < filtered.len() {
+            filtered.truncate(params.top_k);
+        }
+
+        let max_logit = filtered[0].1;
+        let mut sum_exp = 0.0f32;
+        let mut probs: Vec<(usize, f32)> = Vec::with_capacity(filtered.len());
+        for (idx, logit) in filtered {
+            let exp_val = (logit - max_logit).exp();
+            probs.push((idx, exp_val));
+            sum_exp += exp_val;
+        }
+
+        if sum_exp <= 0.0 {
+            let mut one_hot = vec![0.0f32; vocab_size];
+            if !probs.is_empty() {
+                one_hot[probs[0].0] = 1.0;
+            }
+            return one_hot;
+        }
+
+        let inv_sum = 1.0 / sum_exp;
+        for p in &mut probs {
+            p.1 *= inv_sum;
+        }
+
+        if params.top_p < 1.0 {
+            let mut cumsum = 0.0f32;
+            let mut cutoff_idx = probs.len();
+            for (i, p) in probs.iter().enumerate() {
+                cumsum += p.1;
+                if cumsum >= params.top_p {
+                    cutoff_idx = (i + 1).min(probs.len());
+                    break;
+                }
+            }
+            probs.truncate(cutoff_idx.max(1));
+
+            let mut new_sum = 0.0f32;
+            for p in &probs {
+                new_sum += p.1;
+            }
+            if new_sum > 0.0 {
+                let inv = 1.0 / new_sum;
+                for p in &mut probs {
+                    p.1 *= inv;
+                }
+            }
+        }
+
+        let mut full_dist = vec![0.0f32; vocab_size];
+        for (idx, prob) in probs {
+            full_dist[idx] = prob;
+        }
+        full_dist
     }
 
     /// Checks if a token ID or generated text piece triggers any stop sequences.

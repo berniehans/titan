@@ -5,6 +5,7 @@ pub mod forward_driver;
 pub mod moe;
 pub mod pipeline;
 pub mod sampler;
+pub mod speculative;
 pub mod tokenizer;
 pub mod vram_accounting;
 
@@ -20,6 +21,7 @@ pub use moe::{
 };
 pub use pipeline::{Pipeline, PipelineStats};
 pub use sampler::{Sampler, SamplerParams};
+pub use speculative::{SpeculativeVerificationResult, SpeculativeVerifier};
 pub use tokenizer::BpeTokenizer;
 pub use vram_accounting::{VramStageBreakdown, compute_static_vram_map};
 

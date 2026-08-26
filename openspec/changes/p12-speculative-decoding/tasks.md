@@ -1,10 +1,10 @@
 # Implementation Tasks: Phase 12 — Speculative Decoding Engine (Draft Verification & Multi-Token Speculation)
 
 ## 1. Speculative Verification & Rejection Sampling (sub-change 12.1)
-- [ ] 1.1 Implement `SpeculativeVerifier` and `rejection_sample_multi_token` in `engine-core/src/speculative.rs`.
-- [ ] 1.2 Implement deterministic greedy verification matching argmax prefixes with bonus token sampling.
-- [ ] 1.3 Create unit test `engine-core/tests/speculative_sampling_test.rs` verifying mathematical distribution equivalence and exact greedy acceptance logic.
-- Gate: `cargo test -p engine-core --test speculative_sampling_test` PASS.
+- [x] 1.1 Implement `SpeculativeVerifier` and `rejection_sample_multi_token` in `engine-core/src/speculative.rs`.
+- [x] 1.2 Implement deterministic greedy verification matching argmax prefixes with bonus token sampling.
+- [x] 1.3 Create unit test `engine-core/tests/speculative_sampling_test.rs` verifying mathematical distribution equivalence and exact greedy acceptance logic.
+- Gate PASS: `cargo test -p engine-core --test speculative_sampling_test` PASS.
 
 ## 2. Context N-Gram Draft Proposer (sub-change 12.2)
 - [ ] 2.1 Implement `NgramDraftProposer` in `engine-core/src/ngram_draft.rs` with dynamic context indexing and prefix matching ($n \in [2, 5]$).
