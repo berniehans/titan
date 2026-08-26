@@ -120,8 +120,9 @@ pub fn stream_events(cfg: Arc<KVConfig>, body: &CompletionRequest) -> Vec<Event>
     } else {
         body.max_tokens
     };
+    let model = body.model.as_deref().unwrap_or("qwen3-0.6b");
     let tokens = decode_tokens(cfg.vocab, &body.prompt, max_tokens);
-    tokens_to_events(&body.prompt, &body.model, &tokens)
+    tokens_to_events(&body.prompt, model, &tokens)
 }
 
 /// Builds a non-streaming completion response from a token list.
@@ -157,8 +158,9 @@ pub fn build_completion(cfg: Arc<KVConfig>, body: &CompletionRequest) -> Complet
     } else {
         body.max_tokens
     };
+    let model = body.model.as_deref().unwrap_or("qwen3-0.6b");
     let tokens = decode_tokens(cfg.vocab, &body.prompt, max_tokens);
-    tokens_to_completion(&body.prompt, &body.model, &tokens)
+    tokens_to_completion(&body.prompt, model, &tokens)
 }
 
 async fn handle_completion(
@@ -304,11 +306,12 @@ async fn handle_real_completion(
     } else {
         body.max_tokens
     };
+    let model = body.model.as_deref().unwrap_or("qwen3-0.6b");
     let (tokens, texts) = decode_tokens_and_texts_real(&cfg, &body.prompt, max_tokens);
     if body.stream {
         to_sse(tokens_and_texts_to_events(
             &body.prompt,
-            &body.model,
+            model,
             &tokens,
             &texts,
         ))
@@ -316,7 +319,7 @@ async fn handle_real_completion(
     } else {
         JsonResponse::<CompletionResponse>(tokens_and_texts_to_completion(
             &body.prompt,
-            &body.model,
+            model,
             &tokens,
             &texts,
         ))

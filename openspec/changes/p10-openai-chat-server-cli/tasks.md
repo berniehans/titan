@@ -1,10 +1,10 @@
 # Implementation Tasks: Phase 10 — OpenAI Chat Completions Server, Streaming SSE & Interactive CLI
 
 ## 1. OpenAI Chat Models & Wire Protocol (sub-change 10.1)
-- [ ] 1.1 Define OpenAI Chat wire models in `engine-server/src/models.rs` (`ChatMessage`, `ChatCompletionRequest`, `ChatCompletionResponse`, `ChatCompletionChunk`, `ChatChoice`, `DeltaMessage`).
-- [ ] 1.2 Implement ChatML template formatting for Qwen chat messages with `<|im_start|>` and `<|im_end|>` delimiters.
-- [ ] 1.3 Create unit test verifying ChatML prompt formatting and JSON serialization.
-- Gate: `cargo test -p engine-server --lib models` PASS.
+- [x] 1.1 Define OpenAI Chat wire models in `engine-server/src/models.rs` (`ChatMessage`, `ChatCompletionRequest`, `ChatCompletionResponse`, `ChatCompletionChunk`, `ChatChoice`, `DeltaMessage`).
+- [x] 1.2 Implement ChatML template formatting for Qwen chat messages with `<|im_start|>` and `<|im_end|>` delimiters.
+- [x] 1.3 Create unit test verifying ChatML prompt formatting and JSON serialization.
+- Gate PASS: `cargo test -p engine-server --lib models` PASS.
 
 ## 2. Advanced Production Sampler & Stop Handling (sub-change 10.2)
 - [ ] 2.1 Implement `Sampler` in `engine-core` supporting greedy argmax, temperature scaling, top-$k$, top-$p$ (nucleus), repetition penalty, and stop token detection.
