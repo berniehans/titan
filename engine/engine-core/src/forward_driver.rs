@@ -43,6 +43,74 @@ use std::sync::Arc;
 /// activations + logits` must stay <= 5.2 GiB at every step (6.7 gate).
 pub const VRAM_BUDGET_BYTES: usize = 5 * 1024 * 1024 * 1024 + 200 * 1024 * 1024;
 
+/// Breakdown of transient and resident device memory footprint tracked by the driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VramFootprint {
+    /// Device memory occupied by uploaded layer weights (bytes).
+    pub pingpong_bytes: usize,
+    /// Device memory occupied by resident per-layer KV pools (bytes).
+    pub kv_pool_bytes: usize,
+    /// Device memory occupied by reusable scratch activations buffers (bytes).
+    pub activations_bytes: usize,
+    /// Device memory required for output logits (bytes).
+    pub logits_bytes: usize,
+}
+
+impl VramFootprint {
+    /// Total VRAM footprint across all four tracked buckets.
+    pub fn total(&self) -> usize {
+        self.pingpong_bytes + self.kv_pool_bytes + self.activations_bytes + self.logits_bytes
+    }
+
+    /// Asserts that the total footprint does not exceed the specified budget.
+    pub fn assert_within_budget(&self, budget: usize) -> Result<(), EngineError> {
+        if self.total() > budget {
+            return Err(engine_cuda::CudaError::InvalidSize {
+                expected: budget,
+                actual: self.total(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Logs or prints a formatted budget trace.
+    pub fn print_trace(&self) {
+        println!("=== VRAM Budget Trace (ForwardDriver) ===");
+        println!(
+            "  pingpong/weights: {:>10} bytes ({:.2} MB)",
+            self.pingpong_bytes,
+            self.pingpong_bytes as f64 / (1024.0 * 1024.0)
+        );
+        println!(
+            "  kv_pool:          {:>10} bytes ({:.2} MB)",
+            self.kv_pool_bytes,
+            self.kv_pool_bytes as f64 / (1024.0 * 1024.0)
+        );
+        println!(
+            "  activations:      {:>10} bytes ({:.2} MB)",
+            self.activations_bytes,
+            self.activations_bytes as f64 / (1024.0 * 1024.0)
+        );
+        println!(
+            "  logits:           {:>10} bytes ({:.2} MB)",
+            self.logits_bytes,
+            self.logits_bytes as f64 / (1024.0 * 1024.0)
+        );
+        println!(
+            "  TOTAL:            {:>10} bytes ({:.2} MB / {:.3} GB)",
+            self.total(),
+            self.total() as f64 / (1024.0 * 1024.0),
+            self.total() as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+        println!(
+            "  BUDGET:           {:>10} bytes ({:.2} GB)",
+            VRAM_BUDGET_BYTES,
+            VRAM_BUDGET_BYTES as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+    }
+}
+
 fn ggml_to_bank(t: GgmlType) -> Option<TensorType> {
     match t {
         GgmlType::F32 => Some(TensorType::F32),
@@ -316,7 +384,7 @@ impl<'a> ForwardDriver<'a> {
         let up_dev = alloc_dev(&device, hff)?;
         let proj_dev = alloc_dev(&device, hff)?;
 
-        Ok(Self {
+        let driver = Self {
             device,
             stream,
             gemv,
@@ -356,7 +424,11 @@ impl<'a> ForwardDriver<'a> {
             base,
             n_layer,
             pos: 0,
-        })
+        };
+        driver
+            .vram_footprint()
+            .assert_within_budget(VRAM_BUDGET_BYTES)?;
+        Ok(driver)
     }
 
     /// Appends all `tokens` sequentially into resident KV starting at `pos=0`,
@@ -401,6 +473,8 @@ impl<'a> ForwardDriver<'a> {
     /// because it mutates the resident KV pools / scratch device buffers through
     /// interior mutability (`copy_from_host`, `append_kv`).
     fn step_one(&mut self, token: u32, p: usize) -> Result<Vec<f32>, EngineError> {
+        self.vram_footprint()
+            .assert_within_budget(VRAM_BUDGET_BYTES)?;
         let mut x_host = embed_lookup(&self.emb, token as usize);
 
         for layer in &self.layers {
@@ -667,6 +741,54 @@ impl<'a> ForwardDriver<'a> {
     /// Number of transformer layers.
     pub fn n_layer(&self) -> usize {
         self.n_layer
+    }
+
+    /// Computes the VRAM footprint across all layers and transient buffers.
+    pub fn vram_footprint(&self) -> VramFootprint {
+        let pingpong_bytes: usize = self
+            .layers
+            .iter()
+            .map(|l| {
+                l.wq_dev.size()
+                    + l.wk_dev.size()
+                    + l.wo_dev.size()
+                    + l.wgate_dev.size()
+                    + l.wup_dev.size()
+                    + l.an_dev.size()
+                    + l.qn_dev.size()
+                    + l.kn_dev.size()
+                    + l.fn_dev.size()
+            })
+            .sum();
+
+        let kv_pool_bytes: usize = self.layers.iter().map(|l| l.pool_dev.size()).sum();
+
+        let activations_bytes: usize = self.zh.size()
+            + self.zhd.size()
+            + self.zff.size()
+            + self.bt_dev.size()
+            + self.x_dev.size()
+            + self.input_norm_dev.size()
+            + self.q_dev.size()
+            + self.k_dev.size()
+            + self.v_dev.size()
+            + self.head_dev.size()
+            + self.attn_dev.size()
+            + self.op_dev.size()
+            + self.h1_dev.size()
+            + self.ffin_dev.size()
+            + self.gate_dev.size()
+            + self.up_dev.size()
+            + self.proj_dev.size();
+
+        let logits_bytes: usize = self.emb.ne1 * 4;
+
+        VramFootprint {
+            pingpong_bytes,
+            kv_pool_bytes,
+            activations_bytes,
+            logits_bytes,
+        }
     }
 }
 
