@@ -8,8 +8,9 @@ engine-cuda = { path = "../engine-cuda" }
 engine-io = { path = "../engine-io" }
 cudarc.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 flate2 = "1.0"
-serde_json.workspace = true
 

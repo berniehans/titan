@@ -258,6 +258,7 @@ dependencies = [
  "engine-cuda",
  "engine-io",
  "flate2",
+ "serde",
  "serde_json",
  "thiserror",
 ]

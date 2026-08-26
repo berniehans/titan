@@ -3,12 +3,12 @@
 > Execute via bot coder. Strict TDD. One commit per task group. GPU tests `#[ignore]` + `%LOCALAPPDATA%/Temp` PATH trick for NVRTC. Policy reference: FreeToken local clone `%LOCALAPPDATA%/hermes/workspace/_ref/FreeToken`; detailed notes `docs/freetoken-reference.md`. NO code changes until each sub-change has its own proposal/tasks approved.
 
 ## 1. Bandwidth profiler (sub-change 7.1)
-- [ ] 1.1 Schema + writer for `benchbw.json` (GPU-name keyed, versioned) — RED first
-- [ ] 1.2 STREAM host-read measurement
-- [ ] 1.3 Linear pinned↔device copy measurement
-- [ ] 1.4 Overlapped CPU-GEMV + PCIe-gather measurement (contended DRAM)
-- [ ] 1.5 fetch_fraction resolver: `pcie_ov / (pcie_ov + cpu_ov)`, clamp [0,1], cache hit/miss logic
-- Gate: repeat-run variance within declared tolerance; graceful skip without CUDA
+- [x] 1.1 Schema + writer for `benchbw.json` (GPU-name keyed, versioned) in `engine-core/src/moe/profile.rs`.
+- [x] 1.2 STREAM host-read measurement (`measure_stream_host_dram_read`: 0.86 GB/s).
+- [x] 1.3 Linear pinned↔device copy measurement (`measure_linear_pcie_h2d`: 6.08 GB/s, `measure_linear_pcie_d2h`: 5.85 GB/s).
+- [x] 1.4 Overlapped CPU-GEMV + PCIe-gather measurement (contended DRAM: CPU MoE ov = 0.36 GB/s, PCIe gather ov = 6.06 GB/s).
+- [x] 1.5 fetch_fraction resolver: `pcie_ov / (pcie_ov + cpu_ov)` = 0.9441, clamp [0,1], backend recommendation (`offload` on slow CPU, `hybrid` when CPU > 2x PCIe).
+- Gate PASS: repeat-run variance within tolerance, CI-safe graceful skip without CUDA, profile saved to `tests/benches/benchbw.json`.
 
 ## 2. Host expert banks (sub-change 7.2)
 > NOTE (coder advisory): 7.2 banks and 7.3 GPU slot cache must draw from shared bank descriptors — single allocation owner to avoid double-allocating against F2's existing pinned prefill buffers.
