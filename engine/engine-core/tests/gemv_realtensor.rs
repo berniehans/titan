@@ -270,47 +270,81 @@ fn real_q6k_attn_v_and_ffn_down_gpu_matches_cpu_bank() -> Result<(), CudaError> 
         let d_bits = u16::from_le_bytes([blk[208], blk[209]]);
         let d = engine_core::forward_cpu::f16_to_f32(d_bits);
         let sc: Vec<i8> = blk[192..208].iter().map(|&s| s as i8).collect();
-        println!("Block {b}: d_bits={:#06x}, d={}, scales={:?}", d_bits, d, sc);
+        println!(
+            "Block {b}: d_bits={:#06x}, d={}, scales={:?}",
+            d_bits, d, sc
+        );
     }
 
     // Block 1 test
     let (gpu_b1, cpu_b1) = real_q6k_gemv(&gemv, &stream, &bytes_v[210..420], 256, 1)?;
-    println!("Block 1 attn_v: GPU={}, CPU={}, diff={}", gpu_b1[0], cpu_b1[0], (gpu_b1[0] - cpu_b1[0]).abs());
+    println!(
+        "Block 1 attn_v: GPU={}, CPU={}, diff={}",
+        gpu_b1[0],
+        cpu_b1[0],
+        (gpu_b1[0] - cpu_b1[0]).abs()
+    );
 
     // Block 2 test
     let (gpu_b2, cpu_b2) = real_q6k_gemv(&gemv, &stream, &bytes_v[420..630], 256, 1)?;
-    println!("Block 2 attn_v: GPU={}, CPU={}, diff={}", gpu_b2[0], cpu_b2[0], (gpu_b2[0] - cpu_b2[0]).abs());
+    println!(
+        "Block 2 attn_v: GPU={}, CPU={}, diff={}",
+        gpu_b2[0],
+        cpu_b2[0],
+        (gpu_b2[0] - cpu_b2[0]).abs()
+    );
 
     // Block 3 test
     let (gpu_b3, cpu_b3) = real_q6k_gemv(&gemv, &stream, &bytes_v[630..840], 256, 1)?;
-    println!("Block 3 attn_v: GPU={}, CPU={}, diff={}", gpu_b3[0], cpu_b3[0], (gpu_b3[0] - cpu_b3[0]).abs());
+    println!(
+        "Block 3 attn_v: GPU={}, CPU={}, diff={}",
+        gpu_b3[0],
+        cpu_b3[0],
+        (gpu_b3[0] - cpu_b3[0]).abs()
+    );
 
     // Three blocks test
     let (gpu_v3, cpu_v3) = real_q6k_gemv(&gemv, &stream, &bytes_v[..630], 768, 1)?;
-    println!("Three blocks attn_v: GPU={}, CPU={}, diff={}", gpu_v3[0], cpu_v3[0], (gpu_v3[0] - cpu_v3[0]).abs());
+    println!(
+        "Three blocks attn_v: GPU={}, CPU={}, diff={}",
+        gpu_v3[0],
+        cpu_v3[0],
+        (gpu_v3[0] - cpu_v3[0]).abs()
+    );
 
     // Four block (1 full col) test
     let (gpu_v4, cpu_v4) = real_q6k_gemv(&gemv, &stream, &bytes_v[..840], 1024, 1)?;
-    println!("Four block attn_v: GPU={}, CPU={}, diff={}", gpu_v4[0], cpu_v4[0], (gpu_v4[0] - cpu_v4[0]).abs());
+    println!(
+        "Four block attn_v: GPU={}, CPU={}, diff={}",
+        gpu_v4[0],
+        cpu_v4[0],
+        (gpu_v4[0] - cpu_v4[0]).abs()
+    );
 
     let (gpu_v, cpu_v) = real_q6k_gemv(&gemv, &stream, bytes_v, ne0_v, ne1_v)?;
     let rl2_v = rel_l2(&gpu_v, &cpu_v);
     let cs_v = cosine(&gpu_v, &cpu_v);
-    println!("REAL Q6_K blk.0.attn_v GEMV: {ne1_v} cols x {ne0_v} dims; rel-L2={rl2_v:.3e} cos-sim={cs_v:.6}");
+    println!(
+        "REAL Q6_K blk.0.attn_v GEMV: {ne1_v} cols x {ne0_v} dims; rel-L2={rl2_v:.3e} cos-sim={cs_v:.6}"
+    );
     println!("GPU[:8]: {:?}", &gpu_v[..8]);
     println!("CPU[:8]: {:?}", &cpu_v[..8]);
     assert!(rl2_v < 1e-3, "real Q6_K attn_v rel-L2 >= 1e-3");
     assert!(cs_v >= 0.999, "real Q6_K attn_v cos-sim < 0.999");
 
     // 2. blk.0.ffn_down.weight (Q6_K)
-    let info_down = reader.get_tensor("blk.0.ffn_down.weight").expect("ffn_down");
+    let info_down = reader
+        .get_tensor("blk.0.ffn_down.weight")
+        .expect("ffn_down");
     let ne0_down = info_down.dims[0] as usize;
     let ne1_down = info_down.dims[1] as usize;
     let bytes_down = loaded.tensor("blk.0.ffn_down.weight").expect("slice");
     let (gpu_down, cpu_down) = real_q6k_gemv(&gemv, &stream, bytes_down, ne0_down, ne1_down)?;
     let rl2_down = rel_l2(&gpu_down, &cpu_down);
     let cs_down = cosine(&gpu_down, &cpu_down);
-    println!("REAL Q6_K blk.0.ffn_down GEMV: {ne1_down} cols x {ne0_down} dims; rel-L2={rl2_down:.3e} cos-sim={cs_down:.6}");
+    println!(
+        "REAL Q6_K blk.0.ffn_down GEMV: {ne1_down} cols x {ne0_down} dims; rel-L2={rl2_down:.3e} cos-sim={cs_down:.6}"
+    );
     assert!(rl2_down < 1e-3, "real Q6_K ffn_down rel-L2 >= 1e-3");
     assert!(cs_down >= 0.999, "real Q6_K ffn_down cos-sim < 0.999");
 

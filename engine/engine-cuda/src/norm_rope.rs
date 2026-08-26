@@ -166,12 +166,6 @@ impl NormRope {
                 actual: n_dims,
             });
         }
-        if mode == 0 {
-            return Err(CudaError::InvalidSize {
-                expected: 1,
-                actual: 0,
-            });
-        }
 
         let expected_bytes = n * 4;
         if x.size() < expected_bytes {
@@ -218,7 +212,7 @@ impl NormRope {
         let eps_f: f32 = eps;
         let mode_i: i32 = mode as i32;
 
-        let grid_x = 1u32;
+        let grid_x = (x.size() / expected_bytes).max(1) as u32;
 
         let x_addr: u64 = x.device_ptr();
         let resid_addr: u64 = residual.device_ptr();

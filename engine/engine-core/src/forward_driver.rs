@@ -196,15 +196,16 @@ fn download_f32(
 ) -> Result<Vec<f32>, EngineError> {
     let mut raw = vec![0u8; n_floats * 4];
     b.copy_to_host(stream, &mut raw)?;
+    stream.sync()?;
     Ok(bytes_f32(&raw))
 }
 
-fn ggml_to_gemv(t: GgmlType) -> Result<GemvFormat, EngineError> {
+fn ggml_to_gemv(t: TensorType) -> Result<GemvFormat, EngineError> {
     match t {
-        GgmlType::Q4_K => Ok(GemvFormat::Q4K),
-        GgmlType::Q6_K => Ok(GemvFormat::Q6K),
-        GgmlType::Q8_0 => Ok(GemvFormat::Q8),
-        GgmlType::F16 => Ok(GemvFormat::F16),
+        TensorType::Q4K => Ok(GemvFormat::Q4K),
+        TensorType::Q6K => Ok(GemvFormat::Q6K),
+        TensorType::Q8 => Ok(GemvFormat::Q8),
+        TensorType::F16 => Ok(GemvFormat::F16),
         other => Err(EngineError::Validation(format!(
             "unsupported GEMV quant format {:?}",
             other
@@ -263,6 +264,9 @@ pub struct ForwardDriver<'a> {
     head_norm: Vec<f32>,
     layers: Vec<LayerRsrc<'a>>,
     // scratch (reused, no per-step alloc):
+    pos_dev: DeviceBuffer,
+    zq: DeviceBuffer,
+    zk: DeviceBuffer,
     zh: DeviceBuffer,
     zhd: DeviceBuffer,
     zff: DeviceBuffer,
@@ -280,14 +284,15 @@ pub struct ForwardDriver<'a> {
     gate_dev: DeviceBuffer,
     up_dev: DeviceBuffer,
     proj_dev: DeviceBuffer,
+    decode_graph: Option<engine_cuda::CudaGraphExec>,
     // dims
     h: usize,
     hd: usize,
     nh: usize,
     nkv: usize,
     hff: usize,
-    qdim: usize,
-    kvd: usize,
+    _qdim: usize,
+    _kvd: usize,
     n_rot: usize,
     eps: f32,
     base: f32,
@@ -319,9 +324,6 @@ impl<'a> ForwardDriver<'a> {
         let hff = cfg.intermediate_size as usize;
         let eps = cfg.rms_norm_eps;
         let base = cfg.rope_freq_base;
-        // Qwen3 RoPE rotates the FULL head dim (NeoX pairs over [0, head_dim));
-        // the head_dim/2 assumption was falsified by the golden gate (cos 0.71 vs
-        // 0.9986 at pos>=1), so n_rot = hd (128 for this fixture).
         let n_rot = hd;
         let qdim = nh * hd;
         let kvd = nkv * hd;
@@ -349,58 +351,54 @@ impl<'a> ForwardDriver<'a> {
             let an = f32_norm(pinned, &format!("blk.{l}.attn_norm.weight"))?;
             let qn = f32_norm(pinned, &format!("blk.{l}.attn_q_norm.weight"))?;
             let kn = f32_norm(pinned, &format!("blk.{l}.attn_k_norm.weight"))?;
-            let fnw = f32_norm(pinned, &format!("blk.{l}.ffn_norm.weight"))?;
+            let fn_ = f32_norm(pinned, &format!("blk.{l}.ffn_norm.weight"))?;
 
-            let wq_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.attn_q.weight")).unwrap().ggml_type)?;
-            let wk_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.attn_k.weight")).unwrap().ggml_type)?;
-            let wv_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.attn_v.weight")).unwrap().ggml_type)?;
-            let wo_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.attn_output.weight")).unwrap().ggml_type)?;
-            let wgate_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.ffn_gate.weight")).unwrap().ggml_type)?;
-            let wup_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.ffn_up.weight")).unwrap().ggml_type)?;
-            let wdown_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.ffn_down.weight")).unwrap().ggml_type)?;
-
-            let wq_dev = upload_bytes(&stream, &device, wq.data)?;
-            let wk_dev = upload_bytes(&stream, &device, wk.data)?;
-            let wv_dev = upload_bytes(&stream, &device, wv.data)?;
-            let wo_dev = upload_bytes(&stream, &device, wo.data)?;
-            let wgate_dev = upload_bytes(&stream, &device, wgate.data)?;
-            let wup_dev = upload_bytes(&stream, &device, wup.data)?;
-            let wdown_dev = upload_bytes(&stream, &device, wdown.data)?;
+            let wq_dev = upload_bytes(&stream, &device, &wq.data)?;
+            let wk_dev = upload_bytes(&stream, &device, &wk.data)?;
+            let wv_dev = upload_bytes(&stream, &device, &wv.data)?;
+            let wo_dev = upload_bytes(&stream, &device, &wo.data)?;
+            let wgate_dev = upload_bytes(&stream, &device, &wgate.data)?;
+            let wup_dev = upload_bytes(&stream, &device, &wup.data)?;
+            let wdown_dev = upload_bytes(&stream, &device, &wdown.data)?;
 
             let an_dev = upload_f32(&stream, &device, &an)?;
             let qn_dev = upload_f32(&stream, &device, &qn)?;
             let kn_dev = upload_f32(&stream, &device, &kn)?;
-            let fn_dev = upload_f32(&stream, &device, &fnw)?;
+            let fn_dev = upload_f32(&stream, &device, &fn_)?;
 
-            let pool_dev = alloc_dev(&device, layout.floats_total())?;
+            let pool_dev = upload_bytes(
+                &stream,
+                &device,
+                &vec![0u8; layout.floats_total() * 4],
+            )?;
 
             layers.push(LayerRsrc {
                 wq_dev,
-                wq_fmt,
+                wq_fmt: ggml_to_gemv(wq.ty)?,
                 wq_ne0: wq.ne0,
                 wq_ne1: wq.ne1,
                 wk_dev,
-                wk_fmt,
+                wk_fmt: ggml_to_gemv(wk.ty)?,
                 wk_ne0: wk.ne0,
                 wk_ne1: wk.ne1,
                 wv_dev,
-                wv_fmt,
+                wv_fmt: ggml_to_gemv(wv.ty)?,
                 wv_ne0: wv.ne0,
                 wv_ne1: wv.ne1,
                 wo_dev,
-                wo_fmt,
+                wo_fmt: ggml_to_gemv(wo.ty)?,
                 wo_ne0: wo.ne0,
                 wo_ne1: wo.ne1,
                 wgate_dev,
-                wgate_fmt,
+                wgate_fmt: ggml_to_gemv(wgate.ty)?,
                 wgate_ne0: wgate.ne0,
                 wgate_ne1: wgate.ne1,
                 wup_dev,
-                wup_fmt,
+                wup_fmt: ggml_to_gemv(wup.ty)?,
                 wup_ne0: wup.ne0,
                 wup_ne1: wup.ne1,
                 wdown_dev,
-                wdown_fmt,
+                wdown_fmt: ggml_to_gemv(wdown.ty)?,
                 wdown_ne0: wdown.ne0,
                 wdown_ne1: wdown.ne1,
                 an_dev,
@@ -412,6 +410,9 @@ impl<'a> ForwardDriver<'a> {
             });
         }
 
+        let pos_dev = upload_bytes(&stream, &device, &0u32.to_le_bytes())?;
+        let zq = upload_f32(&stream, &device, &vec![0.0f32; qdim])?;
+        let zk = upload_f32(&stream, &device, &vec![0.0f32; kvd])?;
         let zh = upload_f32(&stream, &device, &vec![0.0f32; h])?;
         let zhd = upload_f32(&stream, &device, &vec![0.0f32; hd])?;
         let zff = upload_f32(&stream, &device, &vec![0.0f32; hff])?;
@@ -442,6 +443,9 @@ impl<'a> ForwardDriver<'a> {
             emb,
             head_norm,
             layers,
+            pos_dev,
+            zq,
+            zk,
             zh,
             zhd,
             zff,
@@ -459,13 +463,14 @@ impl<'a> ForwardDriver<'a> {
             gate_dev,
             up_dev,
             proj_dev,
+            decode_graph: None,
             h,
             hd,
             nh,
             nkv,
             hff,
-            qdim,
-            kvd,
+            _qdim: qdim,
+            _kvd: kvd,
             n_rot,
             eps,
             base,
@@ -505,40 +510,16 @@ impl<'a> ForwardDriver<'a> {
         self.layers.len()
     }
 
-    /// Single-token decode step over resident KV pool at current `self.pos`.
-    /// Increments `self.pos` by 1 and returns the next-token logits.
-    pub fn decode(&mut self, token: u32) -> Result<Vec<f32>, EngineError> {
-        if self.pos >= self.layout.block_tokens {
-            return Err(engine_cuda::CudaError::InvalidSize {
-                expected: self.layout.block_tokens,
-                actual: self.pos + 1,
-            }
-            .into());
-        }
-        let h = self.step_one(token, self.pos)?;
-        self.pos += 1;
-        self.stream.sync()?;
-        Ok(self.lm_head(&h))
-    }
-
-    /// Per-token single-topology forward pass at position `p`. Takes `&mut self`
-    /// because it mutates the resident KV pools / scratch device buffers through
-    /// interior mutability (`copy_from_host`, `append_kv`).
-    fn step_one(&mut self, token: u32, p: usize) -> Result<Vec<f32>, EngineError> {
-        self.vram_footprint()
-            .assert_within_budget(VRAM_BUDGET_BYTES)?;
-        let mut x_host = embed_lookup(&self.emb, token as usize);
-
+    /// Records the full 28-layer forward decode pass onto `self.stream`.
+    fn record_decode_pass(&self) -> Result<(), EngineError> {
         for layer in &self.layers {
             // Stage 1: Input RMSNorm (GPU)
-            self.x_dev
-                .copy_from_host(&self.stream, &f32_bytes(&x_host))?;
             self.nr.launch(
                 &self.stream,
                 &self.x_dev,
                 &self.zh,
                 &layer.an_dev,
-                &self.input_norm_dev,
+                &self.zh,
                 &self.input_norm_dev,
                 self.eps,
                 self.h,
@@ -579,103 +560,54 @@ impl<'a> ForwardDriver<'a> {
                 layer.wv_ne1,
             )?;
 
-            // Stage 4: Per-head Q/K RMSNorm + RoPE (GPU)
-            let mut qhost = download_f32(&self.stream, &self.q_dev, self.qdim)?;
-            let mut khost = download_f32(&self.stream, &self.k_dev, self.kvd)?;
+            // Stage 4: Per-head Q/K RMSNorm + RoPE (100% GPU, fused in single launch)
+            self.nr.launch_with_pos_ptr(
+                &self.stream,
+                &self.q_dev,
+                &self.zq,
+                &layer.qn_dev,
+                &self.zq,
+                &self.q_dev,
+                self.eps,
+                self.hd,
+                self.n_rot,
+                self.base,
+                0,
+                MODE_NORM | MODE_ROPE,
+                Some(&self.pos_dev),
+            )?;
 
-            for hh in 0..self.nh {
-                self.head_dev.copy_from_host(
-                    &self.stream,
-                    &f32_bytes(&qhost[hh * self.hd..(hh + 1) * self.hd]),
-                )?;
-                self.nr.launch(
-                    &self.stream,
-                    &self.head_dev,
-                    &self.zhd,
-                    &layer.qn_dev,
-                    &self.head_dev,
-                    &self.head_dev,
-                    self.eps,
-                    self.hd,
-                    0,
-                    self.base,
-                    0,
-                    MODE_NORM,
-                )?;
-                self.nr.launch(
-                    &self.stream,
-                    &self.head_dev,
-                    &self.zhd,
-                    &self.zhd,
-                    &self.head_dev,
-                    &self.head_dev,
-                    self.eps,
-                    self.hd,
-                    self.n_rot,
-                    self.base,
-                    p as u32,
-                    MODE_ROPE,
-                )?;
-                let out = download_f32(&self.stream, &self.head_dev, self.hd)?;
-                qhost[hh * self.hd..(hh + 1) * self.hd].copy_from_slice(&out);
-            }
-
-            for hh in 0..self.nkv {
-                self.head_dev.copy_from_host(
-                    &self.stream,
-                    &f32_bytes(&khost[hh * self.hd..(hh + 1) * self.hd]),
-                )?;
-                self.nr.launch(
-                    &self.stream,
-                    &self.head_dev,
-                    &self.zhd,
-                    &layer.kn_dev,
-                    &self.head_dev,
-                    &self.head_dev,
-                    self.eps,
-                    self.hd,
-                    0,
-                    self.base,
-                    0,
-                    MODE_NORM,
-                )?;
-                self.nr.launch(
-                    &self.stream,
-                    &self.head_dev,
-                    &self.zhd,
-                    &self.zhd,
-                    &self.head_dev,
-                    &self.head_dev,
-                    self.eps,
-                    self.hd,
-                    self.n_rot,
-                    self.base,
-                    p as u32,
-                    MODE_ROPE,
-                )?;
-                let out = download_f32(&self.stream, &self.head_dev, self.hd)?;
-                khost[hh * self.hd..(hh + 1) * self.hd].copy_from_slice(&out);
-            }
-
-            self.q_dev
-                .copy_from_host(&self.stream, &f32_bytes(&qhost))?;
-            self.k_dev
-                .copy_from_host(&self.stream, &f32_bytes(&khost))?;
+            self.nr.launch_with_pos_ptr(
+                &self.stream,
+                &self.k_dev,
+                &self.zk,
+                &layer.kn_dev,
+                &self.zk,
+                &self.k_dev,
+                self.eps,
+                self.hd,
+                self.n_rot,
+                self.base,
+                0,
+                MODE_NORM | MODE_ROPE,
+                Some(&self.pos_dev),
+            )?;
 
             // Stage 5: Paged KV Append (GPU)
-            self.pkv.append_kv(
+            self.pkv.append_kv_with_pos_ptr(
                 &self.stream,
                 &self.layout,
                 &layer.pool_dev,
                 &self.k_dev,
                 &self.v_dev,
                 &self.bt_dev,
-                p,
+                0,
                 1,
+                Some(&self.pos_dev),
             )?;
 
             // Stage 6: PagedAttention Decode (GPU)
-            self.pa.launch(
+            self.pa.launch_with_pos_ptr(
                 &self.stream,
                 &self.q_dev,
                 &layer.pool_dev,
@@ -685,12 +617,13 @@ impl<'a> ForwardDriver<'a> {
                 self.nkv,
                 self.hd,
                 self.layout.block_tokens,
-                p + 1,
-                p,
+                1,
+                0,
                 true,
+                Some(&self.pos_dev),
             )?;
 
-            // Stage 7: Output Projection + Residual 1 (Host)
+            // Stage 7: Output Projection + Residual 1
             self.gemv.gemv(
                 &self.stream,
                 layer.wo_fmt,
@@ -700,21 +633,28 @@ impl<'a> ForwardDriver<'a> {
                 layer.wo_ne0,
                 layer.wo_ne1,
             )?;
-            let op_host = download_f32(&self.stream, &self.op_dev, self.h)?;
-            let mut h1_host = vec![0.0f32; self.h];
-            for i in 0..self.h {
-                h1_host[i] = x_host[i] + op_host[i];
-            }
+            self.nr.launch(
+                &self.stream,
+                &self.op_dev,
+                &self.x_dev,
+                &self.zh,
+                &self.zh,
+                &self.h1_dev,
+                self.eps,
+                self.h,
+                0,
+                self.base,
+                0,
+                0,
+            )?;
 
-            // Stage 8: FFN Norm (GPU)
-            self.h1_dev
-                .copy_from_host(&self.stream, &f32_bytes(&h1_host))?;
+            // Stage 8: FFN Norm
             self.nr.launch(
                 &self.stream,
                 &self.h1_dev,
                 &self.zh,
                 &layer.fn_dev,
-                &self.ffin_dev,
+                &self.zh,
                 &self.ffin_dev,
                 self.eps,
                 self.h,
@@ -744,14 +684,14 @@ impl<'a> ForwardDriver<'a> {
                 layer.wup_ne1,
             )?;
 
-            // Stage 10: SwiGLU Gating (GPU)
+            // Stage 10: SwiGLU Gating
             self.nr.launch(
                 &self.stream,
                 &self.gate_dev,
                 &self.zff,
-                &self.proj_dev,
+                &self.zff,
                 &self.up_dev,
-                &self.proj_dev,
+                &self.gate_dev,
                 self.eps,
                 self.hff,
                 0,
@@ -760,25 +700,95 @@ impl<'a> ForwardDriver<'a> {
                 MODE_SWIGLU,
             )?;
 
-            // Stage 11: FFN Down + Residual 2 (Host)
+            // Stage 11: FFN Down + Residual 2
             self.gemv.gemv(
                 &self.stream,
                 layer.wdown_fmt,
                 &layer.wdown_dev,
+                &self.gate_dev,
                 &self.proj_dev,
-                &self.op_dev,
                 layer.wdown_ne0,
                 layer.wdown_ne1,
             )?;
-            let down_host = download_f32(&self.stream, &self.op_dev, self.h)?;
-            let mut h2_host = vec![0.0f32; self.h];
-            for i in 0..self.h {
-                h2_host[i] = h1_host[i] + down_host[i];
-            }
-            x_host = h2_host;
+            self.nr.launch(
+                &self.stream,
+                &self.proj_dev,
+                &self.h1_dev,
+                &self.zh,
+                &self.zh,
+                &self.x_dev,
+                self.eps,
+                self.h,
+                0,
+                self.base,
+                0,
+                0,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Captures the full 28-layer transformer decode pass into a CUDA graph.
+    pub fn capture_decode_graph(&mut self) -> Result<(), EngineError> {
+        self.stream.begin_capture()?;
+        self.record_decode_pass()?;
+        let graph = self.stream.end_capture()?;
+        let exec = graph.instantiate()?;
+        self.decode_graph = Some(exec);
+        Ok(())
+    }
+
+    /// Fast single-token decode using pre-captured CUDA graph with single driver launch.
+    pub fn decode_graph(&mut self, token: u32) -> Result<Vec<f32>, EngineError> {
+        if self.decode_graph.is_none() {
+            self.capture_decode_graph()?;
         }
 
-        Ok(x_host)
+        let p = self.pos;
+        if p >= self.layout.block_tokens {
+            return Err(engine_cuda::CudaError::InvalidSize {
+                expected: self.layout.block_tokens,
+                actual: p + 1,
+            }
+            .into());
+        }
+
+        let x_host = embed_lookup(&self.emb, token as usize);
+        self.x_dev
+            .copy_from_host(&self.stream, &f32_bytes(&x_host))?;
+        let pos_bytes = (p as u32).to_le_bytes();
+        self.pos_dev.copy_from_host(&self.stream, &pos_bytes)?;
+
+        if let Some(ref exec) = self.decode_graph {
+            exec.launch(&self.stream)?;
+        }
+
+        let last_hidden = download_f32(&self.stream, &self.x_dev, self.h)?;
+        self.pos += 1;
+        self.stream.sync()?;
+        Ok(self.lm_head(&last_hidden))
+    }
+
+    /// Single-token decode step over resident KV pool at current `self.pos`.
+    /// Executes via persistent single-launch CUDA Graph with device-side dynamic position advancing.
+    pub fn decode(&mut self, token: u32) -> Result<Vec<f32>, EngineError> {
+        self.decode_graph(token)
+    }
+
+    /// Per-token single-topology forward pass at position `p`.
+    fn step_one(&mut self, token: u32, p: usize) -> Result<Vec<f32>, EngineError> {
+        self.vram_footprint()
+            .assert_within_budget(VRAM_BUDGET_BYTES)?;
+        let x_host = embed_lookup(&self.emb, token as usize);
+        self.x_dev
+            .copy_from_host(&self.stream, &f32_bytes(&x_host))?;
+        let pos_bytes = (p as u32).to_le_bytes();
+        self.pos_dev.copy_from_host(&self.stream, &pos_bytes)?;
+
+        self.record_decode_pass()?;
+
+        let last_hidden = download_f32(&self.stream, &self.x_dev, self.h)?;
+        Ok(last_hidden)
     }
 
     /// Computes next-token logits from the final hidden state.

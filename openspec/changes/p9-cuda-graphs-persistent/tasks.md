@@ -13,10 +13,10 @@
 - Gate PASS: `graph_dynamic_params_test` max difference = `0.000000e0` (bit-exact) across 8 sequential positions.
 
 ## 3. ForwardDriver Graph Capture & Execution (sub-change 9.3)
-- [ ] 3.1 Implement `ForwardDriver::capture_decode_graph()` in `engine-core/src/forward_driver.rs`.
-- [ ] 3.2 Implement `ForwardDriver::decode_graph()` executing single-token decode via `CudaGraphExec::launch()`.
-- [ ] 3.3 Create parity test `engine-core/tests/driver_graph_parity.rs` asserting bit-identical logits (`cos-sim >= 0.9999`) between graph decode and standard decode.
-- Gate: `cargo test -p engine-core --test driver_graph_parity` PASS.
+- [x] 3.1 Implement `ForwardDriver::capture_decode_graph()` in `engine-core/src/forward_driver.rs`.
+- [x] 3.2 Implement `ForwardDriver::decode_graph()` executing single-token decode via `CudaGraphExec::launch()`.
+- [x] 3.3 Create parity test `engine-core/tests/driver_graph_parity.rs` asserting bit-identical logits (`cos-sim >= 0.9999`) between graph decode and standard decode.
+- Gate PASS: `driver_graph_parity` PASS on multi-prompt sequence with zero NaNs and bit-exact tokens.
 
 ## 4. End-to-End Speedup & Benchmarks Seal (sub-change 9.4)
 - [ ] 4.1 Benchmark sustained decode throughput in `engine-server/tests/real_throughput_gate.rs` with CUDA graphs enabled.
