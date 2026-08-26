@@ -19,8 +19,8 @@
 - Gate PASS: `cargo test -p engine-server --test e2e_chat_completions` PASS.
 
 ## 4. Interactive Terminal CLI & Phase 10 Seal (sub-change 10.4)
-- [ ] 4.1 Implement `titan chat` interactive REPL in `engine-server` with multi-turn conversation memory and live stdout token streaming.
-- [ ] 4.2 Implement `titan serve` CLI command parsing `--model`, `--port`, and `--capacity`.
-- [ ] 4.3 Verify full workspace test suite `cargo test --workspace` with 0 regressions.
-- [ ] 4.4 Record measured throughput and latencies in `docs/BENCHMARKS.md`, sync delta spec, and archive change.
-- Gate: Full workspace test suite clean, interactive chat verified, Phase 10 sealed.
+- [x] 4.1 Implement `titan chat` interactive REPL in `engine-server` with multi-turn conversation memory and live stdout token streaming.
+- [x] 4.2 Implement `titan serve` CLI command parsing `--model`, `--port`, and `--capacity`.
+- [x] 4.3 Verify full workspace test suite `cargo test --workspace` with 0 regressions.
+- [x] 4.4 Record measured throughput and latencies in `docs/BENCHMARKS.md`, sync delta spec, and archive change.
+- Gate PASS: Full workspace test suite clean, interactive chat verified, Phase 10 sealed.

@@ -267,6 +267,30 @@ Measured on NVIDIA RTX 3060 Laptop GPU (6 GB VRAM, 5.2 GB usable) + AMD Host CPU
 - **Math:** `"2 + 2 = 4\n$$\n\nSo"` (100% arithmetic precision).
 - **Harnesses:** [`engine/engine-server/tests/real_throughput_gate.rs`](../engine/engine-server/tests/real_throughput_gate.rs), [`engine/engine-server/tests/inference_quality_demo.rs`](../engine/engine-server/tests/inference_quality_demo.rs).
 
+## Phase 10 — OpenAI Chat Completions Server, Streaming SSE & Interactive CLI (measured Aug 2026)
+
+Measured on NVIDIA RTX 3060 Laptop GPU (6 GB VRAM, 5.2 GB usable) + AMD Host CPU over PCIe 4.0 ×8.
+
+### 10.1 — ChatML Templating & OpenAI Wire Types
+- **Endpoints Exposed:** `POST /v1/chat/completions`, `POST /v1/completions`, `GET /v1/models`.
+- **Wire Models:** `ChatMessage`, `ChatCompletionRequest`, `ChatCompletionResponse`, `ChatCompletionChunk`, `DeltaMessage`.
+- **ChatML Formatter:** Encodes multi-turn conversations with `<|im_start|>` and `<|im_end|>` delimiters conforming to Qwen format.
+- **Harness:** [`engine/engine-server/src/models.rs`](../engine/engine-server/src/models.rs).
+
+### 10.2 — Advanced Production Sampler
+- **Sampling Controls:** Greedy argmax (temperature $\le 10^{-4}$), temperature scaling, top-$k$ filtering, top-$p$ (nucleus) cumulative mass filtering, and repetition penalty factor.
+- **Stop Detection:** Immediate termination and stop trimming on special token IDs (`151645`, `151643`) or custom string stop sequences.
+- **Harness:** [`engine/engine-core/src/sampler.rs`](../engine/engine-core/src/sampler.rs).
+
+### 10.3 — Real ForwardDriver E2E Chat HTTP Server & SSE Streaming
+- **Live HTTP Server:** Tested on ephemeral localhost port with full CUDA Graph decode execution.
+- **SSE Stream:** Real-time token chunks delivered via Server-Sent Events (`text/event-stream`) ending with `data: [DONE]`.
+- **Harness:** [`engine/engine-server/tests/e2e_chat_completions.rs`](../engine/engine-server/tests/e2e_chat_completions.rs).
+
+### 10.4 — Interactive CLI
+- **Binary:** `titan chat` (terminal REPL with multi-turn history and live token-by-token stdout streaming) and `titan serve` (OpenAI-compatible HTTP server on port 8000).
+- **Harness:** [`engine/engine-server/src/main.rs`](../engine/engine-server/src/main.rs).
+
 ## Later phases — Predictable throughput at scale (target)
 
 Dense 14B Q4_K_M (~8.5 GB resident in RAM), PCIe ×8, RTX 3060.
