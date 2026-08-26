@@ -127,7 +127,10 @@ pub fn forward_logits_real(
     model: &mut RealModel<'_>,
     prompt: &str,
 ) -> Result<Vec<f32>, EngineError> {
-    if let (Some(driver), Some(tokenizer)) = (model.driver.as_mut(), model.tokenizer.as_ref()) {
+    let RealModel {
+        driver, tokenizer, ..
+    } = model;
+    if let (Some(driver), Some(tokenizer)) = (driver.as_mut(), tokenizer.as_ref()) {
         let tokens = tokenizer.encode(prompt)?;
         driver.prefill(&tokens)
     } else {
@@ -205,12 +208,15 @@ pub fn prompt_token(prompt: &str, vocab: u32) -> u32 {
 /// decode steps over the streamed GPU pipeline.
 /// When not hooked, falls back to the deterministic placeholder stub path.
 pub fn decode_run(
-    model: &mut RealModel,
+    model: &mut RealModel<'_>,
     vocab: u32,
     prompt: &str,
     max_tokens: u32,
 ) -> Result<Vec<u32>, EngineError> {
-    if let (Some(driver), Some(tokenizer)) = (model.driver.as_mut(), model.tokenizer.as_ref()) {
+    let RealModel {
+        driver, tokenizer, ..
+    } = model;
+    if let (Some(driver), Some(tokenizer)) = (driver.as_mut(), tokenizer.as_ref()) {
         let tokens = tokenizer.encode(prompt)?;
         if tokens.is_empty() || max_tokens == 0 {
             return Ok(Vec::new());

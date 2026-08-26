@@ -13,9 +13,9 @@
 - [x] 1.3 Verify PASS — logit cos-sim = 0.997143 > 0.99 vs golden `logits_00.bin` (borderline-flip-tolerant top ranking validated).
 
 ## 2. Sub-gate 2 — SSE E2E autoregressive generation
-- [ ] 2.1 Failing test: SSE request → coherent autoregressive text from the streamed pipeline (golden-anchored prompt)
-- [ ] 2.2 Wire real generator into SSE handler
-- [ ] 2.3 E2E green: valid tokens, stream closes cleanly, n>1 tokens
+- [x] 2.1 Failing test: SSE request → coherent autoregressive text from the streamed pipeline (`engine-server/tests/e2e_real_forward_sse.rs`).
+- [x] 2.2 Wire real generator and `BpeTokenizer` text decoding into SSE handler and non-streaming handler in `server.rs`.
+- [x] 2.3 E2E green: valid tokens streamed incrementally, clean `[DONE]` termination, streaming/non-streaming parity.
 
 ## 3. Sub-gate 3 — throughput vs baseline
 - [ ] 3.1 Benchmark real path ids/s on same prompt set as baseline artifact

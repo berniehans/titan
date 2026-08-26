@@ -184,10 +184,115 @@ pub struct RealServerCfg {
     pub model: crate::runtime::SharedRealModel,
 }
 
-/// Runs one completion through the real model runtime.
-fn decode_tokens_real(cfg: &RealServerCfg, prompt: &str, max_tokens: u32) -> Vec<u32> {
-    let mut model = cfg.model.lock().expect("real model lock");
-    crate::runtime::decode_run(&mut model, cfg.vocab, prompt, max_tokens).expect("real decode run")
+use crate::runtime::RealModel;
+
+/// Runs one completion through the real model runtime, returning both token IDs and decoded text chunks.
+fn decode_tokens_and_texts_real(
+    cfg: &RealServerCfg,
+    prompt: &str,
+    max_tokens: u32,
+) -> (Vec<u32>, Vec<String>) {
+    let mut model_guard = cfg.model.lock().expect("real model lock");
+    let RealModel {
+        driver, tokenizer, ..
+    } = &mut *model_guard;
+
+    if let (Some(driver), Some(tokenizer)) = (driver.as_mut(), tokenizer.as_ref()) {
+        let prompt_tokens = match tokenizer.encode(prompt) {
+            Ok(t) => t,
+            Err(_) => return (Vec::new(), Vec::new()),
+        };
+        if prompt_tokens.is_empty() || max_tokens == 0 {
+            return (Vec::new(), Vec::new());
+        }
+        let mut tokens = Vec::with_capacity(max_tokens as usize);
+        let mut texts = Vec::with_capacity(max_tokens as usize);
+
+        let initial_logits = driver.prefill(&prompt_tokens).expect("driver prefill");
+        let mut current = crate::runtime::argmax(&initial_logits);
+        let text_piece = tokenizer
+            .decode(&[current])
+            .unwrap_or_else(|_| token_text(current));
+        tokens.push(current);
+        texts.push(text_piece);
+
+        for _ in 1..max_tokens {
+            let logits = driver.decode(current).expect("driver decode");
+            current = crate::runtime::argmax(&logits);
+            let piece = tokenizer
+                .decode(&[current])
+                .unwrap_or_else(|_| token_text(current));
+            tokens.push(current);
+            texts.push(piece);
+        }
+        (tokens, texts)
+    } else {
+        let tokens = crate::runtime::decode_run(&mut model_guard, cfg.vocab, prompt, max_tokens)
+            .expect("real decode run");
+        let texts = tokens.iter().map(|&t| token_text(t)).collect();
+        (tokens, texts)
+    }
+}
+
+/// Builds the SSE event sequence from tokens and decoded text chunks.
+fn tokens_and_texts_to_events(
+    prompt: &str,
+    model: &str,
+    tokens: &[u32],
+    texts: &[String],
+) -> Vec<Event> {
+    let length = "length".to_string();
+    let mut events = Vec::with_capacity(tokens.len() + 1);
+    let last = tokens.len().saturating_sub(1);
+    for (i, t) in tokens.iter().enumerate() {
+        let choices = vec![ChunkChoice {
+            index: i as u32,
+            text: texts.get(i).cloned().unwrap_or_else(|| token_text(*t)),
+            finish_reason: if i == last {
+                Some(length.clone())
+            } else {
+                None
+            },
+        }];
+        let chunk = CompletionChunk {
+            id: completion_id(prompt),
+            object: "text_completion".to_string(),
+            created: 1u64,
+            model: model.to_string(),
+            choices,
+        };
+        events.push(data_event(serialize(&chunk)));
+    }
+    events.push(done_event());
+    events
+}
+
+/// Builds a non-streaming completion response from tokens and decoded text chunks.
+fn tokens_and_texts_to_completion(
+    prompt: &str,
+    model: &str,
+    tokens: &[u32],
+    texts: &[String],
+) -> CompletionResponse {
+    let text = texts.concat();
+    let completion_tokens = tokens.len() as u32;
+    let choices = vec![CompletionChoice {
+        text,
+        index: 0,
+        finish_reason: "length".to_string(),
+    }];
+    CompletionResponse {
+        id: completion_id(prompt),
+        object: "text_completion".to_string(),
+        created: 1u64,
+        model: model.to_string(),
+        choices,
+        usage: CompletionUsage {
+            prompt_tokens: 1,
+            completion_tokens,
+            total_tokens: 1 + completion_tokens,
+        },
+    }
 }
 
 async fn handle_real_completion(
@@ -199,12 +304,23 @@ async fn handle_real_completion(
     } else {
         body.max_tokens
     };
-    let tokens = decode_tokens_real(&cfg, &body.prompt, max_tokens);
+    let (tokens, texts) = decode_tokens_and_texts_real(&cfg, &body.prompt, max_tokens);
     if body.stream {
-        to_sse(tokens_to_events(&body.prompt, &body.model, &tokens)).into_response()
+        to_sse(tokens_and_texts_to_events(
+            &body.prompt,
+            &body.model,
+            &tokens,
+            &texts,
+        ))
+        .into_response()
     } else {
-        JsonResponse::<CompletionResponse>(tokens_to_completion(&body.prompt, &body.model, &tokens))
-            .into_response()
+        JsonResponse::<CompletionResponse>(tokens_and_texts_to_completion(
+            &body.prompt,
+            &body.model,
+            &tokens,
+            &texts,
+        ))
+        .into_response()
     }
 }
 
