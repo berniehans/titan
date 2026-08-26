@@ -56,12 +56,12 @@ fn fixture_path() -> Option<PathBuf> {
 /// Builds a real model from the fixture (loader -> pinned -> GPU dequant).
 fn build_model(
     window_bytes: usize,
-) -> Result<(SharedRealModel, GgufReader, LoadedPinned), DynError> {
+) -> Result<(SharedRealModel, GgufReader, &'static LoadedPinned), DynError> {
     let fixture = fixture_path().ok_or("fixture not present (GPU E2E requires the GGUF)")?;
     let reader = GgufReader::open(&fixture)?;
-    let pinned = load_to_pinned(&reader, &fixture)?;
+    let pinned: &'static LoadedPinned = Box::leak(Box::new(load_to_pinned(&reader, &fixture)?));
     let _device = CudaDevice::new(0)?;
-    let model = runtime::build_real_model(&reader, &pinned, window_bytes)?;
+    let model = runtime::build_real_model(&reader, pinned, window_bytes)?;
     Ok((Arc::new(Mutex::new(model)), reader, pinned))
 }
 

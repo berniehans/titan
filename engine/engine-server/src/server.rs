@@ -186,8 +186,8 @@ pub struct RealServerCfg {
 
 /// Runs one completion through the real model runtime.
 fn decode_tokens_real(cfg: &RealServerCfg, prompt: &str, max_tokens: u32) -> Vec<u32> {
-    let model = cfg.model.lock().expect("real model lock");
-    crate::runtime::decode_run(&model, cfg.vocab, prompt, max_tokens).expect("real decode run")
+    let mut model = cfg.model.lock().expect("real model lock");
+    crate::runtime::decode_run(&mut model, cfg.vocab, prompt, max_tokens).expect("real decode run")
 }
 
 async fn handle_real_completion(

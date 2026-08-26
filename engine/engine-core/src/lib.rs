@@ -6,6 +6,7 @@ pub mod pipeline;
 pub mod tokenizer;
 
 pub use error::EngineError;
+pub use forward_driver::{ForwardDriver, VramFootprint};
 pub use pipeline::{Pipeline, PipelineStats};
 pub use tokenizer::BpeTokenizer;
 

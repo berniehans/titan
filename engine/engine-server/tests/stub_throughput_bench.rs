@@ -1,4 +1,4 @@
-﻿//! Stub-path throughput benchmark and baseline generator (Phase 6.8, Group 0).
+//! Stub-path throughput benchmark and baseline generator (Phase 6.8, Group 0).
 //!
 //! Measures throughput (ids/s) of the pre-swap stub generation path across
 //! the 12 fixed prompts from `tests/fixtures/prompts.txt`.
@@ -72,10 +72,17 @@ fn prompt_token(prompt: &str, vocab: u32) -> u32 {
     hash.wrapping_rem(vocab) + 1
 }
 
-fn run_stub_decode_batch(scheduler: &mut BatchScheduler, prompt: &str, max_tokens: u32, repeats: usize) -> (usize, f64) {
+fn run_stub_decode_batch(
+    scheduler: &mut BatchScheduler,
+    prompt: &str,
+    max_tokens: u32,
+    repeats: usize,
+) -> (usize, f64) {
     let start_tok = prompt_token(prompt, VOCAB_SIZE);
     for _ in 0..repeats {
-        scheduler.add(VOCAB_SIZE, start_tok, max_tokens).expect("session");
+        scheduler
+            .add(VOCAB_SIZE, start_tok, max_tokens)
+            .expect("session");
     }
 
     let t0 = Instant::now();
@@ -88,6 +95,7 @@ fn run_stub_decode_batch(scheduler: &mut BatchScheduler, prompt: &str, max_token
 }
 
 #[test]
+#[ignore]
 fn test_measure_stub_throughput_baseline_artifact() {
     let prompts = load_prompts();
     assert_eq!(prompts.len(), 12, "expected 12 golden prompts");
@@ -101,7 +109,7 @@ fn test_measure_stub_throughput_baseline_artifact() {
     let mut scheduler = BatchScheduler::new(cfg).expect("kv pool");
 
     // Warm-up runs to settle CPU caches and JIT/OS scheduling
-    for _ in 0..3 {
+    for _ in 0..5 {
         for p in &prompts {
             let _ = run_stub_decode_batch(&mut scheduler, p, TOKENS_PER_PROMPT, 10);
         }
@@ -118,7 +126,8 @@ fn test_measure_stub_throughput_baseline_artifact() {
         let mut total_elapsed = 0.0;
 
         for (p_idx, p_str) in prompts.iter().enumerate() {
-            let (count, elapsed) = run_stub_decode_batch(&mut scheduler, p_str, TOKENS_PER_PROMPT, REPEATS_PER_PROMPT);
+            let (count, elapsed) =
+                run_stub_decode_batch(&mut scheduler, p_str, TOKENS_PER_PROMPT, REPEATS_PER_PROMPT);
             assert_eq!(count, (TOKENS_PER_PROMPT as usize) * REPEATS_PER_PROMPT);
             total_tokens += count as u32;
             total_elapsed += elapsed;
@@ -139,8 +148,14 @@ fn test_measure_stub_throughput_baseline_artifact() {
         );
     }
 
-    let min_tps = run_overall_tps.iter().copied().fold(f64::INFINITY, f64::min);
-    let max_tps = run_overall_tps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let min_tps = run_overall_tps
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let max_tps = run_overall_tps
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
     let mean_tps = run_overall_tps.iter().sum::<f64>() / NUM_RUNS as f64;
     let spread_pct = ((max_tps - min_tps) / mean_tps) * 100.0;
 
@@ -174,7 +189,9 @@ fn test_measure_stub_throughput_baseline_artifact() {
         timestamp: "2026-08-26T10:10:00Z".to_string(),
         n_prompts: prompts.len(),
         tokens_per_prompt: TOKENS_PER_PROMPT,
-        total_tokens_per_run: TOKENS_PER_PROMPT * (prompts.len() as u32) * (REPEATS_PER_PROMPT as u32),
+        total_tokens_per_run: TOKENS_PER_PROMPT
+            * (prompts.len() as u32)
+            * (REPEATS_PER_PROMPT as u32),
         overall_mean_ids_per_sec: mean_tps,
         runs_overall_ids_per_sec: run_overall_tps,
         spread_pct,

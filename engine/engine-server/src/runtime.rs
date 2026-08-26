@@ -25,8 +25,8 @@
 /// - CI-safe tests keep the synthetic `KV` decode path; nothing here runs in
 ///   `cargo test --workspace` (GPU + fixture required).
 use cudarc::driver::CudaDevice;
-use engine_core::{EngineError, Pipeline};
-use engine_io::{GgmlType, GgufReader, LoadedPinned};
+use engine_core::{BpeTokenizer, EngineError, ForwardDriver, Pipeline};
+use engine_io::{GgmlType, GgufReader, LoadedPinned, ModelConfig};
 use std::sync::{Arc, Mutex};
 
 /// Q4_K_M super-block geometry — must match `engine_core::dequant` and the
@@ -41,12 +41,15 @@ const Q4K_FLOATS_PER_BLOCK: usize = 256;
 /// the dequant-aligned Q4_K weight tensor slices that the generation loop
 /// streams to the GPU (copied out of the loader's pinned fixture).
 ///
+/// When initialized via `build_real_driver_model`, also owns the full `ForwardDriver`
+/// and `BpeTokenizer` for real end-to-end model execution.
+///
 /// `Mutex`-wrapped because axum serves concurrent requests on tokio worker
 /// threads but a single CUDA pipeline is not re-entrant across threads.
-pub type SharedRealModel = Arc<Mutex<RealModel>>;
+pub type SharedRealModel = Arc<Mutex<RealModel<'static>>>;
 
 /// The owned real model (inside `SharedRealModel`).
-pub struct RealModel {
+pub struct RealModel<'a> {
     /// CUDA device (kernel/token lifetimes).
     pub device: Arc<CudaDevice>,
     /// Real double-buffered pipeline with the Q4_K dequantizer enabled.
@@ -56,6 +59,10 @@ pub struct RealModel {
     pub weight_slices: Vec<Vec<u8>>,
     /// Byte window budget consumed by `weight_slices`.
     pub window_bytes: usize,
+    /// Full forward driver over the streamed GPU pipeline (Phase 6.7/6.8).
+    pub driver: Option<ForwardDriver<'a>>,
+    /// Real BPE tokenizer loaded from GGUF metadata.
+    pub tokenizer: Option<BpeTokenizer>,
 }
 
 /// Builds a real server model from an already-open `GgufReader` + its loaded
@@ -65,11 +72,11 @@ pub struct RealModel {
 /// and constructs `Pipeline::with_dequantizer` sized to the largest slice.
 /// Requires a local CUDA device and NVRTC on PATH. Loading (which returns
 /// `GgufError`, not `EngineError`) stays with the caller (`#[ignore]` GPU test).
-pub fn build_real_model(
+pub fn build_real_model<'a>(
     reader: &GgufReader,
-    fixture: &LoadedPinned,
+    fixture: &'a LoadedPinned,
     window_bytes: usize,
-) -> Result<RealModel, EngineError> {
+) -> Result<RealModel<'a>, EngineError> {
     let mut weight_slices: Vec<Vec<u8>> = Vec::new();
     let mut budget = 0usize;
     let mut max_bytes = 0usize;
@@ -95,13 +102,53 @@ pub fn build_real_model(
         pipeline,
         weight_slices,
         window_bytes: budget,
+        driver: None,
+        tokenizer: None,
     })
+}
+
+/// Builds a real server model hooked to `ForwardDriver` and `BpeTokenizer` (Phase 6.8).
+pub fn build_real_driver_model<'a>(
+    reader: &GgufReader,
+    fixture: &'a LoadedPinned,
+    max_seq: usize,
+) -> Result<RealModel<'a>, EngineError> {
+    let mut model = build_real_model(reader, fixture, 64 * 1024 * 1024)?;
+    let tokenizer = BpeTokenizer::from_reader(reader)?;
+    let cfg = ModelConfig::from_reader(reader)?;
+    let driver = ForwardDriver::new(reader, fixture, &cfg, max_seq)?;
+    model.driver = Some(driver);
+    model.tokenizer = Some(tokenizer);
+    Ok(model)
+}
+
+/// Runs teacher-forced forward prefill on the given prompt and returns next-token logits.
+pub fn forward_logits_real(
+    model: &mut RealModel<'_>,
+    prompt: &str,
+) -> Result<Vec<f32>, EngineError> {
+    if let (Some(driver), Some(tokenizer)) = (model.driver.as_mut(), model.tokenizer.as_ref()) {
+        let tokens = tokenizer.encode(prompt)?;
+        driver.prefill(&tokens)
+    } else {
+        Err(engine_cuda::CudaError::AllocFailed("Driver not initialized in RealModel").into())
+    }
+}
+
+/// Helper: returns the index of the maximum value in a slice.
+pub fn argmax(slice: &[f32]) -> u32 {
+    slice
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(idx, _)| idx as u32)
+        .unwrap_or(0)
 }
 
 /// Runs the real dequantizer over the model's aligned tensors and returns a
 /// deterministic 64-bit digest of the dequantized floats. Two calls on the
 /// same model return the same digest; two different models differ.
-pub fn forward_digest(model: &RealModel) -> Result<u64, EngineError> {
+pub fn forward_digest(model: &RealModel<'_>) -> Result<u64, EngineError> {
     let refs: Vec<&[u8]> = model.weight_slices.iter().map(|s| s.as_slice()).collect();
     if refs.is_empty() {
         return Ok(0);
@@ -153,24 +200,41 @@ pub fn prompt_token(prompt: &str, vocab: u32) -> u32 {
     hash.wrapping_rem(vocab) + 1
 }
 
-/// Runs a multi-step real decode for one completion. Each step streams the
-/// fixture's real dequantized tensors through the pipeline, reads back and
-/// digests them, then derives the next token deterministically. The `vocab`
-/// bounds the stub token ids.
+/// Runs a multi-step decode for one completion.
+/// When `driver` and `tokenizer` are hooked, runs real forward prefill and single-token
+/// decode steps over the streamed GPU pipeline.
+/// When not hooked, falls back to the deterministic placeholder stub path.
 pub fn decode_run(
-    model: &RealModel,
+    model: &mut RealModel,
     vocab: u32,
     prompt: &str,
     max_tokens: u32,
 ) -> Result<Vec<u32>, EngineError> {
-    let mut out = Vec::<u32>::with_capacity(max_tokens as usize);
-    let mut current = prompt_token(prompt, vocab);
-    for _ in 0..max_tokens {
-        let d = forward_digest(model)?;
-        current = stub_next_token(current, d, vocab);
+    if let (Some(driver), Some(tokenizer)) = (model.driver.as_mut(), model.tokenizer.as_ref()) {
+        let tokens = tokenizer.encode(prompt)?;
+        if tokens.is_empty() || max_tokens == 0 {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::with_capacity(max_tokens as usize);
+        let initial_logits = driver.prefill(&tokens)?;
+        let mut current = argmax(&initial_logits);
         out.push(current);
+        for _ in 1..max_tokens {
+            let logits = driver.decode(current)?;
+            current = argmax(&logits);
+            out.push(current);
+        }
+        Ok(out)
+    } else {
+        let mut out = Vec::<u32>::with_capacity(max_tokens as usize);
+        let mut current = prompt_token(prompt, vocab);
+        for _ in 0..max_tokens {
+            let d = forward_digest(model)?;
+            current = stub_next_token(current, d, vocab);
+            out.push(current);
+        }
+        Ok(out)
     }
-    Ok(out)
 }
 
 #[cfg(test)]
