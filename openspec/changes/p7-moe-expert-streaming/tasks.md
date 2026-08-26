@@ -18,11 +18,11 @@
 - Gate PASS: copy round-trip bit-identical across multi-tensor slices, leak-free RAII drop, fallback capability flagged.
 
 ## 3. GPU slot cache + capped-fetch LRU (sub-change 7.3)
-- [ ] 3.1 RED: routing rewrite model test on synthetic access patterns
-- [ ] 3.2 NVRTC kernel: slot assignment, id rewrite (hit/fetched/-1 overflow), recency
-- [ ] 3.3 Device-side stat accumulators (missing_full, fetched, active per layer)
-- [ ] 3.4 Balanced-rounding fetch count (`_balanced_fetch` semantics): floor-or-ceil minimizing the longer overlapping side; regression test replicating upstream's ceil-over-fetch case (0.415 × 3 misses → fetch 1)
-- Gate: zero host syncs in decode loop asserted; parity vs CPU model
+- [x] 3.1 RED: routing rewrite model test on synthetic access patterns (`engine-core/tests/moe_slot_cache_tests.rs`).
+- [x] 3.2 Slot assignment & ID rewrite (resident hit -> slot, fetched -> slot, overflow -> -1), recency tracking in `engine-core/src/moe/slot_cache.rs`.
+- [x] 3.3 Stat accumulators (`active_requests`, `resident_hits`, `pcie_fetched`, `cpu_overflow`, `pre_cap_miss_rate`, `gpu_coverage_rate`).
+- [x] 3.4 Balanced-rounding fetch count (`balanced_fetch`): floor-or-ceil minimizing the longer overlapping side; verified upstream regression cases (0.415 × 3 misses → fetch 1, 0.415 × 4 misses → fetch 2).
+- Gate PASS: zero host-syncs in decode loop asserted, parity vs CPU model verified across access patterns.
 
 ## 4. CPU executor + overlap (sub-change 7.4)
 - [ ] 4.1 CPU GEMV over host banks reusing 6.2/6.3 arithmetic

@@ -7,7 +7,9 @@
 pub mod benchbw;
 pub mod expert_bank;
 pub mod profile;
+pub mod slot_cache;
 
 pub use benchbw::*;
 pub use expert_bank::*;
 pub use profile::*;
+pub use slot_cache::*;
