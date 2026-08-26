@@ -3,9 +3,9 @@
 > Execute via bot coder. Strict TDD. One commit per task group. GPU tests: `#[ignore]` + NVRTC PATH trick.
 
 ## 1. VRAM accounting map
-- [ ] 1.1 Failing test: static per-stage VRAM map (ping-pong slots + KV pool growth/token + activations + logits buffers) sums ≤ 5.2 GB budget
-- [ ] 1.2 Implement accounting module emitting per-stage sizes from config + runtime traces
-- [ ] 1.3 Verify PASS (budget trace printed: per stage and aggregate)
+- [x] 1.1 Failing test: static per-stage VRAM map (ping-pong slots + KV pool growth/token + activations + logits buffers) sums ≤ 5.2 GB budget (`engine-core/tests/vram_accounting_tests.rs`).
+- [x] 1.2 Implement accounting module emitting per-stage sizes from config + runtime traces (`engine-core/src/vram_accounting.rs`).
+- [x] 1.3 Verify PASS — budget trace printed: 622.17 MB resident / 461.07 MB streaming at 2048 tokens vs 5.2 GB budget (utilization 11.69% / 8.67%).
 
 ## 2. Real stage numbers
 - [ ] 2.1 Run generation workload under accounting; collect ping-pong, KV growth/token, activation cliffs, logits transfer bytes
