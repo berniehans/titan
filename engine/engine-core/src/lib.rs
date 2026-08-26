@@ -4,6 +4,7 @@ pub mod forward_cpu;
 pub mod forward_driver;
 pub mod moe;
 pub mod pipeline;
+pub mod sampler;
 pub mod tokenizer;
 pub mod vram_accounting;
 
@@ -18,6 +19,7 @@ pub use moe::{
     resolve_hybrid_fetch_fraction,
 };
 pub use pipeline::{Pipeline, PipelineStats};
+pub use sampler::{Sampler, SamplerParams};
 pub use tokenizer::BpeTokenizer;
 pub use vram_accounting::{VramStageBreakdown, compute_static_vram_map};
 

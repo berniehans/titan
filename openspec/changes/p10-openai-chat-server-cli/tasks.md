@@ -7,9 +7,9 @@
 - Gate PASS: `cargo test -p engine-server --lib models` PASS.
 
 ## 2. Advanced Production Sampler & Stop Handling (sub-change 10.2)
-- [ ] 2.1 Implement `Sampler` in `engine-core` supporting greedy argmax, temperature scaling, top-$k$, top-$p$ (nucleus), repetition penalty, and stop token detection.
-- [ ] 2.2 Create unit tests verifying deterministic greedy fallback when temperature=0, top-p filtering, and stop sequence trimming.
-- Gate: `cargo test -p engine-core --lib sampler` PASS.
+- [x] 2.1 Implement `Sampler` in `engine-core` supporting greedy argmax, temperature scaling, top-$k$, top-$p$ (nucleus), repetition penalty, and stop token detection.
+- [x] 2.2 Create unit tests verifying deterministic greedy fallback when temperature=0, top-p filtering, and stop sequence trimming.
+- Gate PASS: `cargo test -p engine-core --lib sampler` PASS.
 
 ## 3. Server Real-Engine Integration & SSE Streaming (sub-change 10.3)
 - [ ] 3.1 Implement background GPU `EngineService` actor running `ForwardDriver` with CUDA Graph decode and continuous token generation.
