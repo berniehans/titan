@@ -1,10 +1,10 @@
 # Implementation Tasks: Phase 11 — Chunked Prefill & FlashAttention-2 GPU Kernel
 
 ## 1. Batched Quantized GEMM Kernels (sub-change 11.1)
-- [ ] 1.1 Implement `gemm_q4k_kernel`, `gemm_q6k_kernel`, and `gemm_q80_kernel` in `engine-cuda/kernels/gemm_quant.cu` for arbitrary batch size $M \ge 1$.
-- [ ] 1.2 Implement Rust RAII wrapper `BatchedQuantGEMV` / `BatchedGEMM` in `engine-cuda/src/gemm.rs`.
-- [ ] 1.3 Create TDD parity test `engine-cuda/tests/gemm_batched_parity.rs` testing $M \in \{16, 64, 128, 256\}$ against CPU reference.
-- Gate: `cargo test -p engine-cuda --test gemm_batched_parity` PASS (`cos-sim >= 0.9999`).
+- [x] 1.1 Implement `gemm_q4k_kernel`, `gemm_q6k_kernel`, and `gemm_q80_kernel` in `engine-cuda/kernels/gemm_quant.cu` for arbitrary batch size $M \ge 1$.
+- [x] 1.2 Implement Rust RAII wrapper `BatchedQuantGEMV` / `BatchedGEMM` in `engine-cuda/src/batched_gemm.rs`.
+- [x] 1.3 Create TDD parity test `engine-cuda/tests/gemm_batched_parity.rs` testing $M \in \{16, 64, 128, 256\}$ against CPU reference.
+- Gate PASS: `cargo test -p engine-cuda --test gemm_batched_parity` PASS (`cos-sim >= 0.9999`).
 
 ## 2. FlashAttention-2 Causal GPU Kernel (sub-change 11.2)
 - [ ] 2.1 Implement `flash_attention_2_kernel` in `engine-cuda/kernels/flash_attention_2.cu` with online softmax scaling and paged KV pool reading.

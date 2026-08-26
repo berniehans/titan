@@ -1,3 +1,4 @@
+pub mod batched_gemm;
 pub mod dequant;
 pub mod dequant_q6k;
 pub mod device_buffer;
@@ -11,6 +12,7 @@ pub mod paged_kv;
 pub mod pinned_host;
 pub mod streams;
 
+pub use batched_gemm::BatchedGEMM;
 pub use dequant::Q4KDequantizer;
 pub use dequant_q6k::Q6KDequantizer;
 pub use device_buffer::DeviceBuffer;
