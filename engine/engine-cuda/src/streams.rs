@@ -62,6 +62,43 @@ impl CudaStream {
         Ok(())
     }
 
+    /// Begins capturing CUDA operations issued to this stream into a CUDA graph.
+    pub fn begin_capture(&self) -> Result<(), CudaError> {
+        self.device.bind_to_thread()?;
+
+        let res = unsafe {
+            let lib = cudarc::driver::sys::lib();
+            lib.cuStreamBeginCapture_v2(
+                self.stream,
+                cudarc::driver::sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_GLOBAL,
+            )
+        };
+
+        if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+            return Err(CudaError::GraphFailed("cuStreamBeginCapture_v2", res));
+        }
+
+        Ok(())
+    }
+
+    /// Ends stream capture and returns the captured `CudaGraph`.
+    pub fn end_capture(&self) -> Result<crate::graphs::CudaGraph, CudaError> {
+        self.device.bind_to_thread()?;
+
+        let mut graph: cudarc::driver::sys::CUgraph = std::ptr::null_mut();
+
+        let res = unsafe {
+            let lib = cudarc::driver::sys::lib();
+            lib.cuStreamEndCapture(self.stream, &mut graph)
+        };
+
+        if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS || graph.is_null() {
+            return Err(CudaError::GraphFailed("cuStreamEndCapture", res));
+        }
+
+        Ok(unsafe { crate::graphs::CudaGraph::from_raw(graph, Arc::clone(&self.device)) })
+    }
+
     /// Reference to the underlying `CudaDevice`.
     pub fn device(&self) -> &Arc<CudaDevice> {
         &self.device

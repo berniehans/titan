@@ -40,6 +40,10 @@ pub enum CudaError {
     #[error("CUDA kernel launch failed in '{0}': {1:?}")]
     KernelLaunch(&'static str, CUresult),
 
+    /// CUDA graph operation failed.
+    #[error("CUDA graph operation failed in '{0}': {1:?}")]
+    GraphFailed(&'static str, CUresult),
+
     /// Invalid memory transfer or buffer size.
     #[error("Invalid buffer size: expected <= {expected}, got {actual}")]
     InvalidSize { expected: usize, actual: usize },

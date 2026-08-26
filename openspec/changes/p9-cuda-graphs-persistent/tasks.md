@@ -1,10 +1,10 @@
 # Implementation Tasks: Phase 9 — CUDA Graphs & Persistent Decode Kernel
 
 ## 1. CUDA Graph RAII Wrappers (sub-change 9.1)
-- [ ] 1.1 Implement `CudaGraph` and `CudaGraphExec` in `engine-cuda/src/graphs.rs` wrapping CUDA driver capture and launch APIs.
-- [ ] 1.2 Add capture helpers `CudaStream::begin_capture()` and `CudaStream::end_capture()`.
-- [ ] 1.3 Create TDD test `engine-cuda/tests/cuda_graphs_test.rs` capturing a multi-kernel sequence (Norm + GEMV) and verifying execution parity against stream execution.
-- Gate: `cargo test -p engine-cuda --test cuda_graphs_test` PASS.
+- [x] 1.1 Implement `CudaGraph` and `CudaGraphExec` in `engine-cuda/src/graphs.rs` wrapping CUDA driver capture and launch APIs.
+- [x] 1.2 Add capture helpers `CudaStream::begin_capture()` and `CudaStream::end_capture()`.
+- [x] 1.3 Create TDD test `engine-cuda/tests/cuda_graphs_test.rs` capturing a multi-kernel sequence (Norm + GEMV) and verifying execution parity against stream execution.
+- Gate PASS: `cuda_graphs_test` max difference = `0.000000e0` (bit-exact) vs stream execution.
 
 ## 2. Dynamic Position & Device-Side Parameter Updating (sub-change 9.2)
 - [ ] 2.1 Update `NormRope` kernel in `engine-cuda/kernels/norm_rope.cu` to optionally accept device-pointer position `pos_dev` (or device scalar).
