@@ -3,6 +3,7 @@ pub mod error;
 pub mod forward_cpu;
 pub mod forward_driver;
 pub mod moe;
+pub mod ngram_draft;
 pub mod pipeline;
 pub mod sampler;
 pub mod speculative;
@@ -19,6 +20,7 @@ pub use moe::{
     cpu_moe_execute_overflow, plan_moe_vram_budget, resolve_backend_recommendation,
     resolve_hybrid_fetch_fraction,
 };
+pub use ngram_draft::NgramDraftProposer;
 pub use pipeline::{Pipeline, PipelineStats};
 pub use sampler::{Sampler, SamplerParams};
 pub use speculative::{SpeculativeVerificationResult, SpeculativeVerifier};

@@ -7,9 +7,9 @@
 - Gate PASS: `cargo test -p engine-core --test speculative_sampling_test` PASS.
 
 ## 2. Context N-Gram Draft Proposer (sub-change 12.2)
-- [ ] 2.1 Implement `NgramDraftProposer` in `engine-core/src/ngram_draft.rs` with dynamic context indexing and prefix matching ($n \in [2, 5]$).
-- [ ] 2.2 Create unit test `engine-core/tests/ngram_draft_test.rs` asserting correct candidate proposals on repetitive prompt patterns and code syntax.
-- Gate: `cargo test -p engine-core --test ngram_draft_test` PASS.
+- [x] 2.1 Implement `NgramDraftProposer` in `engine-core/src/ngram_draft.rs` with dynamic context indexing and prefix matching ($n \in [2, 5]$).
+- [x] 2.2 Create unit test `engine-core/tests/ngram_draft_test.rs` asserting correct candidate proposals on repetitive prompt patterns and code syntax.
+- Gate PASS: `cargo test -p engine-core --test ngram_draft_test` PASS.
 
 ## 3. Batched Candidate Verification in ForwardDriver (sub-change 12.3)
 - [ ] 3.1 Implement `ForwardDriver::verify_speculative_candidates(&mut self, candidates: &[u32]) -> Result<Vec<u32>, EngineError>` using batched GEMM and FlashAttention-2.
