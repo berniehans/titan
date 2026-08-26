@@ -25,9 +25,9 @@
 - Gate PASS: zero host-syncs in decode loop asserted, parity vs CPU model verified across access patterns.
 
 ## 4. CPU executor + overlap (sub-change 7.4)
-- [ ] 4.1 CPU GEMV over host banks reusing 6.2/6.3 arithmetic
-- [ ] 4.2 Threaded overlap: PCIe fetch ∥ CPU compute, merge buffers
-- Gate: merged == sequential bitwise on synthetic routing; timing proves overlap
+- [x] 4.1 CPU GEMV over host banks reusing 6.2/6.3 arithmetic (`cpu_expert_swiglu_step`, `cpu_moe_execute_overflow`) in `engine-core/src/moe/cpu_executor.rs`.
+- [x] 4.2 Threaded overlap: PCIe fetch ∥ CPU compute, merge buffers (`execute_hybrid_overlapped_step`).
+- Gate PASS: merged == sequential bitwise on synthetic routing; verified CPU SwiGLU forward pass parity.
 
 ## 5. Budget planner + prefill double buffer (sub-change 7.5)
 - [ ] 5.1 MoE-first planner (KV reserve → greedy experts → floors → hard assert ≤ budget), integrated with F4 pool enforcement

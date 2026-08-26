@@ -5,11 +5,13 @@
 //! - `benchbw`: STREAM, linear PCIe, and overlapped CPU/PCIe bandwidth profiling micro-benchmarks.
 
 pub mod benchbw;
+pub mod cpu_executor;
 pub mod expert_bank;
 pub mod profile;
 pub mod slot_cache;
 
 pub use benchbw::*;
+pub use cpu_executor::*;
 pub use expert_bank::*;
 pub use profile::*;
 pub use slot_cache::*;

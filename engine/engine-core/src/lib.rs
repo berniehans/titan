@@ -10,9 +10,10 @@ pub mod vram_accounting;
 pub use error::EngineError;
 pub use forward_driver::{ForwardDriver, VramFootprint};
 pub use moe::{
-    BandwidthMeasurement, ExpertSlotCache, ExpertTensorDesc, GpuProfileInfo,
+    BandwidthMeasurement, CpuMoeConfig, ExpertSlotCache, ExpertTensorDesc, GpuProfileInfo,
     HardwareBandwidthProfile, HostExpertBank, LayerCacheStats, MoeBackend, RewrittenRouting,
-    balanced_fetch, resolve_backend_recommendation, resolve_hybrid_fetch_fraction,
+    balanced_fetch, cpu_expert_swiglu_step, cpu_moe_execute_overflow,
+    resolve_backend_recommendation, resolve_hybrid_fetch_fraction,
 };
 pub use pipeline::{Pipeline, PipelineStats};
 pub use tokenizer::BpeTokenizer;
