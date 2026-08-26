@@ -87,12 +87,10 @@ impl GenerationSession {
     }
 }
 
-/// Deterministic placeholder next-token.
+/// Legacy deterministic placeholder next-token.
 ///
-/// Returns a token id in `1..vocab`. **Stub only**: a real engine replaces
-/// this with a softmax normalised over dequantized logits; the input signature
-/// `(token id, digest of dequantized layer content)` is the intended interface
-/// and is deterministic by construction.
+/// Returns a token id in `1..vocab`. Replaced by `ForwardDriver` in Phase 6.8
+/// as the real model generator; retained as a legacy/fallback alias.
 pub fn stub_next_token(token: u32, digest: u64, vocab: u32) -> u32 {
     let a = token.wrapping_mul(2654435761u32);
     let b = (digest & 0xffff) as u32;

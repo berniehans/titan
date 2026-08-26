@@ -185,9 +185,9 @@ fn digest_floats(row: &[f32]) -> u64 {
     h
 }
 
-/// Deterministic placeholder next-token in `1..vocab`. Mirrors
-/// `engine_server::session::stub_next_token` so the real and synthetic paths
-/// stay semantically comparable.
+/// Legacy deterministic placeholder next-token in `1..vocab`.
+/// Replaced by `ForwardDriver` and `BpeTokenizer` in Phase 6.8 as the default generator;
+/// retained as a legacy/fallback alias for testing and synthetic modes.
 pub fn stub_next_token(token: u32, digest: u64, vocab: u32) -> u32 {
     let a = token.wrapping_mul(2654435761u32);
     let b = (digest & 0xffff) as u32;
