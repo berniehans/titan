@@ -8,9 +8,9 @@
 - [x] 1.3 Verify PASS — budget trace printed: 622.17 MB resident / 461.07 MB streaming at 2048 tokens vs 5.2 GB budget (utilization 11.69% / 8.67%).
 
 ## 2. Real stage numbers
-- [ ] 2.1 Run generation workload under accounting; collect ping-pong, KV growth/token, activation cliffs, logits transfer bytes
-- [ ] 2.2 Failing test: measured working set ≤ 5.2 GB on the fixture
-- [ ] 2.3 Record real numbers; verify PASS
+- [x] 2.1 Run generation workload under accounting; collect ping-pong (173.50 MB), KV growth (28.00 MB @ 128 tok), activations (0.09 MB), logits transfer (0.58 MB).
+- [x] 2.2 Failing test: measured working set ≤ 5.2 GB on the fixture (`engine-server/tests/vram_real_audit_gate.rs`).
+- [x] 2.3 Record real numbers; verify PASS — measured working set = 211.99 MB (utilization 3.80% of 5.2 GB budget).
 
 ## 3. Benchmarks seal (docs/BENCHMARKS.md)
 - [ ] 3.1 Fill Phase 4 deferred row (resident KV + paged attention) with recorded parity/parity numbers from 4.4
