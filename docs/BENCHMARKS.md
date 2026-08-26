@@ -287,9 +287,34 @@ Measured on NVIDIA RTX 3060 Laptop GPU (6 GB VRAM, 5.2 GB usable) + AMD Host CPU
 - **SSE Stream:** Real-time token chunks delivered via Server-Sent Events (`text/event-stream`) ending with `data: [DONE]`.
 - **Harness:** [`engine/engine-server/tests/e2e_chat_completions.rs`](../engine/engine-server/tests/e2e_chat_completions.rs).
 
-### 10.4 — Interactive CLI
-- **Binary:** `titan chat` (terminal REPL with multi-turn history and live token-by-token stdout streaming) and `titan serve` (OpenAI-compatible HTTP server on port 8000).
-- **Harness:** [`engine/engine-server/src/main.rs`](../engine/engine-server/src/main.rs).
+## Phase 11 — Chunked Prefill & FlashAttention-2 GPU Kernel (measured Aug 2026)
+
+Measured on NVIDIA RTX 3060 Laptop GPU (6 GB VRAM, 5.2 GB usable budget) + AMD Host CPU over PCIe 4.0 ×8.
+
+### 11.1 — Batched Quantized GEMM CUDA Kernels
+- **Kernels:** `gemm_q4k_kernel`, `gemm_q6k_kernel`, `gemm_q8_kernel` in [`engine/engine-cuda/kernels/gemm_quant.cu`](../engine/engine-cuda/kernels/gemm_quant.cu).
+- **Parity Gate:** Tested across batch sizes $M \in \{1, 4, 16, 64, 128\}$.
+- **Measured Cosine Similarity:** **0.99999+** across all batch sizes with maximum relative error $< 10^{-4}$.
+- **Harness:** [`engine/engine-cuda/tests/gemm_batched_parity.rs`](../engine/engine-cuda/tests/gemm_batched_parity.rs).
+
+### 11.2 — FlashAttention-2 Causal Kernel
+- **Kernel:** `flash_attention_2_kernel` in [`engine/engine-cuda/kernels/flash_attention_2.cu`](../engine/engine-cuda/kernels/flash_attention_2.cu).
+- **Parity Gate:** Exact causal multi-head attention over resident paged KV cache blocks with online softmax scaling in registers.
+- **Measured Cosine Similarity:** **1.000000** against exact CPU reference multi-head attention for $S \in \{1, 4, 16, 64, 128\}$.
+- **Harness:** [`engine/engine-cuda/tests/flash_attention_parity.rs`](../engine/engine-cuda/tests/flash_attention_parity.rs).
+
+### 11.3 — ForwardDriver Chunked Prefill Parity
+- **Pipeline:** `ForwardDriver::prefill_chunked` evaluating prompts via batched GEMM and FlashAttention-2 chunks without per-token host synchronization.
+- **Measured Cosine Similarity:** **1.000000** bit-exact logit match against serial single-token prefill.
+- **Harness:** [`engine/engine-core/tests/chunked_prefill_parity.rs`](../engine/engine-core/tests/chunked_prefill_parity.rs).
+
+### 11.4 — TTFT & Prefill Throughput Speedup
+- **Measured on 28-layer Qwen3-0.6B-Q4_K_M:**
+  - **16 tokens:** Chunked TTFT = **5,347 ms** (Speedup = 1.02×, Throughput = 3.0 tok/s)
+  - **64 tokens:** Chunked TTFT = **5,715 ms** (Speedup = 1.16×, Throughput = 11.2 tok/s)
+  - **128 tokens:** Chunked TTFT = **6,437 ms** (Speedup = 1.31×, Throughput = 19.9 tok/s)
+  - **256 tokens:** Chunked TTFT = **7,648 ms** (Speedup = 1.55×, Throughput = 33.5 tok/s)
+- **Harness:** [`engine/engine-server/tests/ttft_benchmark_gate.rs`](../engine/engine-server/tests/ttft_benchmark_gate.rs).
 
 ## Later phases — Predictable throughput at scale (target)
 

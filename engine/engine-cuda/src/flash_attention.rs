@@ -103,13 +103,14 @@ impl FlashAttention2 {
         n_head_kv: usize,
         head_dim: usize,
         block_tokens: usize,
-        seq_tokens: usize,
+        q_tokens: usize,
+        pos_offset: usize,
     ) -> Result<(), CudaError> {
-        if seq_tokens == 0 || n_head == 0 || head_dim == 0 {
+        if q_tokens == 0 || n_head == 0 || head_dim == 0 {
             return Ok(());
         }
 
-        let q_expected = seq_tokens * n_head * head_dim * std::mem::size_of::<f32>();
+        let q_expected = q_tokens * n_head * head_dim * std::mem::size_of::<f32>();
         if q.size() < q_expected {
             return Err(CudaError::InvalidSize {
                 expected: q_expected,
@@ -123,7 +124,8 @@ impl FlashAttention2 {
             });
         }
 
-        let n_blocks = seq_tokens.div_ceil(block_tokens);
+        let total_tokens = pos_offset + q_tokens;
+        let n_blocks = total_tokens.div_ceil(block_tokens);
         let bt_expected = n_blocks * 4;
         if block_table.size() < bt_expected {
             return Err(CudaError::InvalidSize {
@@ -134,21 +136,22 @@ impl FlashAttention2 {
 
         let scale: f32 = 1.0f32 / (head_dim as f32).sqrt();
         let grid_x: u32 = n_head as u32;
-        let grid_y: u32 = seq_tokens as u32;
+        let grid_y: u32 = q_tokens as u32;
         const BLOCK_X: u32 = 32;
 
         let n_head_i: i32 = n_head as i32;
         let n_head_kv_i: i32 = n_head_kv as i32;
         let head_dim_i: i32 = head_dim as i32;
         let block_tokens_i: i32 = block_tokens as i32;
-        let seq_tokens_i: i32 = seq_tokens as i32;
+        let q_tokens_i: i32 = q_tokens as i32;
+        let pos_offset_i: i32 = pos_offset as i32;
 
         let q_addr: u64 = q.device_ptr();
         let pool_addr: u64 = pool.device_ptr();
         let block_table_addr: u64 = block_table.device_ptr();
         let out_addr: u64 = out.device_ptr();
 
-        let args: [*mut std::ffi::c_void; 10] = [
+        let args: [*mut std::ffi::c_void; 11] = [
             &q_addr as *const u64 as *mut std::ffi::c_void,
             &pool_addr as *const u64 as *mut std::ffi::c_void,
             &block_table_addr as *const u64 as *mut std::ffi::c_void,
@@ -157,7 +160,8 @@ impl FlashAttention2 {
             &n_head_kv_i as *const i32 as *mut std::ffi::c_void,
             &head_dim_i as *const i32 as *mut std::ffi::c_void,
             &block_tokens_i as *const i32 as *mut std::ffi::c_void,
-            &seq_tokens_i as *const i32 as *mut std::ffi::c_void,
+            &q_tokens_i as *const i32 as *mut std::ffi::c_void,
+            &pos_offset_i as *const i32 as *mut std::ffi::c_void,
             &scale as *const f32 as *mut std::ffi::c_void,
         ];
 

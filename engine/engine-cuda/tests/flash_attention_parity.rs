@@ -119,6 +119,7 @@ fn test_flash_attention_2_parity() -> Result<(), DynError> {
             hd,
             block_tokens,
             seq_tokens,
+            0,
         )?;
 
         let mut out_bytes = vec![0u8; seq_tokens * nh * hd * 4];

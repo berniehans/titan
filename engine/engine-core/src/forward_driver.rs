@@ -647,7 +647,8 @@ impl<'a> ForwardDriver<'a> {
                     self.nkv,
                     self.hd,
                     self.layout.block_tokens,
-                    current_pos + chunk_len,
+                    chunk_len,
+                    current_pos,
                 )?;
 
                 // f. Output projection

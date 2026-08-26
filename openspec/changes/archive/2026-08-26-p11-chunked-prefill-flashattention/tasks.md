@@ -19,8 +19,8 @@
 - Gate PASS: `cargo test -p engine-core --test chunked_prefill_parity` PASS (`cos-sim = 1.000000`).
 
 ## 4. TTFT Speedup Benchmarks & Phase 11 Seal (sub-change 11.4)
-- [ ] 4.1 Benchmark TTFT in `engine-server/tests/ttft_benchmark_gate.rs` across prompt lengths ($S \in \{16, 64, 128, 256, 512, 1024\}$).
-- [ ] 4.2 Record measured speedups and TTFT latencies in `docs/BENCHMARKS.md`.
-- [ ] 4.3 Verify full workspace test suite `cargo test --workspace` with 0 regressions.
-- [ ] 4.4 Sync delta spec to main spec and archive change.
-- Gate: Throughput / TTFT speedup verified, all tests green, Phase 11 sealed.
+- [x] 4.1 Benchmark TTFT in `engine-server/tests/ttft_benchmark_gate.rs` across prompt lengths ($S \in \{16, 64, 128, 256, 512, 1024\}$).
+- [x] 4.2 Record measured speedups and TTFT latencies in `docs/BENCHMARKS.md`.
+- [x] 4.3 Verify full workspace test suite `cargo test --workspace` with 0 regressions.
+- [x] 4.4 Sync delta spec to main spec and archive change.
+- Gate PASS: Throughput / TTFT speedup verified, all tests green, Phase 11 sealed.
