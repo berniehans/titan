@@ -22,6 +22,7 @@ use std::sync::Arc;
 const KERNEL_ARCH: &str = "compute_86";
 /// Kernel symbol names exported by `gemv_q4k.cu`.
 const FUNC_NAME_Q4K: &str = "gemv_q4k_kernel";
+const FUNC_NAME_Q6K: &str = "gemv_q6k_kernel";
 const FUNC_NAME_Q8: &str = "gemv_q8_kernel";
 const FUNC_NAME_F16: &str = "gemv_f16_kernel";
 /// Canonical CUDA kernel source, compiled to PTX at runtime via NVRTC.
@@ -33,6 +34,8 @@ const BLOCK_X: u32 = 256;
 pub enum GemvFormat {
     /// Q4_K quantized weights (256 weights per 144-byte super-block).
     Q4K,
+    /// Q6_K quantized weights (256 weights per 210-byte super-block).
+    Q6K,
     /// Q8_0 quantized weights (32 weights per 34-byte block).
     Q8,
     /// 16-bit float weights (2 bytes per weight).
@@ -46,6 +49,7 @@ pub struct MultiFormatGEMV {
     device: Arc<CudaDevice>,
     cu_module: CUmodule,
     fn_q4k: CUfunction,
+    fn_q6k: CUfunction,
     fn_q8: CUfunction,
     fn_f16: CUfunction,
 }
@@ -115,6 +119,17 @@ impl MultiFormatGEMV {
             }
         };
 
+        let fn_q6k = match load_fn(FUNC_NAME_Q6K) {
+            Ok(f) => f,
+            Err(e) => {
+                unsafe {
+                    let lib = sys::lib();
+                    let _ = lib.cuModuleUnload(cu_module);
+                }
+                return Err(e);
+            }
+        };
+
         let fn_q8 = match load_fn(FUNC_NAME_Q8) {
             Ok(f) => f,
             Err(e) => {
@@ -141,6 +156,7 @@ impl MultiFormatGEMV {
             device,
             cu_module,
             fn_q4k,
+            fn_q6k,
             fn_q8,
             fn_f16,
         })
@@ -188,6 +204,15 @@ impl MultiFormatGEMV {
                     });
                 }
                 (ne0 / 256) * 144 * ne1
+            }
+            GemvFormat::Q6K => {
+                if !ne0.is_multiple_of(256) {
+                    return Err(CudaError::InvalidSize {
+                        expected: 256,
+                        actual: ne0,
+                    });
+                }
+                (ne0 / 256) * 210 * ne1
             }
             GemvFormat::Q8 => {
                 if !ne0.is_multiple_of(32) {
@@ -248,6 +273,7 @@ impl MultiFormatGEMV {
 
         let cu_function = match format {
             GemvFormat::Q4K => self.fn_q4k,
+            GemvFormat::Q6K => self.fn_q6k,
             GemvFormat::Q8 => self.fn_q8,
             GemvFormat::F16 => self.fn_f16,
         };

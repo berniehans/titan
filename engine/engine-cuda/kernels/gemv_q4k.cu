@@ -149,3 +149,67 @@ extern "C" __global__ void gemv_f16_kernel(
 
     out[col] = acc;
 }
+
+extern "C" __global__ void gemv_q6k_kernel(
+    const unsigned char* __restrict__ weights,
+    const float* __restrict__ x,
+    float* __restrict__ out,
+    int ne0,
+    int ne1)
+{
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= ne1) return;
+
+    const int n_blocks = ne0 / 256;
+    const unsigned char* col_weights = weights + (size_t)col * (size_t)n_blocks * 210u;
+
+    float acc = 0.0f;
+
+    for (int b = 0; b < n_blocks; ++b) {
+        const unsigned char* blk = col_weights + (size_t)b * 210u;
+        const float* x_blk = x + (size_t)b * 256u;
+
+        const unsigned d_bits = (unsigned)blk[208] | ((unsigned)blk[209] << 8);
+        const float d = f16_to_f32(d_bits);
+
+        const unsigned char* ql = blk;
+        const unsigned char* qh = blk + 128;
+        const signed char* scales = (const signed char*)(blk + 192);
+
+        for (int half = 0; half < 2; ++half) {
+            const int ql_base = (half == 0) ? 0 : 64;
+            const int qh_base = (half == 0) ? 0 : 32;
+            const int sc_base = (half == 0) ? 0 : 8;
+            const float* x_half = x_blk + half * 128;
+
+            #pragma unroll
+            for (int l = 0; l < 32; ++l) {
+                const int is = l >> 4;
+                const int ql_idx = ql_base + l;
+                const int qh_idx = qh_base + l;
+
+                const int q1 = (int)(ql[ql_idx] & 0x0Fu) | (((int)(qh[qh_idx] >> 0) & 3) << 4);
+                const int q2 = (int)(ql[ql_idx + 32] & 0x0Fu) | (((int)(qh[qh_idx] >> 2) & 3) << 4);
+                const int q3 = (int)(ql[ql_idx] >> 4) | (((int)(qh[qh_idx] >> 4) & 3) << 4);
+                const int q4 = (int)(ql[ql_idx + 32] >> 4) | (((int)(qh[qh_idx] >> 6) & 3) << 4);
+
+                const float d1 = __fmul_rn(d, (float)scales[sc_base + is]);
+                const float d2 = __fmul_rn(d, (float)scales[sc_base + 2 + is]);
+                const float d3 = __fmul_rn(d, (float)scales[sc_base + 4 + is]);
+                const float d4 = __fmul_rn(d, (float)scales[sc_base + 6 + is]);
+
+                const float w1 = __fmul_rn(d1, (float)(q1 - 32));
+                const float w2 = __fmul_rn(d2, (float)(q2 - 32));
+                const float w3 = __fmul_rn(d3, (float)(q3 - 32));
+                const float w4 = __fmul_rn(d4, (float)(q4 - 32));
+
+                acc = __fadd_rn(acc, __fmul_rn(w1, x_half[l]));
+                acc = __fadd_rn(acc, __fmul_rn(w2, x_half[l + 32]));
+                acc = __fadd_rn(acc, __fmul_rn(w3, x_half[l + 64]));
+                acc = __fadd_rn(acc, __fmul_rn(w4, x_half[l + 96]));
+            }
+        }
+    }
+
+    out[col] = acc;
+}
