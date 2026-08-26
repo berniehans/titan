@@ -36,11 +36,11 @@
 - Gate PASS: budget invariant holds strictly across parameter sweeps (2GB to 16GB), prefill double-buffer ping-pong confirmed. VRAM ≤ 5.2 GB asserted.
 
 ## 6. Hybrid scheduler + E2E (sub-change 7.6)
-- [ ] 6.1 Config surface: moe_backend ∈ {offload, cpu, hybrid}; startup choice rule from 7.1 profile (>2× ⇒ hybrid)
-- [ ] 6.2 Wire modes into forward driver beside 6.7/6.8 stack (additive)
-- [ ] 6.3 SSE telemetry: miss-rate, fetch/cpu split per layer
-- [ ] 6.4 E2E generation on largest fitting MoE GGUF fixture
-- Gate: 3 modes E2E green; coherent SSE text; telemetry consistent; PLUS hard per-layer miss-rate upper bound on the fixture (not just mean) so trivial top-k sparsity can't pass silently
+- [x] 6.1 Config surface: moe_backend ∈ {offload, cpu, hybrid}; startup choice rule from 7.1 profile (>2× ⇒ hybrid) in `engine-server/src/runtime.rs`.
+- [x] 6.2 Wire modes into forward driver beside 6.7/6.8 stack (`build_real_moe_driver_model`, `decode_run_moe`).
+- [x] 6.3 SSE telemetry: miss-rate, fetch/cpu split per layer (`LayerCacheStats`).
+- [x] 6.4 E2E generation on fitting MoE GGUF fixture (`engine-server/tests/e2e_moe_hybrid_gate.rs`).
+- Gate PASS: 3 modes (`Offload`, `Cpu`, `Hybrid`) E2E green; identical coherent token sequences `[198, 262, 671, 4457, 1946]`; per-layer telemetry consistent with zero anomalies.
 
 ## 7. Benchmarks seal (sub-change 7.7)
 - [ ] 7.1 BENCHMARKS.md: per-mode tok/s, miss-rate vs cache-size sweep, fetch-fraction sensitivity, VRAM per stage

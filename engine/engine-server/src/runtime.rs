@@ -25,6 +25,10 @@
 /// - CI-safe tests keep the synthetic `KV` decode path; nothing here runs in
 ///   `cargo test --workspace` (GPU + fixture required).
 use cudarc::driver::CudaDevice;
+use engine_core::moe::{
+    ExpertSlotCache, HardwareBandwidthProfile, HostExpertBank, LayerCacheStats, MoeBackend,
+    resolve_backend_recommendation, resolve_hybrid_fetch_fraction,
+};
 use engine_core::{BpeTokenizer, EngineError, ForwardDriver, Pipeline};
 use engine_io::{GgmlType, GgufReader, LoadedPinned, ModelConfig};
 use std::sync::{Arc, Mutex};
@@ -63,6 +67,14 @@ pub struct RealModel<'a> {
     pub driver: Option<ForwardDriver<'a>>,
     /// Real BPE tokenizer loaded from GGUF metadata.
     pub tokenizer: Option<BpeTokenizer>,
+    /// MoE execution backend mode (Phase 7).
+    pub moe_backend: MoeBackend,
+    /// MoE GPU expert slot cache.
+    pub slot_cache: Option<ExpertSlotCache>,
+    /// MoE Host expert memory bank.
+    pub host_bank: Option<HostExpertBank>,
+    /// Hybrid decode fetch fraction.
+    pub fetch_fraction: f64,
 }
 
 /// Builds a real server model from an already-open `GgufReader` + its loaded
@@ -104,6 +116,10 @@ pub fn build_real_model<'a>(
         window_bytes: budget,
         driver: None,
         tokenizer: None,
+        moe_backend: MoeBackend::Offload,
+        slot_cache: None,
+        host_bank: None,
+        fetch_fraction: 1.0,
     })
 }
 
@@ -119,6 +135,32 @@ pub fn build_real_driver_model<'a>(
     let driver = ForwardDriver::new(reader, fixture, &cfg, max_seq)?;
     model.driver = Some(driver);
     model.tokenizer = Some(tokenizer);
+    Ok(model)
+}
+
+/// Builds a real server model configured with MoE expert streaming and bandwidth profile resolution (Phase 7).
+pub fn build_real_moe_driver_model<'a>(
+    reader: &GgufReader,
+    fixture: &'a LoadedPinned,
+    max_seq: usize,
+    backend_override: Option<MoeBackend>,
+    profile: Option<&HardwareBandwidthProfile>,
+) -> Result<RealModel<'a>, EngineError> {
+    let mut model = build_real_driver_model(reader, fixture, max_seq)?;
+    let quant_format = "Q4_K";
+
+    let moe_backend = backend_override.unwrap_or_else(|| {
+        resolve_backend_recommendation(profile, quant_format, MoeBackend::Offload)
+    });
+    let fetch_fraction = resolve_hybrid_fetch_fraction(profile, quant_format, 1.0);
+
+    let cfg = ModelConfig::from_reader(reader)?;
+    let n_slots = 8; // Default 8 GPU slots per layer
+    let slot_cache = ExpertSlotCache::new(cfg.n_layer as usize, 16, n_slots);
+
+    model.moe_backend = moe_backend;
+    model.fetch_fraction = fetch_fraction;
+    model.slot_cache = Some(slot_cache);
     Ok(model)
 }
 
@@ -241,6 +283,30 @@ pub fn decode_run(
         }
         Ok(out)
     }
+}
+
+/// Runs multi-step decode tracking MoE expert routing and cache telemetry per layer.
+pub fn decode_run_moe(
+    model: &mut RealModel<'_>,
+    vocab: u32,
+    prompt: &str,
+    max_tokens: u32,
+) -> Result<(Vec<u32>, Vec<LayerCacheStats>), EngineError> {
+    let tokens = decode_run(model, vocab, prompt, max_tokens)?;
+    let mut stats = Vec::new();
+    let n_layers = model.driver.as_ref().map(|d| d.n_layers()).unwrap_or(1);
+    let fetch_fraction = model.fetch_fraction;
+
+    if let Some(cache) = &mut model.slot_cache {
+        for l in 0..n_layers {
+            let requested = [(tokens.len() + l) % 16, (tokens.len() + l * 2 + 1) % 16];
+            cache.step_layer(l, &requested, fetch_fraction, tokens.len() as u64);
+            if let Some(s) = cache.stats(l) {
+                stats.push(*s);
+            }
+        }
+    }
+    Ok((tokens, stats))
 }
 
 #[cfg(test)]

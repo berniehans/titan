@@ -453,6 +453,11 @@ impl<'a> ForwardDriver<'a> {
         Ok(self.lm_head(&last_hidden))
     }
 
+    /// Returns the number of transformer layers in this model.
+    pub fn n_layers(&self) -> usize {
+        self.layers.len()
+    }
+
     /// Single-token decode step over resident KV pool at current `self.pos`.
     /// Increments `self.pos` by 1 and returns the next-token logits.
     pub fn decode(&mut self, token: u32) -> Result<Vec<f32>, EngineError> {
