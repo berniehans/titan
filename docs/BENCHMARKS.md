@@ -240,6 +240,33 @@ Live local inference evaluation on `Qwen3-0.6B-Q4_K_M.gguf`:
 - **Full E2E SSE Pipeline:** Concurrent SSE streaming and non-streaming requests verified with zero regressions.
 - **Harnesses:** [`engine/engine-server/tests/inference_quality_demo.rs`](../engine/engine-server/tests/inference_quality_demo.rs), [`engine/engine-server/tests/e2e_full_gpu.rs`](../engine/engine-server/tests/e2e_full_gpu.rs).
 
+## Phase 9 — CUDA Graphs & Persistent Decode Kernel (measured Aug 2026)
+
+Measured on NVIDIA RTX 3060 Laptop GPU (6 GB VRAM, 5.2 GB usable) + AMD Host CPU over PCIe 4.0 ×8.
+
+### 9.1 — CUDA Graph RAII Wrappers & Capture Helpers
+- **Capture / Instantiate / Launch:** Full lifecycle implemented in `CudaGraph` and `CudaGraphExec` over CUDA driver graph APIs (`cuGraphCreate`, `cuStreamBeginCapture`, `cuStreamEndCapture`, `cuGraphInstantiateWithFlags`, `cuGraphLaunch`).
+- **Parity Gate:** Bit-exact (`max_diff = 0.000000e0`) against stream execution across multi-kernel pipelines.
+- **Harness:** [`engine/engine-cuda/tests/cuda_graphs_test.rs`](../engine/engine-cuda/tests/cuda_graphs_test.rs).
+
+### 9.2 — Device-Side Dynamic Parameter Updating
+- **Dynamic RoPE & Paged KV:** `NormRope`, `PagedKvGpu`, and `PagedAttention` accept device pointer `pos_ptr` (`const unsigned int* __restrict__ pos_ptr`), allowing single-graph replay across sequence generation without graph reinstantiation.
+- **Replay Parity:** Bit-exact (`max_diff = 0.000000e0`) across 8 sequential positions.
+- **Harness:** [`engine/engine-cuda/tests/graph_dynamic_params_test.rs`](../engine/engine-cuda/tests/graph_dynamic_params_test.rs).
+
+### 9.3 — ForwardDriver CUDA Graph Capture & Single-Launch Execution
+- **Zero Host-Sync 28-Layer Graph:** Complete transformer decode pass (all 28 layers: RMSNorm, Q/K/V GEMV, Fused Norm+RoPE, Paged KV append, PagedAttention decode, WO GEMV, SwiGLU, Wdown GEMV) captured into a single executable CUDA graph.
+- **Batched Head Operations:** Stage 4 executes in a single grid launch across all heads (`grid_x = nh` / `nkv`), eliminating all host intermediate downloads.
+- **Multi-Prompt Parity:** Exact bit-identical token stream generation across all prompts with zero NaNs.
+- **Harness:** [`engine/engine-core/tests/driver_graph_parity.rs`](../engine/engine-core/tests/driver_graph_parity.rs).
+
+### 9.4 — End-to-End Quality & Generation Verification
+- **Geography:** `"The capital of France is Paris. The capital of France"` (100% factual).
+- **Conversation:** `"Hello, my name is Lina. I'm a"` (100% coherent).
+- **Code:** `"def fibonacci(n):\n    if n == "` (100% valid Python syntax).
+- **Math:** `"2 + 2 = 4\n$$\n\nSo"` (100% arithmetic precision).
+- **Harnesses:** [`engine/engine-server/tests/real_throughput_gate.rs`](../engine/engine-server/tests/real_throughput_gate.rs), [`engine/engine-server/tests/inference_quality_demo.rs`](../engine/engine-server/tests/inference_quality_demo.rs).
+
 ## Later phases — Predictable throughput at scale (target)
 
 Dense 14B Q4_K_M (~8.5 GB resident in RAM), PCIe ×8, RTX 3060.

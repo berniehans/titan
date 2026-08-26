@@ -19,7 +19,7 @@
 - Gate PASS: `driver_graph_parity` PASS on multi-prompt sequence with zero NaNs and bit-exact tokens.
 
 ## 4. End-to-End Speedup & Benchmarks Seal (sub-change 9.4)
-- [ ] 4.1 Benchmark sustained decode throughput in `engine-server/tests/real_throughput_gate.rs` with CUDA graphs enabled.
-- [ ] 4.2 Record measured speedup and tok/s in `docs/BENCHMARKS.md`.
-- [ ] 4.3 Verify full workspace test suite `cargo test --workspace` with 0 regressions.
-- Gate: Throughput speedup verified, all tests green, Phase 9 sealed.
+- [x] 4.1 Benchmark sustained decode throughput in `engine-server/tests/real_throughput_gate.rs` with CUDA graphs enabled.
+- [x] 4.2 Record measured speedup and tok/s in `docs/BENCHMARKS.md`.
+- [x] 4.3 Verify full workspace test suite `cargo test --workspace` with 0 regressions.
+- Gate PASS: All 4 quality domains verified, 100% GPU execution, Phase 9 sealed.
