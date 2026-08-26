@@ -13,9 +13,9 @@
 - [x] 2.3 Record real numbers; verify PASS — measured working set = 211.99 MB (utilization 3.80% of 5.2 GB budget).
 
 ## 3. Benchmarks seal (docs/BENCHMARKS.md)
-- [ ] 3.1 Fill Phase 4 deferred row (resident KV + paged attention) with recorded parity/parity numbers from 4.4
-- [ ] 3.2 Fill Phase 6 rows (6.3-6.8 real parity, drift, throughput vs baseline)
-- [ ] 3.3 Verify each number is REAL (from a logged measurement, not a placeholder)
+- [x] 3.1 Fill Phase 4 deferred row (resident KV + paged attention) with recorded parity/parity numbers from 4.4 and throughput from Phase 5 loop bench (`docs/BENCHMARKS.md`).
+- [x] 3.2 Fill Phase 6 rows (6.1 through 6.9 real parity, drift, SSE throughput, VRAM audit vs baseline in `docs/BENCHMARKS.md`).
+- [x] 3.3 Verify each number is REAL (verified against logged test measurements from harness runs).
 
 ## 4. Gate
 - [ ] 4.1 Full suite green

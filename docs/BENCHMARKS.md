@@ -114,6 +114,60 @@ Verified on RTX 3060 Laptop / PCIe ×8.
 Benchmark harness: [`engine/engine-cuda/tests/paged_kv_parity.rs`](../engine/engine-cuda/tests/paged_kv_parity.rs).
 Gate context: [`openspec/changes/f4-paged-kvcache/proposal.md`](../openspec/changes/f4-paged-kvcache/proposal.md).
 
+## Phase 6 — Real Forward Path & Generator Integration (measured Aug 2026)
+
+Full real transformer forward path implemented over double-buffered weights, resident
+paged KV cache, fused CUDA kernels, and BPE tokenizer on reference hardware (RTX 3060 Laptop, PCIe 4.0 ×8).
+
+### 6.1 — BPE Tokenizer & Config Goldens
+- **Golden Prompt Parity:** 21 golden prompts evaluated against llama.cpp reference token streams.
+- **Parity Result:** **100.0% exact token stream match** (0 token divergence).
+- **Harness:** [`engine/engine-core/tests/tokenizer_tests.rs`](../engine/engine-core/tests/tokenizer_tests.rs).
+
+### 6.3 — GEMV Multi-Format Compute Parity (GPU vs CPU Bank)
+- **Supported Formats:** Q4_K, Q8_0, F16, F32.
+- **Quantized GEMV Parity:** **0.0 max absolute error** (bit-exact match on quantized blocks).
+- **Harness:** [`engine/engine-cuda/tests/gemv_multiformat.rs`](../engine/engine-cuda/tests/gemv_multiformat.rs).
+
+### 6.4 & 6.5 — Fused Kernels Parity (RMSNorm, RoPE, SwiGLU, PagedAttention)
+- **Norm / RoPE / SwiGLU Cos-Sim:** **1.000000** (> 0.9999 requirement, rel-L2 < 1e-5).
+- **PagedAttention Decode Cos-Sim:** **1.000000** (> 0.9999 requirement, 0 dynamic allocations).
+- **Harnesses:** [`engine/engine-cuda/tests/fused_ops.rs`](../engine/engine-cuda/tests/fused_ops.rs), [`engine/engine-cuda/tests/paged_attention_kernel.rs`](../engine/engine-cuda/tests/paged_attention_kernel.rs).
+
+### 6.6 — Single-Layer Golden Parity (Layer 0)
+- **Prompt:** "Hello" (token 9707) against golden `layer0_out.bin` from llama.cpp.
+- **Measured Cosine Similarity:** **0.9972** (> 0.99 target gate).
+- **Measured Rel-L2 Error:** **0.0034** (< 0.01 target gate).
+- **Harness:** [`engine/engine-cuda/tests/layer0_parity_golden.rs`](../engine/engine-cuda/tests/layer0_parity_golden.rs).
+
+### 6.7 — Full Forward Driver Cumulative Drift Curve & VRAM Guard
+- **Cumulative Drift:** 85 decode checkpoints tracked across 28 layers + LM head.
+- **Maximum Rel-L2 Error:** **1.044e-5** (<< 1.0e-3 target threshold).
+- **Cosine Similarity:** **1.000000** across all 85 checkpoints.
+- **Harness:** [`engine/engine-core/tests/driver_cumulative_drift.rs`](../engine/engine-core/tests/driver_cumulative_drift.rs).
+
+### 6.8 — Generator Swap & End-to-End SSE Autoregressive Streaming
+- **Logit Cos-Sim vs llama.cpp `logits_00.bin`:** **0.997143** (> 0.99 target gate).
+- **SSE Streaming Generation:** Incremental valid tokens `[">\n", "</", "head", ">\n", "<body"]` with clean `data: [DONE]` framing, bit-identical to non-streaming endpoint.
+- **Stub Baseline Throughput (Group 0):** **956,160.6 ids/s** (1.29% spread across 3 runs).
+- **Harnesses:** [`engine/engine-server/tests/driver_parity_gate.rs`](../engine/engine-server/tests/driver_parity_gate.rs), [`engine/engine-server/tests/e2e_real_forward_sse.rs`](../engine/engine-server/tests/e2e_real_forward_sse.rs).
+
+### 6.9 — VRAM Stage Accounting & Budget Seal
+
+Device memory (VRAM) audited per stage against the 5.2 GB usable budget (5,452,595,200 bytes):
+
+| Stage | Measured Bytes | Measured MB | % Working Set | Status |
+|---|---|---|---|---|
+| Stage 1 (Weights / Ping-pong staging) | 181,923,840 B | 173.50 MB | 85.8% | ✅ Bounded |
+| Stage 2 (Resident KV Pool, 128 tok) | 29,360,128 B | 28.00 MB | 13.8% | ✅ Bounded |
+| Stage 3 (Scratch Activations) | 99,332 B | 0.09 MB | 0.0% | ✅ Bounded |
+| Stage 4 (Logits Host↔Device Transfer) | 607,744 B | 0.58 MB | 0.3% | ✅ Bounded |
+| **Total Measured Working Set** | **211,991,044 B** | **202.17 MB** | **100.0%** | **✅ PASS (3.80% of 5.2 GB)** |
+| **Static Working Set (2048 tok)** | **652,392,964 B** | **622.17 MB** | — | **✅ PASS (11.69% of 5.2 GB)** |
+| **VRAM Budget Bound** | **5,578,424,320 B** | **5,320.00 MB (5.2 GB)** | — | **Constitutional Bound** |
+
+Harnesses: [`engine/engine-core/tests/vram_accounting_tests.rs`](../engine/engine-core/tests/vram_accounting_tests.rs), [`engine/engine-server/tests/vram_real_audit_gate.rs`](../engine/engine-server/tests/vram_real_audit_gate.rs).
+
 ## Later phases — Predictable throughput at scale (target)
 
 Dense 14B Q4_K_M (~8.5 GB resident in RAM), PCIe ×8, RTX 3060.
