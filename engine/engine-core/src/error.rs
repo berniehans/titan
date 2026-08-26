@@ -36,4 +36,8 @@ pub enum EngineError {
     /// Tokenizer tried to decode an unknown token id (out of vocabulary range).
     #[error("tokenizer: unknown token id {0} for decode")]
     UnknownToken(u32),
+
+    /// Validation error for buffers, layouts, or model tensors.
+    #[error("Validation error: {0}")]
+    Validation(String),
 }

@@ -12,10 +12,10 @@
 
 ## 2. Host expert banks (sub-change 7.2)
 > NOTE (coder advisory): 7.2 banks and 7.3 GPU slot cache must draw from shared bank descriptors — single allocation owner to avoid double-allocating against F2's existing pinned prefill buffers.
-- [ ] 2.1 Pinned allocator RAII + fallback-to-pageable flag
-- [ ] 2.2 Per-(layer,expert) slice view over bank memory
-- [ ] 2.3 Stream GGUF expert tensors into banks
-- Gate: copy round-trip exact; leak-free; fallback flagged
+- [x] 2.1 Pinned allocator RAII (`PinnedHost`) + fallback-to-pageable flag (`is_pinned`) in `engine-core/src/moe/expert_bank.rs`.
+- [x] 2.2 Per-(layer,expert) slice view over bank memory (`expert_slice`, `expert_slice_mut`).
+- [x] 2.3 Stream GGUF expert tensors into banks (`write_expert_tensor`, `get_expert_tensor`).
+- Gate PASS: copy round-trip bit-identical across multi-tensor slices, leak-free RAII drop, fallback capability flagged.
 
 ## 3. GPU slot cache + capped-fetch LRU (sub-change 7.3)
 - [ ] 3.1 RED: routing rewrite model test on synthetic access patterns

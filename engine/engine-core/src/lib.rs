@@ -10,8 +10,8 @@ pub mod vram_accounting;
 pub use error::EngineError;
 pub use forward_driver::{ForwardDriver, VramFootprint};
 pub use moe::{
-    BandwidthMeasurement, GpuProfileInfo, HardwareBandwidthProfile, MoeBackend,
-    resolve_backend_recommendation, resolve_hybrid_fetch_fraction,
+    BandwidthMeasurement, ExpertTensorDesc, GpuProfileInfo, HardwareBandwidthProfile,
+    HostExpertBank, MoeBackend, resolve_backend_recommendation, resolve_hybrid_fetch_fraction,
 };
 pub use pipeline::{Pipeline, PipelineStats};
 pub use tokenizer::BpeTokenizer;
