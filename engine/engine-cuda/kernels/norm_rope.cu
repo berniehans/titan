@@ -11,8 +11,13 @@ extern "C" __global__ void norm_rope_swiglu_kernel(
     const float* __restrict__ up,
     float* __restrict__ out,
     float eps,
-    int mode)
+    int mode,
+    const unsigned int* __restrict__ pos_ptr)
 {
+    if (pos_ptr != nullptr) {
+        pos = *pos_ptr;
+    }
+
     const int row = blockIdx.x;
     const float* row_x = x + (size_t)row * (size_t)n;
     const float* row_residual = residual + (size_t)row * (size_t)n;

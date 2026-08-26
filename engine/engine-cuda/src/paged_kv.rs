@@ -167,6 +167,33 @@ impl PagedKvGpu {
         start_token: usize,
         n_tokens: usize,
     ) -> Result<(), CudaError> {
+        self.append_kv_with_pos_ptr(
+            stream,
+            layout,
+            pool,
+            keys,
+            values,
+            block_table,
+            start_token,
+            n_tokens,
+            None,
+        )
+    }
+
+    /// Appends `n_tokens` key and value rows with an optional dynamic device-side position pointer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_kv_with_pos_ptr(
+        &self,
+        stream: &CudaStream,
+        layout: &PagedKvLayout,
+        pool: &DeviceBuffer,
+        keys: &DeviceBuffer,
+        values: &DeviceBuffer,
+        block_table: &DeviceBuffer,
+        start_token: usize,
+        n_tokens: usize,
+        pos_ptr: Option<&DeviceBuffer>,
+    ) -> Result<(), CudaError> {
         const BLOCK_X: u32 = 1024;
 
         let pool_expected = layout.floats_total() * 4;
@@ -213,8 +240,9 @@ impl PagedKvGpu {
         let start_token_i: i32 = start_token as i32;
         let row_len_i: i32 = layout.row_len as i32;
         let block_tokens_i: i32 = layout.block_tokens as i32;
+        let pos_ptr_addr: u64 = pos_ptr.map(|p| p.device_ptr()).unwrap_or(0);
 
-        let args: [*mut std::ffi::c_void; 8] = [
+        let args: [*mut std::ffi::c_void; 9] = [
             &keys_addr as *const u64 as *mut std::ffi::c_void,
             &values_addr as *const u64 as *mut std::ffi::c_void,
             &block_table_addr as *const u64 as *mut std::ffi::c_void,
@@ -223,6 +251,7 @@ impl PagedKvGpu {
             &start_token_i as *const i32 as *mut std::ffi::c_void,
             &row_len_i as *const i32 as *mut std::ffi::c_void,
             &block_tokens_i as *const i32 as *mut std::ffi::c_void,
+            &pos_ptr_addr as *const u64 as *mut std::ffi::c_void,
         ];
 
         self.device.bind_to_thread()?;
@@ -230,7 +259,7 @@ impl PagedKvGpu {
         // SAFETY:
         // `self.device.bind_to_thread()` ensured a valid CUDA context on this thread.
         // `self.func_append` is a valid `CUfunction` from a live module.
-        // `stream.raw()` is a valid `CUstream`. `args` points to 8 raw pointers that
+        // `stream.raw()` is a valid `CUstream`. `args` points to 9 raw pointers that
         // map to the kernel parameters.
         let res = unsafe {
             let lib = sys::lib();
@@ -250,7 +279,7 @@ impl PagedKvGpu {
         };
 
         if res != CUresult::CUDA_SUCCESS {
-            return Err(CudaError::KernelLaunch("cuLaunchKernel", res));
+            return Err(CudaError::KernelLaunch("cuLaunchKernel (append)", res));
         }
 
         Ok(())

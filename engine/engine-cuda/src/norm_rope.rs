@@ -131,6 +131,29 @@ impl NormRope {
         pos: u32,
         mode: u8,
     ) -> Result<(), CudaError> {
+        self.launch_with_pos_ptr(
+            stream, x, residual, w, up, out, eps, n, n_dims, freq_base, pos, mode, None,
+        )
+    }
+
+    /// Launches the fused norm/rope/swiglu kernel with an optional dynamic device-side position pointer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn launch_with_pos_ptr(
+        &self,
+        stream: &CudaStream,
+        x: &DeviceBuffer,
+        residual: &DeviceBuffer,
+        w: &DeviceBuffer,
+        up: &DeviceBuffer,
+        out: &DeviceBuffer,
+        eps: f32,
+        n: usize,
+        n_dims: usize,
+        freq_base: f32,
+        pos: u32,
+        mode: u8,
+        pos_ptr: Option<&DeviceBuffer>,
+    ) -> Result<(), CudaError> {
         if n == 0 {
             return Err(CudaError::InvalidSize {
                 expected: 1,
@@ -202,8 +225,9 @@ impl NormRope {
         let w_addr: u64 = w.device_ptr();
         let up_addr: u64 = up.device_ptr();
         let out_addr: u64 = out.device_ptr();
+        let pos_ptr_addr: u64 = pos_ptr.map(|p| p.device_ptr()).unwrap_or(0);
 
-        let args: [*mut std::ffi::c_void; 11] = [
+        let args: [*mut std::ffi::c_void; 12] = [
             &x_addr as *const u64 as *mut std::ffi::c_void,
             &resid_addr as *const u64 as *mut std::ffi::c_void,
             &w_addr as *const u64 as *mut std::ffi::c_void,
@@ -215,6 +239,7 @@ impl NormRope {
             &out_addr as *const u64 as *mut std::ffi::c_void,
             &eps_f as *const f32 as *mut std::ffi::c_void,
             &mode_i as *const i32 as *mut std::ffi::c_void,
+            &pos_ptr_addr as *const u64 as *mut std::ffi::c_void,
         ];
 
         self.device.bind_to_thread()?;
@@ -222,7 +247,7 @@ impl NormRope {
         // SAFETY:
         // `self.device.bind_to_thread()` ensured a valid CUDA context on this thread.
         // `self.func` is a valid `CUfunction` from a live module.
-        // `stream.raw()` is a valid `CUstream`. `args` points to 11 raw pointers that
+        // `stream.raw()` is a valid `CUstream`. `args` points to 12 raw pointers that
         // map to the kernel parameters; device buffer addresses are live and local
         // scalars are alive for the duration of this call.
         let res = unsafe {

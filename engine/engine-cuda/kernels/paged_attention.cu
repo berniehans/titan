@@ -22,8 +22,14 @@ extern "C" __global__ void paged_attention_decode_kernel(
     int seq_tokens,
     int query_pos,
     int causal,
-    float scale)
+    float scale,
+    const unsigned int* __restrict__ pos_ptr)
 {
+    if (pos_ptr != nullptr) {
+        query_pos = (int)*pos_ptr;
+        seq_tokens = (int)*pos_ptr + 1;
+    }
+
     const int qh = blockIdx.x;
     const int tid = threadIdx.x;
 

@@ -120,6 +120,41 @@ impl PagedAttention {
         query_pos: usize,
         causal: bool,
     ) -> Result<(), CudaError> {
+        self.launch_with_pos_ptr(
+            stream,
+            q,
+            pool,
+            block_table,
+            out,
+            n_head,
+            n_head_kv,
+            head_dim,
+            block_tokens,
+            seq_tokens,
+            query_pos,
+            causal,
+            None,
+        )
+    }
+
+    /// Launches the PagedAttention decode kernel with an optional dynamic device-side position pointer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn launch_with_pos_ptr(
+        &self,
+        stream: &CudaStream,
+        q: &DeviceBuffer,
+        pool: &DeviceBuffer,
+        block_table: &DeviceBuffer,
+        out: &DeviceBuffer,
+        n_head: usize,
+        n_head_kv: usize,
+        head_dim: usize,
+        block_tokens: usize,
+        seq_tokens: usize,
+        query_pos: usize,
+        causal: bool,
+        pos_ptr: Option<&DeviceBuffer>,
+    ) -> Result<(), CudaError> {
         if n_head < 1 {
             return Err(CudaError::InvalidSize {
                 expected: 1,
@@ -221,8 +256,9 @@ impl PagedAttention {
         let pool_addr: u64 = pool.device_ptr();
         let block_table_addr: u64 = block_table.device_ptr();
         let out_addr: u64 = out.device_ptr();
+        let pos_ptr_addr: u64 = pos_ptr.map(|p| p.device_ptr()).unwrap_or(0);
 
-        let args: [*mut std::ffi::c_void; 12] = [
+        let args: [*mut std::ffi::c_void; 13] = [
             &q_addr as *const u64 as *mut std::ffi::c_void,
             &pool_addr as *const u64 as *mut std::ffi::c_void,
             &block_table_addr as *const u64 as *mut std::ffi::c_void,
@@ -235,6 +271,7 @@ impl PagedAttention {
             &query_pos_i as *const i32 as *mut std::ffi::c_void,
             &causal_i as *const i32 as *mut std::ffi::c_void,
             &scale as *const f32 as *mut std::ffi::c_void,
+            &pos_ptr_addr as *const u64 as *mut std::ffi::c_void,
         ];
 
         self.device.bind_to_thread()?;
@@ -242,9 +279,8 @@ impl PagedAttention {
         // SAFETY:
         // `self.device.bind_to_thread()` ensured a valid CUDA context on this thread.
         // `self.func` is a valid `CUfunction` from a live module.
-        // `stream.raw()` is a valid `CUstream`. `args` points to 12 raw pointers that
-        // map to the kernel parameters; device buffer addresses are live and local
-        // scalars are alive for the duration of this call.
+        // `stream.raw()` is a valid `CUstream`. `args` points to 13 raw pointers that
+        // map to the kernel parameters.
         let res = unsafe {
             let lib = sys::lib();
             lib.cuLaunchKernel(
@@ -263,7 +299,7 @@ impl PagedAttention {
         };
 
         if res != CUresult::CUDA_SUCCESS {
-            return Err(CudaError::KernelLaunch("cuLaunchKernel", res));
+            return Err(CudaError::KernelLaunch("cuLaunchKernel (paged_attn)", res));
         }
 
         Ok(())

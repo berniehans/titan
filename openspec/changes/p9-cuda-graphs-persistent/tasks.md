@@ -7,10 +7,10 @@
 - Gate PASS: `cuda_graphs_test` max difference = `0.000000e0` (bit-exact) vs stream execution.
 
 ## 2. Dynamic Position & Device-Side Parameter Updating (sub-change 9.2)
-- [ ] 2.1 Update `NormRope` kernel in `engine-cuda/kernels/norm_rope.cu` to optionally accept device-pointer position `pos_dev` (or device scalar).
-- [ ] 2.2 Update `PagedAttention` kernel in `engine-cuda/kernels/paged_attention.cu` to read sequence length from device memory or support dynamic graph node parameter update.
-- [ ] 2.3 Create TDD test `engine-cuda/tests/graph_dynamic_params_test.rs` verifying sequential positions with graph replay.
-- Gate: `cargo test -p engine-cuda --test graph_dynamic_params_test` PASS.
+- [x] 2.1 Update `NormRope` kernel in `engine-cuda/kernels/norm_rope.cu` to optionally accept device-pointer position `pos_dev` (or device scalar).
+- [x] 2.2 Update `PagedAttention` and `PagedKvGpu` kernels to read sequence length and slot dynamically from `pos_dev`.
+- [x] 2.3 Create TDD test `engine-cuda/tests/graph_dynamic_params_test.rs` verifying sequential positions with graph replay.
+- Gate PASS: `graph_dynamic_params_test` max difference = `0.000000e0` (bit-exact) across 8 sequential positions.
 
 ## 3. ForwardDriver Graph Capture & Execution (sub-change 9.3)
 - [ ] 3.1 Implement `ForwardDriver::capture_decode_graph()` in `engine-core/src/forward_driver.rs`.

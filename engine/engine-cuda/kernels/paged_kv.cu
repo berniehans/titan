@@ -18,8 +18,13 @@ extern "C" __global__ void paged_append_kv_kernel(
     int n_tokens,
     int start_token,
     int row_len,
-    int block_tokens)
+    int block_tokens,
+    const unsigned int* __restrict__ pos_ptr)
 {
+    if (pos_ptr != nullptr) {
+        start_token = (int)*pos_ptr;
+    }
+
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int total_threads = n_tokens * row_len;
     if (idx >= total_threads) return;
