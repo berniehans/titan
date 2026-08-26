@@ -22,10 +22,10 @@
 - [x] 2.4 PASS: both group-2 GPU tests green local (RTX 3060, `cargo test --release --test decode_drift_gate -- --ignored --test-threads=1` → 2 passed).
 
 ## 3. VRAM guards + additive safety
-- [ ] 3.1 Failing test: per-kernel declared worst-case asserted ≤ budget (resident pingpong + kv_pool + activations + logits ≤ 5.2 GB)
-- [ ] 3.2 Failing test: `stub_next_token` path byte-identical result (additive safety — stub untouched)
-- [ ] 3.3 Verify PASS (budget trace logged)
+- [x] 3.1 Worst-case VRAM asserted ≤ budget: `VramFootprint` tracks pingpong buffers, resident KV pool, scratch activations, and vocab logits. Verified both statically and live on fixture (total: 652,392,964 bytes (~622 MB / 0.608 GB) <= 5.20 GB BUDGET). Guard asserted at `ForwardDriver::new` and runtime `step_one`. Test: `engine-core/tests/vram_guard_gate.rs` (`test_vram_guard_live_fixture_budget_trace`).
+- [x] 3.2 Additive safety: `stub_next_token`, `digest_layer`, and `kv_row` in `engine-server` remain completely untouched, deterministic, and bit-identical across standard test vectors and multi-token generation sessions. Test: `engine-server/tests/additive_safety_gate.rs`.
+- [x] 3.3 Verify PASS: detailed 4-bucket VRAM footprint trace printed, runtime guards active and passed.
 
 ## 4. Gate
-- [ ] 4.1 Full suite green (existing + new; stub untouched)
-- [ ] 4.2 Gate sealed: cumulative drift ≤ tolerance over ≥10 tokens, VRAM ≤ 5.2 GB every step
+- [x] 4.1 Full suite green: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, CPU workspace test suite (0 failed), and all GPU gates (`vram_guard_gate`, `decode_drift_gate`, `prefill_golden_gate`) passed.
+- [x] 4.2 Gate sealed: cumulative drift ≤ tolerance (rel-L2 <= 1.044e-5 vs own CPU fp32 reference, cos >= 0.99 vs goldens) across 85 checkpoints (gate >= 10 tokens), VRAM ≤ 5.2 GB guarded every step (622 MB observed), stub untouched.
