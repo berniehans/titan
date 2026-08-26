@@ -18,5 +18,5 @@
 - [x] 3.3 Verify each number is REAL (verified against logged test measurements from harness runs).
 
 ## 4. Gate
-- [ ] 4.1 Full suite green
-- [ ] 4.2 Gate sealed: total ≤ 5.2 GB asserted by test + BENCHMARKS updated with real Phase 4/6 numbers
+- [x] 4.1 Full suite green (`cargo test --workspace` 100% pass, clippy and formatting 100% clean).
+- [x] 4.2 Gate sealed: total working set (211.99 MB measured / 622.17 MB @ 2048 tok) ≤ 5.2 GB asserted by test + `docs/BENCHMARKS.md` updated with real Phase 4 and Phase 6 numbers.
