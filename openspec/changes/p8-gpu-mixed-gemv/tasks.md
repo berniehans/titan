@@ -1,10 +1,8 @@
-﻿# Implementation Tasks: Phase 8 — Native GPU Mixed-Quant GEMV
-
 ## 1. CUDA Q6_K Dequantization Kernel (sub-change 8.1)
-- [ ] 1.1 Implement raw CUDA kernel `dequant_q6k_kernel` in `engine-cuda/src/kernels/dequant_q6k.cu` (unpack 128B `ql`, 64B `qh`, 16B `scales`, 2B `d`).
-- [ ] 1.2 Add Rust wrapper `Q6KDequantizer` in `engine-cuda/src/dequant_q6k.rs`.
-- [ ] 1.3 Create TDD parity test `engine-cuda/tests/dequant_q6k_parity.rs` verifying bit-exact/rel-L2 parity (< 1e-4) against `engine_core::dequant_q6k_cpu`.
-- Gate: `cargo test -p engine-cuda --test dequant_q6k_parity` PASS.
+- [x] 1.1 Implement raw CUDA kernel `dequant_q6k_kernel` in `engine-cuda/kernels/dequant_q6k.cu` (unpack 128B `ql`, 64B `qh`, 16B `scales`, 2B `d`).
+- [x] 1.2 Add Rust wrapper `Q6KDequantizer` in `engine-cuda/src/dequant_q6k.rs`.
+- [x] 1.3 Create TDD parity test `engine-cuda/tests/dequant_q6k_parity.rs` verifying bit-exact/rel-L2 parity (< 1e-4) against `engine_core::dequant_q6k_cpu`.
+- Gate PASS: Single-block & multi-block Q6_K cos-sim = 1.000000, max diff = 0.000000e0 vs CPU reference.
 
 ## 2. Fused Q6_K GEMV Kernel (sub-change 8.2)
 - [ ] 2.1 Implement fused `gemv_q6_k` CUDA kernel in `engine-cuda/src/kernels/gemv_q6k.cu` using warp shuffle reductions.
