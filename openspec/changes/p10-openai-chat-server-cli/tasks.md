@@ -12,11 +12,11 @@
 - Gate PASS: `cargo test -p engine-core --lib sampler` PASS.
 
 ## 3. Server Real-Engine Integration & SSE Streaming (sub-change 10.3)
-- [ ] 3.1 Implement background GPU `EngineService` actor running `ForwardDriver` with CUDA Graph decode and continuous token generation.
-- [ ] 3.2 Implement `POST /v1/chat/completions` route supporting both non-streaming JSON and streaming Server-Sent Events (`text/event-stream`).
-- [ ] 3.3 Implement `GET /v1/models` endpoint.
-- [ ] 3.4 Create integration test `engine-server/tests/e2e_chat_completions.rs` testing HTTP requests (streaming & non-streaming) on real fixture.
-- Gate: `cargo test -p engine-server --test e2e_chat_completions` PASS.
+- [x] 3.1 Implement background GPU `EngineService` actor running `ForwardDriver` with CUDA Graph decode and continuous token generation.
+- [x] 3.2 Implement `POST /v1/chat/completions` route supporting both non-streaming JSON and streaming Server-Sent Events (`text/event-stream`).
+- [x] 3.3 Implement `GET /v1/models` endpoint.
+- [x] 3.4 Create integration test `engine-server/tests/e2e_chat_completions.rs` testing HTTP requests (streaming & non-streaming) on real fixture.
+- Gate PASS: `cargo test -p engine-server --test e2e_chat_completions` PASS.
 
 ## 4. Interactive Terminal CLI & Phase 10 Seal (sub-change 10.4)
 - [ ] 4.1 Implement `titan chat` interactive REPL in `engine-server` with multi-turn conversation memory and live stdout token streaming.
