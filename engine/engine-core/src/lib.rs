@@ -11,9 +11,10 @@ pub use error::EngineError;
 pub use forward_driver::{ForwardDriver, VramFootprint};
 pub use moe::{
     BandwidthMeasurement, CpuMoeConfig, ExpertSlotCache, ExpertTensorDesc, GpuProfileInfo,
-    HardwareBandwidthProfile, HostExpertBank, LayerCacheStats, MoeBackend, RewrittenRouting,
-    balanced_fetch, cpu_expert_swiglu_step, cpu_moe_execute_overflow,
-    resolve_backend_recommendation, resolve_hybrid_fetch_fraction,
+    HardwareBandwidthProfile, HostExpertBank, LayerCacheStats, MoeBackend, MoeBudgetPlan,
+    PrefillDoubleBuffer, RewrittenRouting, balanced_fetch, cpu_expert_swiglu_step,
+    cpu_moe_execute_overflow, plan_moe_vram_budget, resolve_backend_recommendation,
+    resolve_hybrid_fetch_fraction,
 };
 pub use pipeline::{Pipeline, PipelineStats};
 pub use tokenizer::BpeTokenizer;
