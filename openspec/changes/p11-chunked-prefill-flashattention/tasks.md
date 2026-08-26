@@ -7,10 +7,10 @@
 - Gate PASS: `cargo test -p engine-cuda --test gemm_batched_parity` PASS (`cos-sim >= 0.9999`).
 
 ## 2. FlashAttention-2 Causal GPU Kernel (sub-change 11.2)
-- [ ] 2.1 Implement `flash_attention_2_kernel` in `engine-cuda/kernels/flash_attention_2.cu` with online softmax scaling and paged KV pool reading.
-- [ ] 2.2 Implement Rust RAII wrapper `FlashAttention2` in `engine-cuda/src/flash_attention.rs`.
-- [ ] 2.3 Create TDD parity test `engine-cuda/tests/flash_attention_parity.rs` verifying causal attention against CPU reference.
-- Gate: `cargo test -p engine-cuda --test flash_attention_parity` PASS (`cos-sim >= 0.9999`).
+- [x] 2.1 Implement `flash_attention_2_kernel` in `engine-cuda/kernels/flash_attention_2.cu` with online softmax scaling and paged KV pool reading.
+- [x] 2.2 Implement Rust RAII wrapper `FlashAttention2` in `engine-cuda/src/flash_attention.rs`.
+- [x] 2.3 Create TDD parity test `engine-cuda/tests/flash_attention_parity.rs` verifying causal attention against CPU reference.
+- Gate PASS: `cargo test -p engine-cuda --test flash_attention_parity` PASS (`cos-sim >= 0.9999`).
 
 ## 3. ForwardDriver Chunked Prefill Integration (sub-change 11.3)
 - [ ] 3.1 Implement batched RoPE and batched KV cache append in `engine-cuda`.
