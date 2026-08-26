@@ -15,14 +15,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-fn default_model_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var("ENGINE_TESTDATA") {
-        let p = PathBuf::from(env_path);
-        if p.exists() {
-            return p;
-        }
+fn resolve_model_path(path: &Path) -> PathBuf {
+    if path.exists() {
+        return path.to_path_buf();
     }
     let candidates = [
+        PathBuf::from("../").join(path),
+        PathBuf::from("../../").join(path),
         PathBuf::from("testdata/Qwen3-0.6B-Q4_K_M.gguf"),
         PathBuf::from("../testdata/Qwen3-0.6B-Q4_K_M.gguf"),
         PathBuf::from("../../testdata/Qwen3-0.6B-Q4_K_M.gguf"),
@@ -32,7 +31,17 @@ fn default_model_path() -> PathBuf {
             return c.clone();
         }
     }
-    PathBuf::from("testdata/Qwen3-0.6B-Q4_K_M.gguf")
+    path.to_path_buf()
+}
+
+fn default_model_path() -> PathBuf {
+    if let Ok(env_path) = std::env::var("ENGINE_TESTDATA") {
+        let p = PathBuf::from(env_path);
+        if p.exists() {
+            return p;
+        }
+    }
+    resolve_model_path(Path::new("testdata/Qwen3-0.6B-Q4_K_M.gguf"))
 }
 
 fn print_banner() {
@@ -77,7 +86,13 @@ fn run_chat(model_path: &Path, temperature: f32, top_p: f32) -> Result<(), Box<d
         repetition_penalty: 1.1,
         seed: None,
     };
-    let stop_tokens = [151645u32, 151643u32]; // <|im_end|>, <|endoftext|>
+    let stop_tokens = [151645u32, 151643u32, 151644u32]; // <|im_end|>, <|endoftext|>, <|im_start|>
+    let stop_strings = [
+        "<|im_end|>".to_string(),
+        "<|endoftext|>".to_string(),
+        "<|im_start|>".to_string(),
+        "<|im_end".to_string(),
+    ];
 
     loop {
         print!("You > ");
@@ -114,7 +129,7 @@ fn run_chat(model_path: &Path, temperature: f32, top_p: f32) -> Result<(), Box<d
 
         let mut assistant_response = String::new();
 
-        if !Sampler::is_stop_sequence(first_tok, &first_piece, &stop_tokens, &[]) {
+        if !Sampler::is_stop_sequence(first_tok, &first_piece, &stop_tokens, &stop_strings) {
             print!("{}", first_piece);
             io::stdout().flush()?;
             assistant_response.push_str(&first_piece);
@@ -130,7 +145,7 @@ fn run_chat(model_path: &Path, temperature: f32, top_p: f32) -> Result<(), Box<d
                 let next_tok = sampler.sample(&logits, &context, &params);
                 let next_piece = tokenizer.decode(&[next_tok]).unwrap_or_default();
 
-                if Sampler::is_stop_sequence(next_tok, &next_piece, &stop_tokens, &[]) {
+                if Sampler::is_stop_sequence(next_tok, &next_piece, &stop_tokens, &stop_strings) {
                     break;
                 }
 
@@ -154,12 +169,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("chat");
 
-    let model_path = args
-        .iter()
-        .position(|a| a == "--model" || a == "-m")
-        .and_then(|idx| args.get(idx + 1))
-        .map(PathBuf::from)
-        .unwrap_or_else(default_model_path);
+    let model_path = resolve_model_path(
+        &args
+            .iter()
+            .position(|a| a == "--model" || a == "-m")
+            .and_then(|idx| args.get(idx + 1))
+            .map(PathBuf::from)
+            .unwrap_or_else(default_model_path),
+    );
 
     let port: u16 = args
         .iter()
