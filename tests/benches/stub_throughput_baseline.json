@@ -1,0 +1,159 @@
+{
+  "timestamp": "2026-08-26T10:10:00Z",
+  "n_prompts": 12,
+  "tokens_per_prompt": 128,
+  "total_tokens_per_run": 76800,
+  "overall_mean_ids_per_sec": 956160.5737786597,
+  "runs_overall_ids_per_sec": [
+    961829.881349267,
+    949448.0714954177,
+    957203.7684912947
+  ],
+  "spread_pct": 1.2949508893592472,
+  "prompts": [
+    {
+      "prompt_index": 0,
+      "prompt": "Hello",
+      "n_tokens": 128,
+      "mean_duration_ms": 5.9069,
+      "mean_ids_per_sec": 1129904.32931982,
+      "runs_ids_per_sec": [
+        837433.2670365331,
+        1364256.4802182808,
+        1188023.2407046463
+      ]
+    },
+    {
+      "prompt_index": 1,
+      "prompt": "Hello world",
+      "n_tokens": 128,
+      "mean_duration_ms": 7.567866666666667,
+      "mean_ids_per_sec": 856295.258880382,
+      "runs_ids_per_sec": [
+        743788.2063082537,
+        977920.3911681565,
+        847177.1791647363
+      ]
+    },
+    {
+      "prompt_index": 2,
+      "prompt": "The quick brown fox jumps over the lazy dog",
+      "n_tokens": 128,
+      "mean_duration_ms": 7.8932,
+      "mean_ids_per_sec": 811223.2753227036,
+      "runs_ids_per_sec": [
+        827696.8043143696,
+        819577.6613863668,
+        786395.3602673744
+      ]
+    },
+    {
+      "prompt_index": 3,
+      "prompt": "don't stop believing",
+      "n_tokens": 128,
+      "mean_duration_ms": 6.447633333333333,
+      "mean_ids_per_sec": 1028110.7225870212,
+      "runs_ids_per_sec": [
+        1048647.4086939425,
+        1245814.8407692907,
+        789869.9182978304
+      ]
+    },
+    {
+      "prompt_index": 4,
+      "prompt": "She's singing 'Hey Jude' while it's raining",
+      "n_tokens": 128,
+      "mean_duration_ms": 6.466366666666667,
+      "mean_ids_per_sec": 998525.8277503774,
+      "runs_ids_per_sec": [
+        875596.8423788871,
+        1023639.6788330508,
+        1096340.962039194
+      ]
+    },
+    {
+      "prompt_index": 5,
+      "prompt": "42 is the answer to everything, isn't it?",
+      "n_tokens": 128,
+      "mean_duration_ms": 7.451566666666667,
+      "mean_ids_per_sec": 884195.8128631924,
+      "runs_ids_per_sec": [
+        1084911.257649472,
+        715331.5673585264,
+        852344.6135815787
+      ]
+    },
+    {
+      "prompt_index": 6,
+      "prompt": "Testing numbers: 123 4567 89012",
+      "n_tokens": 128,
+      "mean_duration_ms": 6.8556333333333335,
+      "mean_ids_per_sec": 940878.0554968761,
+      "runs_ids_per_sec": [
+        923934.2274321847,
+        1051231.0901594914,
+        847468.8488989526
+      ]
+    },
+    {
+      "prompt_index": 7,
+      "prompt": "Universal Studios Hollywood",
+      "n_tokens": 128,
+      "mean_duration_ms": 8.7943,
+      "mean_ids_per_sec": 737562.0115956087,
+      "runs_ids_per_sec": [
+        759013.2827324478,
+        626756.6323582698,
+        826916.1196961083
+      ]
+    },
+    {
+      "prompt_index": 8,
+      "prompt": "Let me code in Rust every day.",
+      "n_tokens": 128,
+      "mean_duration_ms": 7.2358666666666664,
+      "mean_ids_per_sec": 890709.8524861942,
+      "runs_ids_per_sec": [
+        998704.8047063964,
+        828908.1725165134,
+        844516.580235673
+      ]
+    },
+    {
+      "prompt_index": 9,
+      "prompt": "double  spaces and tabs\there",
+      "n_tokens": 128,
+      "mean_duration_ms": 5.3674,
+      "mean_ids_per_sec": 1200922.1212688524,
+      "runs_ids_per_sec": [
+        1348276.7337996124,
+        1121646.0155277872,
+        1132843.6144791574
+      ]
+    },
+    {
+      "prompt_index": 10,
+      "prompt": "CAPS AND lower MiXeD CaSe",
+      "n_tokens": 128,
+      "mean_duration_ms": 5.100366666666667,
+      "mean_ids_per_sec": 1266090.1618305575,
+      "runs_ids_per_sec": [
+        1218351.418237198,
+        1145906.0715117007,
+        1434012.9957427739
+      ]
+    },
+    {
+      "prompt_index": 11,
+      "prompt": "Don't Worry, Be Happy. (Really!)",
+      "n_tokens": 128,
+      "mean_duration_ms": 5.236433333333333,
+      "mean_ids_per_sec": 1241374.1424596738,
+      "runs_ids_per_sec": [
+        1336116.9102296452,
+        1032791.1179963853,
+        1355214.399152991
+      ]
+    }
+  ]
+}

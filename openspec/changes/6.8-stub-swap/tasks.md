@@ -3,9 +3,9 @@
 > Execute via bot coder. Strict TDD. One commit per task group. GPU tests: `#[ignore]` + NVRTC PATH trick.
 
 ## 0. Pre-measured baseline (REQUIRED BEFORE swap)
-- [ ] 0.1 Measure stub-path throughput (ids/s) on the fixed prompt set via the benchmark harness
-- [ ] 0.2 Commit the measured baseline as an artifact (e.g. `tests/benches/stub_throughput_baseline.json`) with prompt, n_tokens, ids/s
-- [ ] 0.3 Assert baseline recorded > 0 and stable across 3 runs (spread < 5%)
+- [x] 0.1 Measure stub-path throughput (ids/s) on the fixed prompt set via the benchmark harness (`engine-server/tests/stub_throughput_bench.rs`).
+- [x] 0.2 Commit the measured baseline as an artifact (`tests/benches/stub_throughput_baseline.json`) with prompt, n_tokens, ids/s across 12 prompts (mean: 956,160.6 ids/s).
+- [x] 0.3 Assert baseline recorded > 0 and stable across 3 runs (spread = 1.29% < 5%).
 
 ## 1. Sub-gate 1 — deterministic driver parity
 - [ ] 1.1 Failing test: driver teacher-forced logits vs golden (fixed prompt) cos-sim > 0.999
