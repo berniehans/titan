@@ -1,11 +1,12 @@
-# Specification: Layer-Streaming Engine Core
+# Layer-Streaming Engine Core Specification
 
-Central system capability: run LLMs whose weights do not fit in VRAM by streaming them per layer (or expert) from pinned RAM into double-buffered GPU memory.
+## Purpose
+Run LLMs whose weights do not fit in VRAM by streaming them per layer (or per expert) from pinned host RAM into double-buffered GPU memory with overlapped transfers, on-the-fly dequantization, paged KV-cache attention, real forward execution, and bandwidth-adaptive hybrid MoE decode.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Single weight load into pinned RAM
-The system SHALL load all GGUF model tensors from NVMe into pinned host memory (cudaMallocHost) ONCE at startup, and SHALL NEVER read from disk during generation.
+The system SHALL load all GGUF model tensors from NVMe into pinned host memory (`cudaMallocHost`) ONCE at startup, and SHALL NEVER read from disk during generation.
 
 #### Scenario: 0.6B fixture load
 - **WHEN** loading a ~400 MB Q4_K_M GGUF begins
@@ -27,11 +28,36 @@ The system SHALL maintain two CUDA streams (transfer and compute) synchronized b
 - **AND** there is no CPU busy-waiting
 
 ### Requirement: On-the-fly GPU dequantization
-Q4_K_M weights SHALL be dequantized inside the GPU kernels (shared memory/registers), without materializing full FP16 copies in VRAM.
+Q4_K_M weights SHALL be dequantized inside GPU kernels (shared memory/registers), without materializing full FP16 copies in VRAM.
 
 #### Scenario: Numerical parity
 - **WHEN** GPU dequant is compared block-by-block against the CPU reference
 - **THEN** maximum error is < 0.01 per element
+
+### Requirement: Paged KV-Cache management
+The system SHALL allocate KV-cache in non-contiguous physical memory blocks with paged attention indexing, enforcing hard upper bounds on total block allocations.
+
+#### Scenario: Block allocation and exhaustion
+- **WHEN** attention tokens are appended across non-contiguous blocks
+- **THEN** reads reconstruct the logical sequence identically
+- **AND** pool exhaustion returns a typed OutOfMemory error without device crash
+
+### Requirement: Real forward driver and generator parity
+The system SHALL execute full-topology transformer forward passes combining GPU GEMV, Norm/RoPE/SwiGLU, and PagedAttention, producing next-token logits that match golden reference vectors.
+
+#### Scenario: Golden logit cosine similarity
+- **WHEN** prefill evaluates a teacher-forced prompt against llama.cpp reference logits
+- **THEN** cosine similarity SHALL be >= 0.99
+- **AND** total transient VRAM usage SHALL remain bounded within the 5.2 GB envelope
+
+### Requirement: MoE expert streaming and bandwidth-adaptive hybrid decode
+The system SHALL stream MoE expert weights dynamically over PCIe into a GPU slot cache, balancing host CPU execution and PCIe DMA transfers using hardware bandwidth profiling (`_balanced_fetch`).
+
+#### Scenario: Hardware bandwidth profiling and balanced fetch
+- **WHEN** bandwidth profile is recorded in `benchbw.json`
+- **THEN** fetch fraction $q^\star = \text{pcie\_ov} / (\text{pcie\_ov} + \text{cpu\_ov})$ is resolved
+- **AND** balanced rounding minimizes the longer execution path ($0.415 \times 3 \rightarrow 1$ fetch)
+- **AND** resident hits, PCIe fetches, and CPU overflows are tracked per layer
 
 ### Requirement: Predictable throughput at scale
 The system SHALL document real measured throughput per model scale, without theoretical promises lacking benchmarks.
