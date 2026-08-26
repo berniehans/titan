@@ -12,10 +12,12 @@ extern "C" __global__ void norm_rope_swiglu_kernel(
     float* __restrict__ out,
     float eps,
     int mode,
-    const unsigned int* __restrict__ pos_ptr)
+    const unsigned int* __restrict__ pos_ptr,
+    int n_heads)
 {
-    if (pos_ptr != nullptr) {
-        pos = *pos_ptr;
+    unsigned int cur_pos = (pos_ptr != nullptr) ? *pos_ptr : pos;
+    if (n_heads > 0) {
+        cur_pos += (blockIdx.x / n_heads);
     }
 
     const int row = blockIdx.x;
@@ -69,7 +71,7 @@ extern "C" __global__ void norm_rope_swiglu_kernel(
     if (mode & 2) {
         const int half = n_dims / 2;
         for (int k = threadIdx.x; k < half; k += blockDim.x) {
-            float theta = (float)pos * powf(freq_base, -2.0f * (float)k / (float)n_dims);
+            float theta = (float)cur_pos * powf(freq_base, -2.0f * (float)k / (float)n_dims);
             float c = cosf(theta);
             float s = sinf(theta);
             float x0 = row_out[k];

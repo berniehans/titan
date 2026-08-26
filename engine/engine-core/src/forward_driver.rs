@@ -33,8 +33,8 @@ use crate::error::EngineError;
 use crate::forward_cpu::{Tensor, TensorType, embed_lookup, logits_from_hidden};
 use cudarc::driver::CudaDevice;
 use engine_cuda::{
-    CudaStream, DeviceBuffer, GemvFormat, MODE_NORM, MODE_ROPE, MODE_SWIGLU, MultiFormatGEMV,
-    NormRope, PagedAttention, PagedKvGpu, PagedKvLayout,
+    BatchedGEMM, CudaStream, DeviceBuffer, FlashAttention2, GemvFormat, MODE_NORM, MODE_ROPE,
+    MODE_SWIGLU, MultiFormatGEMV, NormRope, PagedAttention, PagedKvGpu, PagedKvLayout,
 };
 use engine_io::{GgmlType, GgufReader, LoadedPinned, ModelConfig};
 use std::sync::Arc;
@@ -256,9 +256,11 @@ pub struct ForwardDriver<'a> {
     device: Arc<CudaDevice>,
     stream: CudaStream,
     gemv: MultiFormatGEMV,
+    batched_gemm: BatchedGEMM,
     nr: NormRope,
     pkv: PagedKvGpu,
     pa: PagedAttention,
+    flash_attn: FlashAttention2,
     layout: PagedKvLayout,
     emb: Tensor<'a>,
     head_norm: Vec<f32>,
@@ -313,9 +315,11 @@ impl<'a> ForwardDriver<'a> {
         let device = CudaDevice::new(0)?;
         let stream = CudaStream::new(Arc::clone(&device))?;
         let gemv = MultiFormatGEMV::new(Arc::clone(&device))?;
+        let batched_gemm = BatchedGEMM::new(Arc::clone(&device))?;
         let nr = NormRope::new(Arc::clone(&device))?;
         let pkv = PagedKvGpu::new(Arc::clone(&device))?;
         let pa = PagedAttention::new(Arc::clone(&device))?;
+        let flash_attn = FlashAttention2::new(Arc::clone(&device))?;
 
         let h = cfg.hidden_size as usize;
         let hd = cfg.head_dim as usize;
@@ -436,9 +440,11 @@ impl<'a> ForwardDriver<'a> {
             device,
             stream,
             gemv,
+            batched_gemm,
             nr,
             pkv,
             pa,
+            flash_attn,
             layout,
             emb,
             head_norm,
@@ -481,6 +487,298 @@ impl<'a> ForwardDriver<'a> {
             .vram_footprint()
             .assert_within_budget(VRAM_BUDGET_BYTES)?;
         Ok(driver)
+    }
+
+    /// Evaluates `tokens` in parallel chunks using batched GEMM and FlashAttention-2,
+    /// populating resident KV cache and returning the final position's next-token logits.
+    pub fn prefill_chunked(
+        &mut self,
+        tokens: &[u32],
+        chunk_size: usize,
+    ) -> Result<Vec<f32>, EngineError> {
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+        if tokens.len() > self.layout.block_tokens {
+            return Err(engine_cuda::CudaError::InvalidSize {
+                expected: self.layout.block_tokens,
+                actual: tokens.len(),
+            }
+            .into());
+        }
+
+        let chunk_limit = chunk_size.max(1).min(256);
+        let mut last_hidden = Vec::new();
+        let mut current_pos = 0;
+
+        while current_pos < tokens.len() {
+            let chunk_len = (tokens.len() - current_pos).min(chunk_limit);
+            let chunk_tokens = &tokens[current_pos..current_pos + chunk_len];
+
+            // 1. Embed tokens on host and upload
+            let mut x_host = Vec::with_capacity(chunk_len * self.h);
+            for &tok in chunk_tokens {
+                let emb_vec = embed_lookup(&self.emb, tok as usize);
+                x_host.extend_from_slice(&emb_vec);
+            }
+
+            let x_dev = upload_f32(&self.stream, &self.device, &x_host)?;
+            let norm_dev = alloc_dev(&self.device, chunk_len * self.h)?;
+            let q_dev = alloc_dev(&self.device, chunk_len * self._qdim)?;
+            let k_dev = alloc_dev(&self.device, chunk_len * self._kvd)?;
+            let v_dev = alloc_dev(&self.device, chunk_len * self._kvd)?;
+            let attn_dev = alloc_dev(&self.device, chunk_len * self._qdim)?;
+            let op_dev = alloc_dev(&self.device, chunk_len * self.h)?;
+            let ffin_dev = alloc_dev(&self.device, chunk_len * self.h)?;
+            let gate_dev = alloc_dev(&self.device, chunk_len * self.hff)?;
+            let up_dev = alloc_dev(&self.device, chunk_len * self.hff)?;
+            let proj_dev = alloc_dev(&self.device, chunk_len * self.hff)?;
+
+            let zh_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; chunk_len * self.h])?;
+            let zq_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; chunk_len * self._qdim])?;
+            let zk_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; chunk_len * self._kvd])?;
+            let zff_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; chunk_len * self.hff])?;
+
+            for layer in &self.layers {
+                // a. Input RMSNorm
+                self.nr.launch_batched_with_pos_ptr(
+                    &self.stream,
+                    &x_dev,
+                    &zh_dev,
+                    &layer.an_dev,
+                    &zh_dev,
+                    &norm_dev,
+                    self.eps,
+                    self.h,
+                    0,
+                    0.0,
+                    0,
+                    MODE_NORM,
+                    None,
+                    1,
+                )?;
+
+                // b. Q, K, V Projections
+                self.batched_gemm.gemm(
+                    &self.stream,
+                    &layer.wq_dev,
+                    &norm_dev,
+                    &q_dev,
+                    self.h,
+                    self._qdim,
+                    chunk_len,
+                    layer.wq_fmt,
+                )?;
+                self.batched_gemm.gemm(
+                    &self.stream,
+                    &layer.wk_dev,
+                    &norm_dev,
+                    &k_dev,
+                    self.h,
+                    self._kvd,
+                    chunk_len,
+                    layer.wk_fmt,
+                )?;
+                self.batched_gemm.gemm(
+                    &self.stream,
+                    &layer.wv_dev,
+                    &norm_dev,
+                    &v_dev,
+                    self.h,
+                    self._kvd,
+                    chunk_len,
+                    layer.wv_fmt,
+                )?;
+
+                // c. Q/K RMSNorm + RoPE
+                self.nr.launch_batched_with_pos_ptr(
+                    &self.stream,
+                    &q_dev,
+                    &zq_dev,
+                    &layer.qn_dev,
+                    &zq_dev,
+                    &q_dev,
+                    self.eps,
+                    self.hd,
+                    self.n_rot,
+                    self.base,
+                    current_pos as u32,
+                    MODE_NORM | MODE_ROPE,
+                    None,
+                    self.nh,
+                )?;
+                self.nr.launch_batched_with_pos_ptr(
+                    &self.stream,
+                    &k_dev,
+                    &zk_dev,
+                    &layer.kn_dev,
+                    &zk_dev,
+                    &k_dev,
+                    self.eps,
+                    self.hd,
+                    self.n_rot,
+                    self.base,
+                    current_pos as u32,
+                    MODE_NORM | MODE_ROPE,
+                    None,
+                    self.nkv,
+                )?;
+
+                // d. Append K, V chunk into resident paged KV pool
+                self.pkv.append_kv(
+                    &self.stream,
+                    &self.layout,
+                    &layer.pool_dev,
+                    &k_dev,
+                    &v_dev,
+                    &self.bt_dev,
+                    current_pos,
+                    chunk_len,
+                )?;
+
+                // e. FlashAttention-2 causal prefill
+                self.flash_attn.launch(
+                    &self.stream,
+                    &q_dev,
+                    &layer.pool_dev,
+                    &self.bt_dev,
+                    &attn_dev,
+                    self.nh,
+                    self.nkv,
+                    self.hd,
+                    self.layout.block_tokens,
+                    current_pos + chunk_len,
+                )?;
+
+                // f. Output projection
+                self.batched_gemm.gemm(
+                    &self.stream,
+                    &layer.wo_dev,
+                    &attn_dev,
+                    &op_dev,
+                    self._qdim,
+                    self.h,
+                    chunk_len,
+                    layer.wo_fmt,
+                )?;
+
+                // g. Residual add + FFN RMSNorm
+                self.nr.launch_batched_with_pos_ptr(
+                    &self.stream,
+                    &op_dev,
+                    &x_dev,
+                    &layer.fn_dev,
+                    &zh_dev,
+                    &ffin_dev,
+                    self.eps,
+                    self.h,
+                    0,
+                    0.0,
+                    0,
+                    MODE_NORM,
+                    None,
+                    1,
+                )?;
+                // Update x_dev = op_dev + x_dev
+                self.nr.launch_batched_with_pos_ptr(
+                    &self.stream,
+                    &op_dev,
+                    &x_dev,
+                    &zh_dev,
+                    &zh_dev,
+                    &x_dev,
+                    self.eps,
+                    self.h,
+                    0,
+                    0.0,
+                    0,
+                    0,
+                    None,
+                    1,
+                )?;
+
+                // h. FFN gate & up projections
+                self.batched_gemm.gemm(
+                    &self.stream,
+                    &layer.wgate_dev,
+                    &ffin_dev,
+                    &gate_dev,
+                    self.h,
+                    self.hff,
+                    chunk_len,
+                    layer.wgate_fmt,
+                )?;
+                self.batched_gemm.gemm(
+                    &self.stream,
+                    &layer.wup_dev,
+                    &ffin_dev,
+                    &up_dev,
+                    self.h,
+                    self.hff,
+                    chunk_len,
+                    layer.wup_fmt,
+                )?;
+
+                // i. SwiGLU
+                self.nr.launch_batched_with_pos_ptr(
+                    &self.stream,
+                    &gate_dev,
+                    &zff_dev,
+                    &zff_dev,
+                    &up_dev,
+                    &proj_dev,
+                    self.eps,
+                    self.hff,
+                    0,
+                    0.0,
+                    0,
+                    MODE_SWIGLU,
+                    None,
+                    1,
+                )?;
+
+                // j. Down projection
+                self.batched_gemm.gemm(
+                    &self.stream,
+                    &layer.wdown_dev,
+                    &proj_dev,
+                    &op_dev,
+                    self.hff,
+                    self.h,
+                    chunk_len,
+                    layer.wdown_fmt,
+                )?;
+
+                // k. Layer output residual add
+                self.nr.launch_batched_with_pos_ptr(
+                    &self.stream,
+                    &op_dev,
+                    &x_dev,
+                    &zh_dev,
+                    &zh_dev,
+                    &x_dev,
+                    self.eps,
+                    self.h,
+                    0,
+                    0.0,
+                    0,
+                    0,
+                    None,
+                    1,
+                )?;
+            }
+
+            // Download x_dev
+            let x_out_all = download_f32(&self.stream, &x_dev, chunk_len * self.h)?;
+            let last_token_hidden = x_out_all[(chunk_len - 1) * self.h..chunk_len * self.h].to_vec();
+            last_hidden = last_token_hidden;
+
+            current_pos += chunk_len;
+        }
+
+        self.pos = tokens.len();
+        self.stream.sync()?;
+        Ok(self.lm_head(&last_hidden))
     }
 
     /// Appends all `tokens` sequentially into resident KV starting at `pos=0`,

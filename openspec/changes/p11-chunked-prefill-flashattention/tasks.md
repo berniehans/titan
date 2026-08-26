@@ -13,10 +13,10 @@
 - Gate PASS: `cargo test -p engine-cuda --test flash_attention_parity` PASS (`cos-sim >= 0.9999`).
 
 ## 3. ForwardDriver Chunked Prefill Integration (sub-change 11.3)
-- [ ] 3.1 Implement batched RoPE and batched KV cache append in `engine-cuda`.
-- [ ] 3.2 Implement `ForwardDriver::prefill_chunked` in `engine-core/src/forward_driver.rs`.
-- [ ] 3.3 Create parity test `engine-core/tests/chunked_prefill_parity.rs` asserting bit-identical logits (`cos-sim >= 0.997`) against serial prefill across all prompt fixtures.
-- Gate: `cargo test -p engine-core --test chunked_prefill_parity` PASS.
+- [x] 3.1 Implement batched RoPE and batched KV cache append in `engine-cuda`.
+- [x] 3.2 Implement `ForwardDriver::prefill_chunked` in `engine-core/src/forward_driver.rs`.
+- [x] 3.3 Create parity test `engine-core/tests/chunked_prefill_parity.rs` asserting bit-identical logits (`cos-sim >= 0.997`) against serial prefill across all prompt fixtures.
+- Gate PASS: `cargo test -p engine-core --test chunked_prefill_parity` PASS (`cos-sim = 1.000000`).
 
 ## 4. TTFT Speedup Benchmarks & Phase 11 Seal (sub-change 11.4)
 - [ ] 4.1 Benchmark TTFT in `engine-server/tests/ttft_benchmark_gate.rs` across prompt lengths ($S \in \{16, 64, 128, 256, 512, 1024\}$).
