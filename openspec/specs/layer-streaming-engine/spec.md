@@ -59,6 +59,19 @@ The system SHALL stream MoE expert weights dynamically over PCIe into a GPU slot
 - **AND** balanced rounding minimizes the longer execution path ($0.415 \times 3 \rightarrow 1$ fetch)
 - **AND** resident hits, PCIe fetches, and CPU overflows are tracked per layer
 
+### Requirement: Native GPU Q6_K dequantization and multi-format GEMV
+The system SHALL provide native CUDA kernels for dequantizing `Q6_K` super-blocks (256 weights in 210 bytes) and executing fused matrix-vector products directly on GPU registers without CPU fallback or intermediate VRAM allocations.
+
+#### Scenario: Q6_K GPU block-level parity
+- **WHEN** GPU `dequant_q6k` unpacks raw Q6_K byte buffers
+- **THEN** output floats SHALL match CPU reference floats with maximum relative error $< 10^{-4}$
+- **AND** cosine similarity SHALL exceed 0.9999
+
+#### Scenario: Full-layer GPU execution without host synchronization
+- **WHEN** `ForwardDriver` executes decode steps across layers containing mixed Q4_K_M and Q6_K tensors
+- **THEN** all matrix multiplications SHALL execute on CUDA streams
+- **AND** no intermediate layer activations SHALL synchronize or transfer to host CPU memory
+
 ### Requirement: Predictable throughput at scale
 The system SHALL document real measured throughput per model scale, without theoretical promises lacking benchmarks.
 
