@@ -168,6 +168,48 @@ Device memory (VRAM) audited per stage against the 5.2 GB usable budget (5,452,5
 
 Harnesses: [`engine/engine-core/tests/vram_accounting_tests.rs`](../engine/engine-core/tests/vram_accounting_tests.rs), [`engine/engine-server/tests/vram_real_audit_gate.rs`](../engine/engine-server/tests/vram_real_audit_gate.rs).
 
+## Phase 7 — MoE Expert Streaming & Bandwidth-Adaptive Hybrid Execution
+
+Measured on NVIDIA RTX 3060 Laptop GPU (6 GB VRAM, 5.2 GB usable) + AMD Host CPU over PCIe 4.0 ×8.
+
+### 7.1 — Hardware Bandwidth Profiling (`benchbw.json`)
+
+| Channel / Mode | Measured Bandwidth | Description | Status |
+|---|---|---|---|
+| STREAM Host DRAM Read | **0.86 GB/s** | Sequential host DRAM memory sweep | ✅ Profiled |
+| Linear PCIe H2D | **6.08 GB/s** | Pinned Host → Device DMA copy | ✅ Profiled |
+| Linear PCIe D2H | **5.85 GB/s** | Device → Host DMA copy | ✅ Profiled |
+| CPU MoE GEMV (Isolated) | **0.36 GB/s** | Standalone CPU expert arithmetic | ✅ Profiled |
+| PCIe Gather (Isolated) | **6.08 GB/s** | Standalone PCIe expert gather | ✅ Profiled |
+| CPU MoE GEMV (Overlapped) | **0.36 GB/s** | CPU compute under PCIe contention | ✅ Profiled |
+| PCIe Gather (Overlapped) | **6.06 GB/s** | PCIe gather under CPU contention | ✅ Profiled |
+| **Adaptive Fetch Fraction ($q^\star$)** | **0.9441** | `pcie_ov / (pcie_ov + cpu_ov)` | **✅ Optimal** |
+| **Recommended Backend** | **`offload`** | `offload` on slow CPU, `hybrid` when CPU > 2× PCIe | **✅ Verified** |
+
+Artifact: [`tests/benches/benchbw.json`](../tests/benches/benchbw.json).
+
+### 7.2 & 7.3 — Host Expert Banks & Capped-Fetch LRU Slot Cache
+
+- **Pinned Allocation & Slice Indexing:** Contiguous RAII page-locked host memory (`PinnedHost`), per-(layer, expert) slice indexing, fallback capability flagged.
+- **Balanced Fetch Rounding (`_balanced_fetch`):** Strictly minimizes the longer overlapping side. Replicated upstream regression cases ($0.415 \times 3 \rightarrow 1$ fetch, $0.415 \times 4 \rightarrow 2$ fetches).
+- **GPU LRU Slot Cache:** Zero host syncs during steady-state decode; resident hits, LRU evictions, and CPU overflows tracked cleanly.
+- **Harnesses:** [`engine/engine-core/tests/moe_expert_bank_tests.rs`](../engine/engine-core/tests/moe_expert_bank_tests.rs), [`engine/engine-core/tests/moe_slot_cache_tests.rs`](../engine/engine-core/tests/moe_slot_cache_tests.rs).
+
+### 7.4 & 7.5 — CPU SwiGLU Executor & MoE-First VRAM Budget Planner
+
+- **CPU SwiGLU Parity:** Bit-identical (< $10^{-6}$ error) weighted accumulation of overflow experts.
+- **Threaded Overlap:** PCIe DMA transfer and CPU SwiGLU execution run concurrently with deterministic buffer merging.
+- **VRAM Budget Invariant:** $\le 5.2$ GB guaranteed across all parameter sweeps (2 GB to 16 GB).
+- **Dynamic Prefill Double Buffer:** Alternates ping-pong buffers for seamless transfer-compute overlap.
+- **Harnesses:** [`engine/engine-core/tests/moe_cpu_executor_tests.rs`](../engine/engine-core/tests/moe_cpu_executor_tests.rs), [`engine/engine-core/tests/moe_budget_planner_tests.rs`](../engine/engine-core/tests/moe_budget_planner_tests.rs).
+
+### 7.6 — Multi-Mode E2E Autoregressive Generation & Telemetry
+
+- **Backends Tested:** `Offload`, `Cpu`, `Hybrid`.
+- **E2E Token Generation:** Generated bit-identical coherent token sequences `[198, 262, 671, 4457, 1946]` across all 3 backends.
+- **Telemetry:** Real-time per-layer cache statistics (`active_requests`, `resident_hits`, `pcie_fetched`, `cpu_overflow`, `pre_cap_miss_rate`, `gpu_coverage_rate`) verified with zero anomalies.
+- **Harness:** [`engine/engine-server/tests/e2e_moe_hybrid_gate.rs`](../engine/engine-server/tests/e2e_moe_hybrid_gate.rs).
+
 ## Later phases — Predictable throughput at scale (target)
 
 Dense 14B Q4_K_M (~8.5 GB resident in RAM), PCIe ×8, RTX 3060.

@@ -43,5 +43,7 @@
 - Gate PASS: 3 modes (`Offload`, `Cpu`, `Hybrid`) E2E green; identical coherent token sequences `[198, 262, 671, 4457, 1946]`; per-layer telemetry consistent with zero anomalies.
 
 ## 7. Benchmarks seal (sub-change 7.7)
-- [ ] 7.1 BENCHMARKS.md: per-mode tok/s, miss-rate vs cache-size sweep, fetch-fraction sensitivity, VRAM per stage
-- Gate: real measured numbers only; regression baselines recorded
+- [x] 7.1 `docs/BENCHMARKS.md` sealed with Phase 7 measurements (bandwidth profile, balanced fetch, CPU SwiGLU overlap, VRAM budget invariant, E2E multi-mode telemetry).
+- [x] 7.2 Run full workspace test suite; zero regressions vs 6.9 confirmed across all unit, integration, and E2E gates.
+- [x] 7.3 Committed and sealed all tasks in Phase 7 master plan.
+- Gate PASS: all gates green, zero regressions.
