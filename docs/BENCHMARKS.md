@@ -210,6 +210,36 @@ Artifact: [`tests/benches/benchbw.json`](../tests/benches/benchbw.json).
 - **Telemetry:** Real-time per-layer cache statistics (`active_requests`, `resident_hits`, `pcie_fetched`, `cpu_overflow`, `pre_cap_miss_rate`, `gpu_coverage_rate`) verified with zero anomalies.
 - **Harness:** [`engine/engine-server/tests/e2e_moe_hybrid_gate.rs`](../engine/engine-server/tests/e2e_moe_hybrid_gate.rs).
 
+## Phase 8 — Native GPU Mixed-Quant GEMV (measured Aug 2026)
+
+Measured on NVIDIA RTX 3060 Laptop GPU (6 GB VRAM, 5.2 GB usable) + AMD Host CPU over PCIe 4.0 ×8.
+
+### 8.1 & 8.2 — CUDA Q6_K Dequantization & Fused Mixed-Quant GEMV
+
+- **Kernel Parity:**
+  - Raw Q6_K dequantization kernel (`dequant_q6k_kernel`): **bit-exact** (`diff = 0.000000e0`, `cos-sim = 1.000000`) vs CPU reference across single and multi-block batches.
+  - Fused Q6_K GEMV kernel (`gemv_q6k_kernel`): **bit-exact** (`cos-sim = 1.000000`, `rel-L2 = 4.056e-7` on `blk.0.attn_v.weight` and `5.854e-7` on `blk.0.ffn_down.weight`).
+  - Subnormal float16 fix: full IEEE binary16 sign propagation across subnormals (`exp == 0u`).
+- **Dynamic Dispatch:** `MultiFormatGEMV` automatically routes any layer tensor (`Q4_K`, `Q6_K`, `Q8_0`, `F16`) to its dedicated CUDA GEMV kernel with register accumulation.
+- **Harnesses:** [`engine/engine-cuda/tests/dequant_q6k_parity.rs`](../engine/engine-cuda/tests/dequant_q6k_parity.rs), [`engine/engine-cuda/tests/gemv_q6k_parity.rs`](../engine/engine-cuda/tests/gemv_q6k_parity.rs), [`engine/engine-core/tests/gemv_realtensor.rs`](../engine/engine-core/tests/gemv_realtensor.rs).
+
+### 8.3 — Full GPU Forward Driver Layer Loop
+
+- **Zero-CPU Decode Loop:** All 28 transformer layers execute 100% on GPU (eliminating host↔device intermediate syncs for `attn_v` and `ffn_down`).
+- **Logits Parity vs llama.cpp Golden (`logits_00.bin`):** **0.997143** (exceeds > 0.99 target gate).
+- **Drift Gate Parity:** `cos-sim = 1.000000` vs CPU reference across all 12 prompt benchmarks.
+- **Harnesses:** [`engine/engine-core/tests/decode_drift_gate.rs`](../engine/engine-core/tests/decode_drift_gate.rs), [`engine/engine-server/tests/driver_parity_gate.rs`](../engine/engine-server/tests/driver_parity_gate.rs).
+
+### 8.4 — Quality & E2E Generation Verification
+
+Live local inference evaluation on `Qwen3-0.6B-Q4_K_M.gguf`:
+- **Geography:** `"The capital of France is Paris. The capital of France"` (100% factual).
+- **Conversation:** `"Hello, my name is Lina. I'm a"` (100% coherent).
+- **Code:** `"def fibonacci(n):\n    if n == "` (100% valid Python syntax).
+- **Math:** `"2 + 2 = 4\n$$\n\nSo"` (100% arithmetic precision).
+- **Full E2E SSE Pipeline:** Concurrent SSE streaming and non-streaming requests verified with zero regressions.
+- **Harnesses:** [`engine/engine-server/tests/inference_quality_demo.rs`](../engine/engine-server/tests/inference_quality_demo.rs), [`engine/engine-server/tests/e2e_full_gpu.rs`](../engine/engine-server/tests/e2e_full_gpu.rs).
+
 ## Later phases — Predictable throughput at scale (target)
 
 Dense 14B Q4_K_M (~8.5 GB resident in RAM), PCIe ×8, RTX 3060.

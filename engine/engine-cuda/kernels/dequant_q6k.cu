@@ -18,9 +18,10 @@ __device__ __forceinline__ float f16_to_f32(unsigned bits) {
     const unsigned mant = bits & 0x3FFu;
     if (exp == 0u) {
         if (mant == 0u) return sign ? -0.0f : 0.0f;
-        return (float)mant * exp2f(-24.0f);
+        const float val = (float)mant * exp2f(-24.0f);
+        return sign ? -val : val;
     } else if (exp == 31u) {
-        return __int_as_float(0x7f800000u);
+        return sign ? -__int_as_float(0x7f800000u) : __int_as_float(0x7f800000u);
     }
     const float val = (1.0f + (float)mant / 1024.0f) * exp2f((float)(int)exp - 15.0f);
     return sign ? -val : val;

@@ -30,7 +30,7 @@
 //! slot `s` == position `s`, block table `[0]`.
 
 use crate::error::EngineError;
-use crate::forward_cpu::{Tensor, TensorType, embed_lookup, logits_from_hidden, matmul};
+use crate::forward_cpu::{Tensor, TensorType, embed_lookup, logits_from_hidden};
 use cudarc::driver::CudaDevice;
 use engine_cuda::{
     CudaStream, DeviceBuffer, GemvFormat, MODE_NORM, MODE_ROPE, MODE_SWIGLU, MultiFormatGEMV,
@@ -199,29 +199,54 @@ fn download_f32(
     Ok(bytes_f32(&raw))
 }
 
+fn ggml_to_gemv(t: GgmlType) -> Result<GemvFormat, EngineError> {
+    match t {
+        GgmlType::Q4_K => Ok(GemvFormat::Q4K),
+        GgmlType::Q6_K => Ok(GemvFormat::Q6K),
+        GgmlType::Q8_0 => Ok(GemvFormat::Q8),
+        GgmlType::F16 => Ok(GemvFormat::F16),
+        other => Err(EngineError::Validation(format!(
+            "unsupported GEMV quant format {:?}",
+            other
+        ))),
+    }
+}
+
 struct LayerRsrc<'a> {
     wq_dev: DeviceBuffer,
+    wq_fmt: GemvFormat,
     wq_ne0: usize,
     wq_ne1: usize,
     wk_dev: DeviceBuffer,
+    wk_fmt: GemvFormat,
     wk_ne0: usize,
     wk_ne1: usize,
-    wv: Tensor<'a>,
+    wv_dev: DeviceBuffer,
+    wv_fmt: GemvFormat,
+    wv_ne0: usize,
+    wv_ne1: usize,
     wo_dev: DeviceBuffer,
+    wo_fmt: GemvFormat,
     wo_ne0: usize,
     wo_ne1: usize,
     wgate_dev: DeviceBuffer,
+    wgate_fmt: GemvFormat,
     wgate_ne0: usize,
     wgate_ne1: usize,
     wup_dev: DeviceBuffer,
+    wup_fmt: GemvFormat,
     wup_ne0: usize,
     wup_ne1: usize,
-    wdown: Tensor<'a>,
+    wdown_dev: DeviceBuffer,
+    wdown_fmt: GemvFormat,
+    wdown_ne0: usize,
+    wdown_ne1: usize,
     an_dev: DeviceBuffer,
     qn_dev: DeviceBuffer,
     kn_dev: DeviceBuffer,
     fn_dev: DeviceBuffer,
     pool_dev: DeviceBuffer,
+    _marker: std::marker::PhantomData<&'a ()>,
 }
 
 /// Forward driver executing transformer prefill and single-token decode steps
@@ -326,11 +351,21 @@ impl<'a> ForwardDriver<'a> {
             let kn = f32_norm(pinned, &format!("blk.{l}.attn_k_norm.weight"))?;
             let fnw = f32_norm(pinned, &format!("blk.{l}.ffn_norm.weight"))?;
 
+            let wq_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.attn_q.weight")).unwrap().ggml_type)?;
+            let wk_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.attn_k.weight")).unwrap().ggml_type)?;
+            let wv_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.attn_v.weight")).unwrap().ggml_type)?;
+            let wo_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.attn_output.weight")).unwrap().ggml_type)?;
+            let wgate_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.ffn_gate.weight")).unwrap().ggml_type)?;
+            let wup_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.ffn_up.weight")).unwrap().ggml_type)?;
+            let wdown_fmt = ggml_to_gemv(reader.get_tensor(&format!("blk.{l}.ffn_down.weight")).unwrap().ggml_type)?;
+
             let wq_dev = upload_bytes(&stream, &device, wq.data)?;
             let wk_dev = upload_bytes(&stream, &device, wk.data)?;
+            let wv_dev = upload_bytes(&stream, &device, wv.data)?;
             let wo_dev = upload_bytes(&stream, &device, wo.data)?;
             let wgate_dev = upload_bytes(&stream, &device, wgate.data)?;
             let wup_dev = upload_bytes(&stream, &device, wup.data)?;
+            let wdown_dev = upload_bytes(&stream, &device, wdown.data)?;
 
             let an_dev = upload_f32(&stream, &device, &an)?;
             let qn_dev = upload_f32(&stream, &device, &qn)?;
@@ -341,27 +376,39 @@ impl<'a> ForwardDriver<'a> {
 
             layers.push(LayerRsrc {
                 wq_dev,
+                wq_fmt,
                 wq_ne0: wq.ne0,
                 wq_ne1: wq.ne1,
                 wk_dev,
+                wk_fmt,
                 wk_ne0: wk.ne0,
                 wk_ne1: wk.ne1,
-                wv,
+                wv_dev,
+                wv_fmt,
+                wv_ne0: wv.ne0,
+                wv_ne1: wv.ne1,
                 wo_dev,
+                wo_fmt,
                 wo_ne0: wo.ne0,
                 wo_ne1: wo.ne1,
                 wgate_dev,
+                wgate_fmt,
                 wgate_ne0: wgate.ne0,
                 wgate_ne1: wgate.ne1,
                 wup_dev,
+                wup_fmt,
                 wup_ne0: wup.ne0,
                 wup_ne1: wup.ne1,
-                wdown,
+                wdown_dev,
+                wdown_fmt,
+                wdown_ne0: wdown.ne0,
+                wdown_ne1: wdown.ne1,
                 an_dev,
                 qn_dev,
                 kn_dev,
                 fn_dev,
                 pool_dev,
+                _marker: std::marker::PhantomData,
             });
         }
 
@@ -501,10 +548,10 @@ impl<'a> ForwardDriver<'a> {
                 MODE_NORM,
             )?;
 
-            // Stage 2: Q/K GEMV (GPU Q4_K)
+            // Stage 2: Q/K GEMV
             self.gemv.gemv(
                 &self.stream,
-                GemvFormat::Q4K,
+                layer.wq_fmt,
                 &layer.wq_dev,
                 &self.input_norm_dev,
                 &self.q_dev,
@@ -513,7 +560,7 @@ impl<'a> ForwardDriver<'a> {
             )?;
             self.gemv.gemv(
                 &self.stream,
-                GemvFormat::Q4K,
+                layer.wk_fmt,
                 &layer.wk_dev,
                 &self.input_norm_dev,
                 &self.k_dev,
@@ -521,12 +568,16 @@ impl<'a> ForwardDriver<'a> {
                 layer.wk_ne1,
             )?;
 
-            // Stage 3: V CPU Fallback (Q6_K)
-            let input_norm_host = download_f32(&self.stream, &self.input_norm_dev, self.h)?;
-            let mut v_host = vec![0.0f32; self.kvd];
-            matmul(&mut v_host, &layer.wv, &input_norm_host);
-            self.v_dev
-                .copy_from_host(&self.stream, &f32_bytes(&v_host))?;
+            // Stage 3: V GEMV
+            self.gemv.gemv(
+                &self.stream,
+                layer.wv_fmt,
+                &layer.wv_dev,
+                &self.input_norm_dev,
+                &self.v_dev,
+                layer.wv_ne0,
+                layer.wv_ne1,
+            )?;
 
             // Stage 4: Per-head Q/K RMSNorm + RoPE (GPU)
             let mut qhost = download_f32(&self.stream, &self.q_dev, self.qdim)?;
@@ -639,10 +690,10 @@ impl<'a> ForwardDriver<'a> {
                 true,
             )?;
 
-            // Stage 7: Output Projection (GPU Q4_K) + Residual 1 (Host)
+            // Stage 7: Output Projection + Residual 1 (Host)
             self.gemv.gemv(
                 &self.stream,
-                GemvFormat::Q4K,
+                layer.wo_fmt,
                 &layer.wo_dev,
                 &self.attn_dev,
                 &self.op_dev,
@@ -673,10 +724,10 @@ impl<'a> ForwardDriver<'a> {
                 MODE_NORM,
             )?;
 
-            // Stage 9: FFN Gate & Up (GPU Q4_K)
+            // Stage 9: FFN Gate & Up
             self.gemv.gemv(
                 &self.stream,
-                GemvFormat::Q4K,
+                layer.wgate_fmt,
                 &layer.wgate_dev,
                 &self.ffin_dev,
                 &self.gate_dev,
@@ -685,7 +736,7 @@ impl<'a> ForwardDriver<'a> {
             )?;
             self.gemv.gemv(
                 &self.stream,
-                GemvFormat::Q4K,
+                layer.wup_fmt,
                 &layer.wup_dev,
                 &self.ffin_dev,
                 &self.up_dev,
@@ -708,11 +759,18 @@ impl<'a> ForwardDriver<'a> {
                 0,
                 MODE_SWIGLU,
             )?;
-            let proj_host = download_f32(&self.stream, &self.proj_dev, self.hff)?;
 
-            // Stage 11: FFN Down CPU Fallback (Q6_K) + Residual 2 (Host)
-            let mut down_host = vec![0.0f32; self.h];
-            matmul(&mut down_host, &layer.wdown, &proj_host);
+            // Stage 11: FFN Down + Residual 2 (Host)
+            self.gemv.gemv(
+                &self.stream,
+                layer.wdown_fmt,
+                &layer.wdown_dev,
+                &self.proj_dev,
+                &self.op_dev,
+                layer.wdown_ne0,
+                layer.wdown_ne1,
+            )?;
+            let down_host = download_f32(&self.stream, &self.op_dev, self.h)?;
             let mut h2_host = vec![0.0f32; self.h];
             for i in 0..self.h {
                 h2_host[i] = h1_host[i] + down_host[i];
@@ -756,9 +814,11 @@ impl<'a> ForwardDriver<'a> {
             .map(|l| {
                 l.wq_dev.size()
                     + l.wk_dev.size()
+                    + l.wv_dev.size()
                     + l.wo_dev.size()
                     + l.wgate_dev.size()
                     + l.wup_dev.size()
+                    + l.wdown_dev.size()
                     + l.an_dev.size()
                     + l.qn_dev.size()
                     + l.kn_dev.size()
