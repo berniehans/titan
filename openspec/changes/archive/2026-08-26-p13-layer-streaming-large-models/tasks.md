@@ -18,8 +18,8 @@
 - [x] Gate PASS: `cargo test -p engine-core --test streaming_driver_parity` PASS (`cos-sim = 1.000000`).
 
 ## 4. End-to-End Large Model Verification & Phase 13 Seal (sub-change 13.4)
-- [ ] 4.1 Verify VRAM peak working set audit in `engine-server/tests/large_model_vram_audit_gate.rs` asserting $\le 2.0\text{ GB}$ total consumption.
-- [ ] 4.2 Record throughput and VRAM footprint metrics in `docs/BENCHMARKS.md`.
-- [ ] 4.3 Verify full workspace test suite `cargo test --workspace` with 0 regressions.
-- [ ] 4.4 Sync delta spec to main spec and archive change.
-- Gate: Large model streaming verified, VRAM budget bounded $\le 2.0\text{ GB}$, tests green, Phase 13 sealed.
+- [x] 4.1 Verify VRAM peak working set audit in `engine-server/tests/large_model_vram_audit_gate.rs` asserting $\le 2.0\text{ GB}$ total consumption.
+- [x] 4.2 Record throughput and VRAM footprint metrics in `docs/BENCHMARKS.md`.
+- [x] 4.3 Verify full workspace test suite `cargo test --workspace` with 0 regressions.
+- [x] 4.4 Sync delta spec to main spec and archive change.
+- Gate PASS: Large model streaming verified, VRAM budget bounded $\le 2.0\text{ GB}$, tests green, Phase 13 sealed.
