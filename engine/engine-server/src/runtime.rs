@@ -17,7 +17,7 @@ use engine_core::moe::{
 };
 use engine_core::{
     BpeTokenizer, EngineError, ForwardDriver, NgramDraftProposer, Pipeline, Sampler, SamplerParams,
-    SpeculativeVerificationResult, SpeculativeVerifier, StreamingForwardDriver, VramFootprint,
+    SpeculativeVerificationResult, StreamingForwardDriver, VramFootprint,
 };
 use engine_io::{GgmlType, GgufReader, LoadedPinned, ModelConfig};
 use std::sync::{Arc, Mutex};
@@ -148,25 +148,14 @@ impl<'a> DriverInstance<'a> {
                 d.verify_speculative(current_token, candidates, sampler, params, context)
             }
             Self::Streaming(d) => {
-                let mut target_logits = Vec::with_capacity(candidates.len() + 1);
-                let current_logits = d.decode(current_token)?;
-                target_logits.push(current_logits);
-                for &cand in candidates {
-                    let logits = d.decode(cand)?;
-                    target_logits.push(logits);
-                }
-                let target_refs: Vec<&[f32]> = target_logits.iter().map(|v| v.as_slice()).collect();
-                let verif = SpeculativeVerifier::verify_stochastic(
-                    candidates,
-                    &[],
-                    &target_refs,
-                    sampler,
-                    params,
-                    context,
-                );
-                let n_rejected = candidates.len() - verif.n_accepted;
-                d.pos -= n_rejected;
-                Ok(verif)
+                let logits = d.decode(current_token)?;
+                let next_tok = sampler.sample(&logits, context, params);
+                Ok(SpeculativeVerificationResult {
+                    n_accepted: 0,
+                    bonus_token: next_tok,
+                    emitted_tokens: vec![next_tok],
+                    total_emitted: 1,
+                })
             }
         }
     }

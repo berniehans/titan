@@ -363,6 +363,24 @@ Measured on NVIDIA RTX 3060 Laptop GPU (6 GB VRAM, 5.2 GB usable budget) + AMD H
 - **Support Matrix:** Capable of running arbitrarily large models (14B / 32B / 70B) exceeding physical VRAM capacity.
 - **Harness:** [`engine/engine-server/tests/large_model_vram_audit_gate.rs`](../engine/engine-server/tests/large_model_vram_audit_gate.rs).
 
+## Phase 14 — Unified Engine Server & CLI Orchestration (measured Aug 2026)
+
+Unified multi-backend serving and CLI orchestration across `ForwardDriver` (resident GPU), `StreamingForwardDriver` (PCIe layer streaming), and `SpeculativeVerifier` (context n-gram draft proposer).
+
+### 14.1 — Multi-Mode Runtime & Automatic Engine Selection
+- **Abstraction:** `UnifiedModel` and `DriverInstance` unifying resident GPU, PCIe layer streaming, and hybrid MoE execution under a single polymorphism layer.
+- **Auto-Resolution Heuristic:** Automatically selects `EngineMode::Resident` for models $\le 5.2\text{ GB}$ and `EngineMode::Streaming` for models $> 5.2\text{ GB}$.
+- **Harness:** [`engine/engine-server/src/runtime.rs`](../engine/engine-server/src/runtime.rs).
+
+### 14.2 — OpenAI HTTP API & SSE Streaming Telemetry
+- **Endpoints:** `/v1/chat/completions` (JSON & SSE) and `/v1/models`.
+- **Telemetry Response Headers:** `x-titan-engine-mode` (`resident` / `streaming` / `moe`) and `x-titan-vram-mb`.
+- **Harness:** [`engine/engine-server/tests/e2e_unified_modes_gate.rs`](../engine/engine-server/tests/e2e_unified_modes_gate.rs).
+
+### 14.3 — Unified CLI & Startup Diagnostic Banner
+- **CLI Commands:** `titan chat` (interactive terminal REPL) and `titan serve` (OpenAI daemon) with `--engine`, `--speculative`, `--kv-capacity`, `--temp`, `--top-p`.
+- **Startup Diagnostics:** Clear diagnostic banner displaying GPU device status, VRAM working set, and resolved engine mode.
+
 ## Later phases — Predictable throughput at scale (target)
 
 Dense 14B Q4_K_M (~8.5 GB resident in RAM), PCIe ×8, RTX 3060.

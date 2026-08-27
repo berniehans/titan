@@ -67,8 +67,8 @@ pub struct StreamingForwardDriver<'a> {
     _device: Arc<CudaDevice>,
     compute_stream: CudaStream,
     transfer_stream: CudaStream,
-    event_transfer_done: CudaEvent,
-    event_compute_done: CudaEvent,
+    events_transfer_done: [CudaEvent; 2],
+    events_compute_done: [CudaEvent; 2],
     gemv: MultiFormatGEMV,
     _batched_gemm: BatchedGEMM,
     nr: NormRope,
@@ -146,8 +146,14 @@ impl<'a> StreamingForwardDriver<'a> {
         let device = CudaDevice::new(0)?;
         let compute_stream = CudaStream::new(Arc::clone(&device))?;
         let transfer_stream = CudaStream::new(Arc::clone(&device))?;
-        let event_transfer_done = CudaEvent::new(Arc::clone(&device))?;
-        let event_compute_done = CudaEvent::new(Arc::clone(&device))?;
+        let events_transfer_done = [
+            CudaEvent::new(Arc::clone(&device))?,
+            CudaEvent::new(Arc::clone(&device))?,
+        ];
+        let events_compute_done = [
+            CudaEvent::new(Arc::clone(&device))?,
+            CudaEvent::new(Arc::clone(&device))?,
+        ];
 
         let gemv = MultiFormatGEMV::new(Arc::clone(&device))?;
         let batched_gemm = BatchedGEMM::new(Arc::clone(&device))?;
@@ -296,8 +302,8 @@ impl<'a> StreamingForwardDriver<'a> {
             _device: device,
             compute_stream,
             transfer_stream,
-            event_transfer_done,
-            event_compute_done,
+            events_transfer_done,
+            events_compute_done,
             gemv,
             _batched_gemm: batched_gemm,
             nr,
@@ -360,8 +366,8 @@ impl<'a> StreamingForwardDriver<'a> {
         })
     }
 
-    /// Single-token decode step over streaming layers with overlapped PCIe DMA.
-    pub fn decode(&mut self, token: u32) -> Result<Vec<f32>, EngineError> {
+    /// Single-token forward step over streaming layers returning last hidden activation.
+    pub fn forward_token(&mut self, token: u32) -> Result<Vec<f32>, EngineError> {
         let p = self.pos;
         if p >= self.layout.block_tokens {
             return Err(engine_cuda::CudaError::InvalidSize {
@@ -382,19 +388,24 @@ impl<'a> StreamingForwardDriver<'a> {
         let hw0 = extract_host_weights(&self.pinned_layers[0]);
         self.double_buffer
             .copy_layer_async(0, &hw0, &self.transfer_stream)?;
-        self.event_transfer_done.record(&self.transfer_stream)?;
-        self.event_transfer_done.stream_wait(&self.compute_stream)?;
+        self.events_transfer_done[0].record(&self.transfer_stream)?;
 
         for l in 0..self.n_layer {
             let curr_slot_idx = l % 2;
             let next_slot_idx = (l + 1) % 2;
 
+            // Wait for transfer of current layer into curr_slot_idx before compute
+            self.events_transfer_done[curr_slot_idx].stream_wait(&self.compute_stream)?;
+
             // 1. Asynchronously prefetch layer L+1 on transfer_stream while layer L computes
             if l + 1 < self.n_layer {
+                if l > 0 {
+                    self.events_compute_done[next_slot_idx].stream_wait(&self.transfer_stream)?;
+                }
                 let hw_next = extract_host_weights(&self.pinned_layers[l + 1]);
                 self.double_buffer
                     .copy_layer_async(next_slot_idx, &hw_next, &self.transfer_stream)?;
-                self.event_transfer_done.record(&self.transfer_stream)?;
+                self.events_transfer_done[next_slot_idx].record(&self.transfer_stream)?;
             }
 
             // 2. Execute layer L forward compute on compute_stream
@@ -610,13 +621,8 @@ impl<'a> StreamingForwardDriver<'a> {
                 0,
             )?;
 
-            // 3. Event synchronization barrier
-            self.event_compute_done.record(&self.compute_stream)?;
-            self.event_compute_done.stream_wait(&self.transfer_stream)?;
-
-            if l + 1 < self.n_layer {
-                self.event_transfer_done.stream_wait(&self.compute_stream)?;
-            }
+            // 3. Record compute done for curr_slot_idx
+            self.events_compute_done[curr_slot_idx].record(&self.compute_stream)?;
         }
 
         let mut x_host_out = vec![0u8; self.h * 4];
@@ -624,22 +630,32 @@ impl<'a> StreamingForwardDriver<'a> {
             .copy_to_host(&self.compute_stream, &mut x_host_out)?;
         self.pos += 1;
         self.compute_stream.sync()?;
+        self.transfer_stream.sync()?;
 
         let last_hidden: Vec<f32> = x_host_out
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
 
+        Ok(last_hidden)
+    }
+
+    /// Single token decode returning next-token logits.
+    pub fn decode(&mut self, token: u32) -> Result<Vec<f32>, EngineError> {
+        let last_hidden = self.forward_token(token)?;
         Ok(self.lm_head(&last_hidden))
     }
 
-    /// Prefill sequence of tokens over streaming layer pipeline.
+    /// Prefill sequence of tokens over streaming layer pipeline, computing logits only for the final position.
     pub fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<f32>, EngineError> {
-        let mut last_logits = Vec::new();
-        for &tok in tokens {
-            last_logits = self.decode(tok)?;
+        if tokens.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(last_logits)
+        let mut last_hidden = Vec::new();
+        for &tok in tokens {
+            last_hidden = self.forward_token(tok)?;
+        }
+        Ok(self.lm_head(&last_hidden))
     }
 
     /// Returns the number of transformer layers in this model.

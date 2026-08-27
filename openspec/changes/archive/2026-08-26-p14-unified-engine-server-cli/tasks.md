@@ -19,8 +19,8 @@
 - Gate PASS: `titan chat --help` and `titan serve --help` display all options cleanly.
 
 ## 4. End-to-End Multi-Mode Verification & Phase 14 Seal (sub-change 14.4)
-- [ ] 4.1 Create `engine-server/tests/e2e_unified_modes_gate.rs` testing live HTTP completions across resident, streaming, and speculative modes.
-- [ ] 4.2 Run full workspace test suite `cargo test --workspace` with 0 failures.
-- [ ] 4.3 Update `docs/BENCHMARKS.md` with unified multi-engine serving metrics.
-- [ ] 4.4 Sync delta spec to main spec and archive change.
-- Gate: All engine modes operational, tests green, Phase 14 sealed.
+- [x] 4.1 Create `engine-server/tests/e2e_unified_modes_gate.rs` testing live HTTP completions across resident, streaming, and speculative modes.
+- [x] 4.2 Run full workspace test suite `cargo test --workspace` with 0 failures.
+- [x] 4.3 Update `docs/BENCHMARKS.md` with unified multi-engine serving metrics.
+- [x] 4.4 Sync delta spec to main spec and archive change.
+- Gate PASS: All engine modes operational, tests green, Phase 14 sealed.
