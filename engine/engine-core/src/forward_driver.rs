@@ -250,6 +250,9 @@ struct LayerRsrc<'a> {
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
+/// Maximum speculative batch size supported by preallocated device buffers.
+pub const MAX_SPEC_K: usize = 8;
+
 /// Forward driver executing transformer prefill and single-token decode steps
 /// over GPU kernels and CPU fallbacks.
 pub struct ForwardDriver<'a> {
@@ -286,6 +289,22 @@ pub struct ForwardDriver<'a> {
     gate_dev: DeviceBuffer,
     up_dev: DeviceBuffer,
     proj_dev: DeviceBuffer,
+    // speculative preallocated working buffers (max_k = 8):
+    spec_x_dev: DeviceBuffer,
+    spec_norm_dev: DeviceBuffer,
+    spec_q_dev: DeviceBuffer,
+    spec_k_dev: DeviceBuffer,
+    spec_v_dev: DeviceBuffer,
+    spec_attn_dev: DeviceBuffer,
+    spec_op_dev: DeviceBuffer,
+    spec_ffin_dev: DeviceBuffer,
+    spec_gate_dev: DeviceBuffer,
+    spec_up_dev: DeviceBuffer,
+    spec_proj_dev: DeviceBuffer,
+    spec_zh: DeviceBuffer,
+    spec_zq: DeviceBuffer,
+    spec_zk: DeviceBuffer,
+    spec_zff: DeviceBuffer,
     decode_graph: Option<engine_cuda::CudaGraphExec>,
     // dims
     h: usize,
@@ -436,6 +455,24 @@ impl<'a> ForwardDriver<'a> {
         let up_dev = alloc_dev(&device, hff)?;
         let proj_dev = alloc_dev(&device, hff)?;
 
+        const MAX_SPEC_K: usize = 8;
+        let spec_x_dev = alloc_dev(&device, MAX_SPEC_K * h)?;
+        let spec_norm_dev = alloc_dev(&device, MAX_SPEC_K * h)?;
+        let spec_q_dev = alloc_dev(&device, MAX_SPEC_K * qdim)?;
+        let spec_k_dev = alloc_dev(&device, MAX_SPEC_K * kvd)?;
+        let spec_v_dev = alloc_dev(&device, MAX_SPEC_K * kvd)?;
+        let spec_attn_dev = alloc_dev(&device, MAX_SPEC_K * qdim)?;
+        let spec_op_dev = alloc_dev(&device, MAX_SPEC_K * h)?;
+        let spec_ffin_dev = alloc_dev(&device, MAX_SPEC_K * h)?;
+        let spec_gate_dev = alloc_dev(&device, MAX_SPEC_K * hff)?;
+        let spec_up_dev = alloc_dev(&device, MAX_SPEC_K * hff)?;
+        let spec_proj_dev = alloc_dev(&device, MAX_SPEC_K * hff)?;
+
+        let spec_zh = upload_f32(&stream, &device, &vec![0.0f32; MAX_SPEC_K * h])?;
+        let spec_zq = upload_f32(&stream, &device, &vec![0.0f32; MAX_SPEC_K * qdim])?;
+        let spec_zk = upload_f32(&stream, &device, &vec![0.0f32; MAX_SPEC_K * kvd])?;
+        let spec_zff = upload_f32(&stream, &device, &vec![0.0f32; MAX_SPEC_K * hff])?;
+
         let driver = Self {
             device,
             stream,
@@ -469,6 +506,21 @@ impl<'a> ForwardDriver<'a> {
             gate_dev,
             up_dev,
             proj_dev,
+            spec_x_dev,
+            spec_norm_dev,
+            spec_q_dev,
+            spec_k_dev,
+            spec_v_dev,
+            spec_attn_dev,
+            spec_op_dev,
+            spec_ffin_dev,
+            spec_gate_dev,
+            spec_up_dev,
+            spec_proj_dev,
+            spec_zh,
+            spec_zq,
+            spec_zk,
+            spec_zff,
             decode_graph: None,
             h,
             hd,
@@ -823,39 +875,35 @@ impl<'a> ForwardDriver<'a> {
             });
         }
 
-        // 1. Embed K candidate tokens on host and upload
+        if k > MAX_SPEC_K {
+            let logits = self.decode(base_token)?;
+            let next_tok = sampler.sample(&logits, context, params);
+            return Ok(crate::speculative::SpeculativeVerificationResult {
+                emitted_tokens: vec![next_tok],
+                n_accepted: 0,
+                bonus_token: next_tok,
+                total_emitted: 1,
+            });
+        }
+
+        // 1. Embed K candidate tokens on host and upload directly to preallocated buffer
         let mut x_host = Vec::with_capacity(k * self.h);
         for &tok in &batch_tokens {
             let emb_vec = embed_lookup(&self.emb, tok as usize);
             x_host.extend_from_slice(&emb_vec);
         }
 
-        let x_dev = upload_f32(&self.stream, &self.device, &x_host)?;
-        let norm_dev = alloc_dev(&self.device, k * self.h)?;
-        let q_dev = alloc_dev(&self.device, k * self._qdim)?;
-        let k_dev = alloc_dev(&self.device, k * self._kvd)?;
-        let v_dev = alloc_dev(&self.device, k * self._kvd)?;
-        let attn_dev = alloc_dev(&self.device, k * self._qdim)?;
-        let op_dev = alloc_dev(&self.device, k * self.h)?;
-        let ffin_dev = alloc_dev(&self.device, k * self.h)?;
-        let gate_dev = alloc_dev(&self.device, k * self.hff)?;
-        let up_dev = alloc_dev(&self.device, k * self.hff)?;
-        let proj_dev = alloc_dev(&self.device, k * self.hff)?;
-
-        let zh_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; k * self.h])?;
-        let zq_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; k * self._qdim])?;
-        let zk_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; k * self._kvd])?;
-        let zff_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; k * self.hff])?;
+        self.spec_x_dev.copy_from_host(&self.stream, &f32_bytes(&x_host))?;
 
         for layer in &self.layers {
             // a. Input RMSNorm
             self.nr.launch_batched_with_pos_ptr(
                 &self.stream,
-                &x_dev,
-                &zh_dev,
+                &self.spec_x_dev,
+                &self.spec_zh,
                 &layer.an_dev,
-                &zh_dev,
-                &norm_dev,
+                &self.spec_zh,
+                &self.spec_norm_dev,
                 self.eps,
                 self.h,
                 0,
@@ -870,8 +918,8 @@ impl<'a> ForwardDriver<'a> {
             self.batched_gemm.gemm(
                 &self.stream,
                 &layer.wq_dev,
-                &norm_dev,
-                &q_dev,
+                &self.spec_norm_dev,
+                &self.spec_q_dev,
                 self.h,
                 self._qdim,
                 k,
@@ -880,8 +928,8 @@ impl<'a> ForwardDriver<'a> {
             self.batched_gemm.gemm(
                 &self.stream,
                 &layer.wk_dev,
-                &norm_dev,
-                &k_dev,
+                &self.spec_norm_dev,
+                &self.spec_k_dev,
                 self.h,
                 self._kvd,
                 k,
@@ -890,8 +938,8 @@ impl<'a> ForwardDriver<'a> {
             self.batched_gemm.gemm(
                 &self.stream,
                 &layer.wv_dev,
-                &norm_dev,
-                &v_dev,
+                &self.spec_norm_dev,
+                &self.spec_v_dev,
                 self.h,
                 self._kvd,
                 k,
@@ -901,11 +949,11 @@ impl<'a> ForwardDriver<'a> {
             // c. Q/K RMSNorm + RoPE
             self.nr.launch_batched_with_pos_ptr(
                 &self.stream,
-                &q_dev,
-                &zq_dev,
+                &self.spec_q_dev,
+                &self.spec_zq,
                 &layer.qn_dev,
-                &zq_dev,
-                &q_dev,
+                &self.spec_zq,
+                &self.spec_q_dev,
                 self.eps,
                 self.hd,
                 self.n_rot,
@@ -917,11 +965,11 @@ impl<'a> ForwardDriver<'a> {
             )?;
             self.nr.launch_batched_with_pos_ptr(
                 &self.stream,
-                &k_dev,
-                &zk_dev,
+                &self.spec_k_dev,
+                &self.spec_zk,
                 &layer.kn_dev,
-                &zk_dev,
-                &k_dev,
+                &self.spec_zk,
+                &self.spec_k_dev,
                 self.eps,
                 self.hd,
                 self.n_rot,
@@ -937,8 +985,8 @@ impl<'a> ForwardDriver<'a> {
                 &self.stream,
                 &self.layout,
                 &layer.pool_dev,
-                &k_dev,
-                &v_dev,
+                &self.spec_k_dev,
+                &self.spec_v_dev,
                 &self.bt_dev,
                 current_pos,
                 k,
@@ -947,10 +995,10 @@ impl<'a> ForwardDriver<'a> {
             // e. FlashAttention-2 causal kernel
             self.flash_attn.launch(
                 &self.stream,
-                &q_dev,
+                &self.spec_q_dev,
                 &layer.pool_dev,
                 &self.bt_dev,
-                &attn_dev,
+                &self.spec_attn_dev,
                 self.nh,
                 self.nkv,
                 self.hd,
@@ -963,8 +1011,8 @@ impl<'a> ForwardDriver<'a> {
             self.batched_gemm.gemm(
                 &self.stream,
                 &layer.wo_dev,
-                &attn_dev,
-                &op_dev,
+                &self.spec_attn_dev,
+                &self.spec_op_dev,
                 self._qdim,
                 self.h,
                 k,
@@ -974,11 +1022,11 @@ impl<'a> ForwardDriver<'a> {
             // g. Residual add + FFN RMSNorm
             self.nr.launch_batched_with_pos_ptr(
                 &self.stream,
-                &op_dev,
-                &x_dev,
+                &self.spec_op_dev,
+                &self.spec_x_dev,
                 &layer.fn_dev,
-                &zh_dev,
-                &ffin_dev,
+                &self.spec_zh,
+                &self.spec_ffin_dev,
                 self.eps,
                 self.h,
                 0,
@@ -990,11 +1038,11 @@ impl<'a> ForwardDriver<'a> {
             )?;
             self.nr.launch_batched_with_pos_ptr(
                 &self.stream,
-                &op_dev,
-                &x_dev,
-                &zh_dev,
-                &zh_dev,
-                &x_dev,
+                &self.spec_op_dev,
+                &self.spec_x_dev,
+                &self.spec_zh,
+                &self.spec_zh,
+                &self.spec_x_dev,
                 self.eps,
                 self.h,
                 0,
@@ -1009,8 +1057,8 @@ impl<'a> ForwardDriver<'a> {
             self.batched_gemm.gemm(
                 &self.stream,
                 &layer.wgate_dev,
-                &ffin_dev,
-                &gate_dev,
+                &self.spec_ffin_dev,
+                &self.spec_gate_dev,
                 self.h,
                 self.hff,
                 k,
@@ -1019,8 +1067,8 @@ impl<'a> ForwardDriver<'a> {
             self.batched_gemm.gemm(
                 &self.stream,
                 &layer.wup_dev,
-                &ffin_dev,
-                &up_dev,
+                &self.spec_ffin_dev,
+                &self.spec_up_dev,
                 self.h,
                 self.hff,
                 k,
@@ -1030,11 +1078,11 @@ impl<'a> ForwardDriver<'a> {
             // i. SwiGLU
             self.nr.launch_batched_with_pos_ptr(
                 &self.stream,
-                &gate_dev,
-                &zff_dev,
-                &zff_dev,
-                &up_dev,
-                &proj_dev,
+                &self.spec_gate_dev,
+                &self.spec_zff,
+                &self.spec_zff,
+                &self.spec_up_dev,
+                &self.spec_proj_dev,
                 self.eps,
                 self.hff,
                 0,
@@ -1049,8 +1097,8 @@ impl<'a> ForwardDriver<'a> {
             self.batched_gemm.gemm(
                 &self.stream,
                 &layer.wdown_dev,
-                &proj_dev,
-                &op_dev,
+                &self.spec_proj_dev,
+                &self.spec_op_dev,
                 self.hff,
                 self.h,
                 k,
@@ -1060,11 +1108,11 @@ impl<'a> ForwardDriver<'a> {
             // k. Layer output residual add
             self.nr.launch_batched_with_pos_ptr(
                 &self.stream,
-                &op_dev,
-                &x_dev,
-                &zh_dev,
-                &zh_dev,
-                &x_dev,
+                &self.spec_op_dev,
+                &self.spec_x_dev,
+                &self.spec_zh,
+                &self.spec_zh,
+                &self.spec_x_dev,
                 self.eps,
                 self.h,
                 0,
@@ -1077,7 +1125,7 @@ impl<'a> ForwardDriver<'a> {
         }
 
         // 2. Download hidden states and compute logits for all K candidate positions
-        let x_out_all = download_f32(&self.stream, &x_dev, k * self.h)?;
+        let x_out_all = download_f32(&self.stream, &self.spec_x_dev, k * self.h)?;
         let mut target_logits = Vec::with_capacity(k);
         for i in 0..k {
             let hidden_slice = &x_out_all[i * self.h..(i + 1) * self.h];

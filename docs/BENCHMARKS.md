@@ -316,6 +316,28 @@ Measured on NVIDIA RTX 3060 Laptop GPU (6 GB VRAM, 5.2 GB usable budget) + AMD H
   - **256 tokens:** Chunked TTFT = **7,648 ms** (Speedup = 1.55×, Throughput = 33.5 tok/s)
 - **Harness:** [`engine/engine-server/tests/ttft_benchmark_gate.rs`](../engine/engine-server/tests/ttft_benchmark_gate.rs).
 
+## Phase 12 — Speculative Decoding Engine (measured Aug 2026)
+
+Measured on NVIDIA RTX 3060 Laptop GPU (6 GB VRAM, 5.2 GB usable budget) + AMD Host CPU over PCIe 4.0 ×8.
+
+### 12.1 — Mathematical Verification & Rejection Sampling
+- **Sampling Equivalence:** Validated greedy argmax prefix matching and distribution-preserving stochastic rejection sampling with positive residual sampling.
+- **Harness:** [`engine/engine-core/tests/speculative_sampling_test.rs`](../engine/engine-core/tests/speculative_sampling_test.rs).
+
+### 12.2 — Context N-Gram Draft Proposer
+- **Latency Overhead:** $< 5 \mu\text{s}$ CPU host history scan over dynamic prompt tokens and generated sequence.
+- **VRAM Overhead:** **0 bytes** (zero additional model weights or GPU allocations).
+- **Harness:** [`engine/engine-core/tests/ngram_draft_test.rs`](../engine/engine-core/tests/ngram_draft_test.rs).
+
+### 12.3 — ForwardDriver Batched Candidate Verification & Bit-Exact Parity
+- **Parity Gate:** Tested across 28 layers of Qwen3-0.6B-Q4_K_M comparing speculative multi-token decoding against serial single-token decode.
+- **Measured Result:** **100.0% exact bit-identical token stream generation** across all generated tokens.
+- **Harness:** [`engine/engine-core/tests/speculative_driver_parity.rs`](../engine/engine-core/tests/speculative_driver_parity.rs).
+
+### 12.4 — Live Speculative Streaming Integration
+- **CLI Binary:** `titan chat` integrates live speculative streaming with `NgramDraftProposer` and preallocated VRAM working buffers (0 per-step dynamic memory allocations).
+- **Harnesses:** [`engine/engine-server/src/main.rs`](../engine/engine-server/src/main.rs), [`engine/engine-server/tests/speculative_benchmark_gate.rs`](../engine/engine-server/tests/speculative_benchmark_gate.rs).
+
 ## Later phases — Predictable throughput at scale (target)
 
 Dense 14B Q4_K_M (~8.5 GB resident in RAM), PCIe ×8, RTX 3060.

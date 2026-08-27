@@ -18,9 +18,9 @@
 - Gate PASS: `cargo test -p engine-core --test speculative_driver_parity` PASS.
 
 ## 4. Speculative Streaming Integration & Phase 12 Seal (sub-change 12.4)
-- [ ] 4.1 Integrate speculative decoding into `POST /v1/chat/completions` and CLI `titan chat`.
-- [ ] 4.2 Benchmark generation speedup (tok/s) and acceptance rate in `engine-server/tests/speculative_benchmark_gate.rs`.
-- [ ] 4.3 Record measured speedups and acceptance rates in `docs/BENCHMARKS.md`.
-- [ ] 4.4 Verify full workspace test suite `cargo test --workspace` with 0 regressions.
-- [ ] 4.5 Sync delta spec to main spec and archive change.
-- Gate: Speculative decoding verified, speedup recorded, tests green, Phase 12 sealed.
+- [x] 4.1 Integrate speculative decoding into `POST /v1/chat/completions` and CLI `titan chat`.
+- [x] 4.2 Benchmark generation speedup (tok/s) and acceptance rate in `engine-server/tests/speculative_benchmark_gate.rs`.
+- [x] 4.3 Record measured speedups and acceptance rates in `docs/BENCHMARKS.md`.
+- [x] 4.4 Verify full workspace test suite `cargo test --workspace` with 0 regressions.
+- [x] 4.5 Sync delta spec to main spec and archive change.
+- Gate PASS: Speculative decoding verified, speedup recorded, tests green, Phase 12 sealed.

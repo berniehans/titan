@@ -135,25 +135,59 @@ fn run_chat(model_path: &Path, temperature: f32, top_p: f32) -> Result<(), Box<d
             assistant_response.push_str(&first_piece);
             context.push(first_tok);
 
+            let proposer = engine_core::NgramDraftProposer::new(3, 4, 2);
             let mut current_tok = first_tok;
             const MAX_GEN: usize = 512;
-            for _ in 1..MAX_GEN {
-                let logits = match driver.decode(current_tok) {
-                    Ok(l) => l,
-                    Err(_) => break,
-                };
-                let next_tok = sampler.sample(&logits, &context, &params);
-                let next_piece = tokenizer.decode(&[next_tok]).unwrap_or_default();
 
-                if Sampler::is_stop_sequence(next_tok, &next_piece, &stop_tokens, &stop_strings) {
-                    break;
+            while context.len() < prompt_tokens.len() + MAX_GEN {
+                let candidates = proposer.propose(&context);
+
+                if candidates.is_empty() {
+                    let logits = match driver.decode(current_tok) {
+                        Ok(l) => l,
+                        Err(_) => break,
+                    };
+                    let next_tok = sampler.sample(&logits, &context, &params);
+                    let next_piece = tokenizer.decode(&[next_tok]).unwrap_or_default();
+
+                    if Sampler::is_stop_sequence(next_tok, &next_piece, &stop_tokens, &stop_strings) {
+                        break;
+                    }
+
+                    print!("{}", next_piece);
+                    io::stdout().flush()?;
+                    assistant_response.push_str(&next_piece);
+                    context.push(next_tok);
+                    current_tok = next_tok;
+                } else {
+                    let verif = match driver.verify_speculative(
+                        current_tok,
+                        &candidates,
+                        &mut sampler,
+                        &params,
+                        &context,
+                    ) {
+                        Ok(v) => v,
+                        Err(_) => break,
+                    };
+
+                    let mut stopped = false;
+                    for &emitted_tok in &verif.emitted_tokens {
+                        let piece = tokenizer.decode(&[emitted_tok]).unwrap_or_default();
+                        if Sampler::is_stop_sequence(emitted_tok, &piece, &stop_tokens, &stop_strings) {
+                            stopped = true;
+                            break;
+                        }
+                        print!("{}", piece);
+                        io::stdout().flush()?;
+                        assistant_response.push_str(&piece);
+                        context.push(emitted_tok);
+                        current_tok = emitted_tok;
+                    }
+                    if stopped {
+                        break;
+                    }
                 }
-
-                print!("{}", next_piece);
-                io::stdout().flush()?;
-                assistant_response.push_str(&next_piece);
-                context.push(next_tok);
-                current_tok = next_tok;
             }
         }
 
