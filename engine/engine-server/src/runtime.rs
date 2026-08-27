@@ -1,4 +1,4 @@
-/// Real-model runtime wiring for the engine-server (f5-sse-server-batching).
+/// Real-model runtime wiring for the engine-server (f5-sse-server-batching, Phase 14 unified engine).
 ///
 /// Binds the engine's *real* weight path into the HTTP decode loop so the
 /// flujo-completo gate holds end to end:
@@ -6,30 +6,19 @@
 ///   GGUF fixture on disk
 ///     -> GgufReader::open (parse header + tensor spans)
 ///     -> load_to_pinned (single NVMe pass into page-locked host RAM)
-///     -> Pipeline::with_dequantizer (real GPU Q4_K kernel, compute stage)
-///     -> deterministic per-token logits derived from the dequantized weights
+///     -> Pipeline / ForwardDriver / StreamingForwardDriver (unified engine)
+///     -> deterministic or sampled per-token logits
 ///     -> SSE chunks emitted by the axum server
-///
-/// # Honesty constraint
-///
-/// The model "forward pass" between embedding and vocabulary is still a
-/// deterministic placeholder (`stub_next_token`). It depends on the *actual*
-/// dequantized weights of the loaded fixture plus the token id, so a real
-/// model produces a real (and reproducible) output sequence — but no claim of
-/// model quality is made.
-///
-/// # Usage
-/// - `#[ignore]` GPU E2E: `build_real_model` + `decode_run` drive `/v1/completions`
-///   through the real pipeline. Requires a live CUDA device + `nvrtc64_*.dll`
-///   on PATH via `engine-server/tests/e2e_full_stack.rs`.
-/// - CI-safe tests keep the synthetic `KV` decode path; nothing here runs in
-///   `cargo test --workspace` (GPU + fixture required).
+
 use cudarc::driver::CudaDevice;
 use engine_core::moe::{
     ExpertSlotCache, HardwareBandwidthProfile, HostExpertBank, LayerCacheStats, MoeBackend,
     resolve_backend_recommendation, resolve_hybrid_fetch_fraction,
 };
-use engine_core::{BpeTokenizer, EngineError, ForwardDriver, Pipeline};
+use engine_core::{
+    BpeTokenizer, EngineError, ForwardDriver, NgramDraftProposer, Pipeline, Sampler, SamplerParams,
+    SpeculativeVerificationResult, SpeculativeVerifier, StreamingForwardDriver, VramFootprint,
+};
 use engine_io::{GgmlType, GgufReader, LoadedPinned, ModelConfig};
 use std::sync::{Arc, Mutex};
 
@@ -39,17 +28,179 @@ const Q4K_BLOCK_BYTES: usize = 144;
 /// Dequantized floats per Q4_K_M super-block.
 const Q4K_FLOATS_PER_BLOCK: usize = 256;
 
+/// Execution backend engine mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EngineMode {
+    Auto,
+    Resident,
+    Streaming,
+    Moe,
+}
+
+impl std::fmt::Display for EngineMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Resident => write!(f, "resident"),
+            Self::Streaming => write!(f, "streaming"),
+            Self::Moe => write!(f, "moe"),
+        }
+    }
+}
+
+impl std::str::FromStr for EngineMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "resident" => Ok(Self::Resident),
+            "streaming" => Ok(Self::Streaming),
+            "moe" => Ok(Self::Moe),
+            _ => Err(format!("Invalid engine mode: {s}")),
+        }
+    }
+}
+
+/// Speculative decoding acceleration mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpeculativeMode {
+    Auto,
+    Ngram,
+    None,
+}
+
+impl std::fmt::Display for SpeculativeMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Ngram => write!(f, "ngram"),
+            Self::None => write!(f, "none"),
+        }
+    }
+}
+
+impl std::str::FromStr for SpeculativeMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "ngram" => Ok(Self::Ngram),
+            "none" => Ok(Self::None),
+            _ => Err(format!("Invalid speculative mode: {s}")),
+        }
+    }
+}
+
+/// Unified driver instance dispatching forward passes across resident or PCIe streaming engines.
+pub enum DriverInstance<'a> {
+    Resident(ForwardDriver<'a>),
+    Streaming(StreamingForwardDriver<'a>),
+}
+
+impl<'a> DriverInstance<'a> {
+    pub fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<f32>, EngineError> {
+        match self {
+            Self::Resident(d) => d.prefill(tokens),
+            Self::Streaming(d) => d.prefill(tokens),
+        }
+    }
+
+    pub fn decode(&mut self, token: u32) -> Result<Vec<f32>, EngineError> {
+        match self {
+            Self::Resident(d) => d.decode(token),
+            Self::Streaming(d) => d.decode(token),
+        }
+    }
+
+    pub fn pos(&self) -> usize {
+        match self {
+            Self::Resident(d) => d.pos(),
+            Self::Streaming(d) => d.pos(),
+        }
+    }
+
+    pub fn n_layers(&self) -> usize {
+        match self {
+            Self::Resident(d) => d.n_layers(),
+            Self::Streaming(d) => d.n_layers(),
+        }
+    }
+
+    pub fn vram_footprint(&self) -> VramFootprint {
+        match self {
+            Self::Resident(d) => d.vram_footprint(),
+            Self::Streaming(d) => d.vram_footprint(),
+        }
+    }
+
+    pub fn verify_speculative(
+        &mut self,
+        current_token: u32,
+        candidates: &[u32],
+        sampler: &mut Sampler,
+        params: &SamplerParams,
+        context: &[u32],
+    ) -> Result<SpeculativeVerificationResult, EngineError> {
+        match self {
+            Self::Resident(d) => {
+                d.verify_speculative(current_token, candidates, sampler, params, context)
+            }
+            Self::Streaming(d) => {
+                let mut target_logits = Vec::with_capacity(candidates.len() + 1);
+                let current_logits = d.decode(current_token)?;
+                target_logits.push(current_logits);
+                for &cand in candidates {
+                    let logits = d.decode(cand)?;
+                    target_logits.push(logits);
+                }
+                let target_refs: Vec<&[f32]> = target_logits.iter().map(|v| v.as_slice()).collect();
+                let verif = SpeculativeVerifier::verify_stochastic(
+                    candidates,
+                    &[],
+                    &target_refs,
+                    sampler,
+                    params,
+                    context,
+                );
+                let n_rejected = candidates.len() - verif.n_accepted;
+                d.pos -= n_rejected;
+                Ok(verif)
+            }
+        }
+    }
+
+    pub fn as_resident(&self) -> Option<&ForwardDriver<'a>> {
+        match self {
+            Self::Resident(d) => Some(d),
+            Self::Streaming(_) => None,
+        }
+    }
+
+    pub fn as_resident_mut(&mut self) -> Option<&mut ForwardDriver<'a>> {
+        match self {
+            Self::Resident(d) => Some(d),
+            Self::Streaming(_) => None,
+        }
+    }
+
+    pub fn as_streaming(&self) -> Option<&StreamingForwardDriver<'a>> {
+        match self {
+            Self::Streaming(d) => Some(d),
+            Self::Resident(_) => None,
+        }
+    }
+
+    pub fn as_streaming_mut(&mut self) -> Option<&mut StreamingForwardDriver<'a>> {
+        match self {
+            Self::Streaming(d) => Some(d),
+            Self::Resident(_) => None,
+        }
+    }
+}
+
 /// A real, fixture-backed decoding model for the server.
-///
-/// Owns the live CUDA device, the double-buffered dequantizer pipeline, and
-/// the dequant-aligned Q4_K weight tensor slices that the generation loop
-/// streams to the GPU (copied out of the loader's pinned fixture).
-///
-/// When initialized via `build_real_driver_model`, also owns the full `ForwardDriver`
-/// and `BpeTokenizer` for real end-to-end model execution.
-///
-/// `Mutex`-wrapped because axum serves concurrent requests on tokio worker
-/// threads but a single CUDA pipeline is not re-entrant across threads.
 pub type SharedRealModel = Arc<Mutex<RealModel<'static>>>;
 
 /// The owned real model (inside `SharedRealModel`).
@@ -63,10 +214,16 @@ pub struct RealModel<'a> {
     pub weight_slices: Vec<Vec<u8>>,
     /// Byte window budget consumed by `weight_slices`.
     pub window_bytes: usize,
-    /// Full forward driver over the streamed GPU pipeline (Phase 6.7/6.8).
-    pub driver: Option<ForwardDriver<'a>>,
+    /// Unified forward driver instance (Resident or PCIe Streaming).
+    pub driver: Option<DriverInstance<'a>>,
     /// Real BPE tokenizer loaded from GGUF metadata.
     pub tokenizer: Option<BpeTokenizer>,
+    /// Active engine execution mode.
+    pub engine_mode: EngineMode,
+    /// Active speculative decoding mode.
+    pub speculative_mode: SpeculativeMode,
+    /// Optional context n-gram draft proposer.
+    pub ngram_proposer: Option<NgramDraftProposer>,
     /// MoE execution backend mode (Phase 7).
     pub moe_backend: MoeBackend,
     /// MoE GPU expert slot cache.
@@ -77,13 +234,7 @@ pub struct RealModel<'a> {
     pub fetch_fraction: f64,
 }
 
-/// Builds a real server model from an already-open `GgufReader` + its loaded
-/// pinned fixture.
-///
-/// Collects a bounded window of dequant-aligned Q4_K `blk.*` weight tensors
-/// and constructs `Pipeline::with_dequantizer` sized to the largest slice.
-/// Requires a local CUDA device and NVRTC on PATH. Loading (which returns
-/// `GgufError`, not `EngineError`) stays with the caller (`#[ignore]` GPU test).
+/// Builds a real server model from an already-open `GgufReader` + its loaded pinned fixture.
 pub fn build_real_model<'a>(
     reader: &GgufReader,
     fixture: &'a LoadedPinned,
@@ -116,6 +267,9 @@ pub fn build_real_model<'a>(
         window_bytes: budget,
         driver: None,
         tokenizer: None,
+        engine_mode: EngineMode::Resident,
+        speculative_mode: SpeculativeMode::None,
+        ngram_proposer: None,
         moe_backend: MoeBackend::Offload,
         slot_cache: None,
         host_bank: None,
@@ -129,12 +283,56 @@ pub fn build_real_driver_model<'a>(
     fixture: &'a LoadedPinned,
     max_seq: usize,
 ) -> Result<RealModel<'a>, EngineError> {
+    build_unified_driver_model(reader, fixture, max_seq, EngineMode::Auto, SpeculativeMode::None)
+}
+
+/// Builds a unified server model configured with explicit or auto-resolved engine mode and speculative proposer.
+pub fn build_unified_driver_model<'a>(
+    reader: &GgufReader,
+    fixture: &'a LoadedPinned,
+    max_seq: usize,
+    engine_mode: EngineMode,
+    speculative_mode: SpeculativeMode,
+) -> Result<RealModel<'a>, EngineError> {
     let mut model = build_real_model(reader, fixture, 64 * 1024 * 1024)?;
     let tokenizer = BpeTokenizer::from_reader(reader)?;
     let cfg = ModelConfig::from_reader(reader)?;
-    let driver = ForwardDriver::new(reader, fixture, &cfg, max_seq)?;
+
+    // Auto-resolve engine mode based on total weight size vs 5.2 GB budget
+    let resolved_engine = match engine_mode {
+        EngineMode::Auto => {
+            let total_bytes: u64 = reader.tensor_infos().iter().map(|t| t.size_bytes).sum();
+            if total_bytes > 5_200_000_000 {
+                EngineMode::Streaming
+            } else {
+                EngineMode::Resident
+            }
+        }
+        other => other,
+    };
+
+    let driver = match resolved_engine {
+        EngineMode::Streaming => {
+            let str_drv = StreamingForwardDriver::new(reader, fixture, &cfg, max_seq)?;
+            DriverInstance::Streaming(str_drv)
+        }
+        _ => {
+            let res_drv = ForwardDriver::new(reader, fixture, &cfg, max_seq)?;
+            DriverInstance::Resident(res_drv)
+        }
+    };
+
+    let ngram_proposer = match speculative_mode {
+        SpeculativeMode::Auto | SpeculativeMode::Ngram => Some(NgramDraftProposer::new(3, 4, 2)),
+        SpeculativeMode::None => None,
+    };
+
     model.driver = Some(driver);
     model.tokenizer = Some(tokenizer);
+    model.engine_mode = resolved_engine;
+    model.speculative_mode = speculative_mode;
+    model.ngram_proposer = ngram_proposer;
+
     Ok(model)
 }
 
@@ -204,8 +402,6 @@ pub fn forward_digest(model: &RealModel<'_>) -> Result<u64, EngineError> {
         .pipeline
         .dequant_out_slot(slot)
         .expect("dequant out slot");
-    // Read only the last tensor's dequantized floats (the ping-pong slot holds
-    // the last-processed layer's output).
     let last_floats = (refs[refs.len() - 1].len() / Q4K_BLOCK_BYTES) * Q4K_FLOATS_PER_BLOCK;
     let n_bytes = last_floats * std::mem::size_of::<f32>();
     let mut raw = vec![0u8; n_bytes];
@@ -228,8 +424,6 @@ fn digest_floats(row: &[f32]) -> u64 {
 }
 
 /// Legacy deterministic placeholder next-token in `1..vocab`.
-/// Replaced by `ForwardDriver` and `BpeTokenizer` in Phase 6.8 as the default generator;
-/// retained as a legacy/fallback alias for testing and synthetic modes.
 pub fn stub_next_token(token: u32, digest: u64, vocab: u32) -> u32 {
     let a = token.wrapping_mul(2654435761u32);
     let b = (digest & 0xffff) as u32;
@@ -246,9 +440,6 @@ pub fn prompt_token(prompt: &str, vocab: u32) -> u32 {
 }
 
 /// Runs a multi-step decode for one completion.
-/// When `driver` and `tokenizer` are hooked, runs real forward prefill and single-token
-/// decode steps over the streamed GPU pipeline.
-/// When not hooked, falls back to the deterministic placeholder stub path.
 pub fn decode_run(
     model: &mut RealModel<'_>,
     vocab: u32,
@@ -328,5 +519,17 @@ mod tests {
         assert!((1..1000).contains(&p));
         assert_eq!(p, prompt_token("hola mundo", 1000));
         assert_ne!(prompt_token("a", 1000), prompt_token("b", 1000));
+    }
+
+    #[test]
+    fn engine_mode_serialization_roundtrip() {
+        assert_eq!(EngineMode::Auto.to_string(), "auto");
+        assert_eq!(EngineMode::Resident.to_string(), "resident");
+        assert_eq!(EngineMode::Streaming.to_string(), "streaming");
+        assert_eq!(EngineMode::Moe.to_string(), "moe");
+
+        assert_eq!("auto".parse::<EngineMode>().unwrap(), EngineMode::Auto);
+        assert_eq!("resident".parse::<EngineMode>().unwrap(), EngineMode::Resident);
+        assert_eq!("streaming".parse::<EngineMode>().unwrap(), EngineMode::Streaming);
     }
 }

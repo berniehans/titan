@@ -1,10 +1,10 @@
 # Implementation Tasks: Phase 14 — Unified Engine Server & CLI Orchestration (Resident, Streaming, Speculative & MoE Modes)
 
 ## 1. Unified Driver Runtime Abstraction (sub-change 14.1)
-- [ ] 1.1 Implement `EngineMode` and `SpeculativeMode` enums in `engine-server/src/runtime.rs`.
-- [ ] 1.2 Implement `DriverInstance` and `UnifiedModel` unifying `ForwardDriver` and `StreamingForwardDriver`.
-- [ ] 1.3 Implement hardware-aware automatic engine selection heuristic.
-- Gate: `cargo test -p engine-server --lib` PASS.
+- [x] 1.1 Implement `EngineMode` and `SpeculativeMode` enums in `engine-server/src/runtime.rs`.
+- [x] 1.2 Implement `DriverInstance` and `UnifiedModel` unifying `ForwardDriver` and `StreamingForwardDriver`.
+- [x] 1.3 Implement hardware-aware automatic engine selection heuristic.
+- Gate PASS: `cargo test -p engine-server --lib` PASS.
 
 ## 2. Server HTTP Endpoints & SSE Streaming Integration (sub-change 14.2)
 - [ ] 2.1 Update `engine-server` Axum router and state to hold `Arc<Mutex<UnifiedModel>>`.

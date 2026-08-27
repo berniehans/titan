@@ -642,6 +642,41 @@ impl<'a> StreamingForwardDriver<'a> {
         Ok(last_logits)
     }
 
+    /// Returns the number of transformer layers in this model.
+    pub fn n_layers(&self) -> usize {
+        self.n_layer
+    }
+
+    /// Current token position in resident KV pool.
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+
+    /// Returns the active VRAM footprint for weights, KV cache, and scratch buffers.
+    pub fn vram_footprint(&self) -> crate::forward_driver::VramFootprint {
+        let pingpong_bytes = self.double_buffer.total_vram_bytes();
+        let kv_pool_bytes = self.layer_kv_pools.iter().map(|p| p.size()).sum();
+        let activations_bytes = self.x_dev.size()
+            + self.input_norm_dev.size()
+            + self.q_dev.size()
+            + self.k_dev.size()
+            + self.v_dev.size()
+            + self.attn_dev.size()
+            + self.op_dev.size()
+            + self.h1_dev.size()
+            + self.ffin_dev.size()
+            + self.gate_dev.size()
+            + self.up_dev.size()
+            + self.proj_dev.size();
+
+        crate::forward_driver::VramFootprint {
+            pingpong_bytes,
+            kv_pool_bytes,
+            activations_bytes,
+            logits_bytes: 0,
+        }
+    }
+
     /// Computes final output logits using the embedding weight matrix as tied LM head.
     fn lm_head(&self, x: &[f32]) -> Vec<f32> {
         crate::forward_cpu::logits_from_hidden(&self.emb, &self.head_norm, x, self.eps)
