@@ -7,10 +7,10 @@
 - Gate PASS: `cargo test -p engine-server --lib` PASS.
 
 ## 2. Server HTTP Endpoints & SSE Streaming Integration (sub-change 14.2)
-- [ ] 2.1 Update `engine-server` Axum router and state to hold `Arc<Mutex<UnifiedModel>>`.
-- [ ] 2.2 Route `/v1/chat/completions` (SSE streaming & JSON) through `UnifiedModel`.
-- [ ] 2.3 Add engine telemetry metadata headers (`x-titan-engine-mode`, `x-titan-vram-mb`).
-- Gate: `cargo test -p engine-server --test e2e_chat_completions` PASS.
+- [x] 2.1 Update `engine-server` Axum router and state to hold `Arc<Mutex<UnifiedModel>>`.
+- [x] 2.2 Route `/v1/chat/completions` (SSE streaming & JSON) through `UnifiedModel`.
+- [x] 2.3 Add engine telemetry metadata headers (`x-titan-engine-mode`, `x-titan-vram-mb`).
+- Gate PASS: `cargo test -p engine-server --test e2e_chat_completions` PASS.
 
 ## 3. CLI Flag Unification & Startup Diagnostics (sub-change 14.3)
 - [ ] 3.1 Add `--engine` and `--speculative` CLI flags to `titan serve` and `titan chat` in `engine-server/src/main.rs`.

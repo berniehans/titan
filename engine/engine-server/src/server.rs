@@ -213,7 +213,10 @@ fn decode_prompt_real(
 ) -> (Vec<u32>, Vec<String>, String) {
     let mut model_guard = cfg.model.lock().expect("real model lock");
     let RealModel {
-        driver, tokenizer, ..
+        driver,
+        tokenizer,
+        ngram_proposer,
+        ..
     } = &mut *model_guard;
 
     if let (Some(driver), Some(tokenizer)) = (driver.as_mut(), tokenizer.as_ref()) {
@@ -253,7 +256,46 @@ fn decode_prompt_real(
         let mut current_tok = first_tok;
         let mut finish_reason = "length".to_string();
 
-        for _ in 1..max_tokens {
+        while tokens.len() < max_tokens as usize {
+            if let Some(proposer) = ngram_proposer {
+                let candidates = proposer.propose(&context);
+                if !candidates.is_empty() {
+                    let verif = match driver.verify_speculative(
+                        current_tok,
+                        &candidates,
+                        &mut sampler,
+                        &params,
+                        &context,
+                    ) {
+                        Ok(v) => v,
+                        Err(_) => break,
+                    };
+
+                    let mut stopped = false;
+                    for &emitted_tok in &verif.emitted_tokens {
+                        let piece = tokenizer
+                            .decode(&[emitted_tok])
+                            .unwrap_or_else(|_| token_text(emitted_tok));
+                        if Sampler::is_stop_sequence(emitted_tok, &piece, &stop_tokens, stop_strings) {
+                            finish_reason = "stop".to_string();
+                            stopped = true;
+                            break;
+                        }
+                        tokens.push(emitted_tok);
+                        texts.push(piece);
+                        context.push(emitted_tok);
+                        current_tok = emitted_tok;
+                        if tokens.len() >= max_tokens as usize {
+                            break;
+                        }
+                    }
+                    if stopped {
+                        break;
+                    }
+                    continue;
+                }
+            }
+
             let logits = match driver.decode(current_tok) {
                 Ok(l) => l,
                 Err(_) => break,
@@ -407,11 +449,11 @@ fn chat_tokens_and_texts_to_response(
     texts: &[String],
     finish_reason: &str,
 ) -> ChatCompletionResponse {
-    let text = texts.concat();
+    let content = texts.concat();
     let completion_tokens = tokens.len() as u32;
     let choices = vec![ChatChoice {
         index: 0,
-        message: ChatMessage::assistant(text),
+        message: ChatMessage::assistant(content),
         finish_reason: finish_reason.to_string(),
     }];
     ChatCompletionResponse {
@@ -446,8 +488,19 @@ async fn handle_real_completion(
     );
     let stop_strings = body.stop.unwrap_or_default();
 
+    let (engine_mode, vram_mb) = {
+        let guard = cfg.model.lock().unwrap();
+        let mode = guard.engine_mode.to_string();
+        let vram = guard
+            .driver
+            .as_ref()
+            .map(|d| d.vram_footprint().total() as f64 / (1024.0 * 1024.0))
+            .unwrap_or(0.0);
+        (mode, vram)
+    };
+
     let (tokens, texts, _) = decode_prompt_real(&cfg, &body.prompt, max_tokens, params, &stop_strings);
-    if body.stream {
+    let mut resp = if body.stream {
         to_sse(tokens_and_texts_to_events(
             &body.prompt,
             model,
@@ -463,7 +516,11 @@ async fn handle_real_completion(
             &texts,
         ))
         .into_response()
-    }
+    };
+
+    resp.headers_mut().insert("x-titan-engine-mode", engine_mode.parse().unwrap());
+    resp.headers_mut().insert("x-titan-vram-mb", format!("{vram_mb:.1}").parse().unwrap());
+    resp
 }
 
 async fn handle_real_chat_completion(
@@ -485,8 +542,19 @@ async fn handle_real_chat_completion(
     );
     let stop_strings = body.stop.unwrap_or_default();
 
+    let (engine_mode, vram_mb) = {
+        let guard = cfg.model.lock().unwrap();
+        let mode = guard.engine_mode.to_string();
+        let vram = guard
+            .driver
+            .as_ref()
+            .map(|d| d.vram_footprint().total() as f64 / (1024.0 * 1024.0))
+            .unwrap_or(0.0);
+        (mode, vram)
+    };
+
     let (tokens, texts, finish_reason) = decode_prompt_real(&cfg, &prompt, max_tokens, params, &stop_strings);
-    if body.stream {
+    let mut resp = if body.stream {
         to_sse(chat_tokens_and_texts_to_events(
             &prompt,
             model,
@@ -504,7 +572,11 @@ async fn handle_real_chat_completion(
             &finish_reason,
         ))
         .into_response()
-    }
+    };
+
+    resp.headers_mut().insert("x-titan-engine-mode", engine_mode.parse().unwrap());
+    resp.headers_mut().insert("x-titan-vram-mb", format!("{vram_mb:.1}").parse().unwrap());
+    resp
 }
 
 /// Builds the axum router serving `/v1/chat/completions`, `/v1/completions`, and `/v1/models`.
