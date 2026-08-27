@@ -24,10 +24,6 @@ fn test_layer_double_buffer_ping_pong_swapping() -> Result<(), DynError> {
         wgate_bytes: 2048,
         wup_bytes: 2048,
         wdown_bytes: 2048,
-        an_bytes: 256,
-        qn_bytes: 128,
-        kn_bytes: 128,
-        fn_bytes: 256,
     };
 
     let total_one_slot = sizes.total_bytes();
@@ -44,10 +40,6 @@ fn test_layer_double_buffer_ping_pong_swapping() -> Result<(), DynError> {
         let wgate_host = vec![layer_idx as u8 + 50; sizes.wgate_bytes];
         let wup_host = vec![layer_idx as u8 + 60; sizes.wup_bytes];
         let wdown_host = vec![layer_idx as u8 + 70; sizes.wdown_bytes];
-        let an_host = vec![layer_idx as u8 + 80; sizes.an_bytes];
-        let qn_host = vec![layer_idx as u8 + 90; sizes.qn_bytes];
-        let kn_host = vec![layer_idx as u8 + 100; sizes.kn_bytes];
-        let fn_host = vec![layer_idx as u8 + 110; sizes.fn_bytes];
 
         let host_weights = HostLayerWeights {
             wq_data: &wq_host,
@@ -57,10 +49,6 @@ fn test_layer_double_buffer_ping_pong_swapping() -> Result<(), DynError> {
             wgate_data: &wgate_host,
             wup_data: &wup_host,
             wdown_data: &wdown_host,
-            an_data: &an_host,
-            qn_data: &qn_host,
-            kn_data: &kn_host,
-            fn_data: &fn_host,
         };
 
         // Async transfer into alternating slot

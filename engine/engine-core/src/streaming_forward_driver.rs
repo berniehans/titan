@@ -4,7 +4,6 @@
 //! ping-pong double buffer (`compute_stream`, `transfer_stream`) synchronized with CUDA events.
 //! Ensures total GPU memory remains bounded (< 2.0 GB) for arbitrarily large models (14B/32B).
 
-use crate::dequant::dequant_q4k_cpu;
 use crate::error::EngineError;
 use crate::forward_cpu::{Tensor, embed_lookup};
 use crate::forward_driver::{MAX_SPEC_K, bank_tensor, f32_norm, ggml_to_gemv};
@@ -16,7 +15,7 @@ use engine_cuda::{
 use engine_io::{GgufReader, LoadedPinned, ModelConfig};
 use std::sync::Arc;
 
-/// Parsed host layer weights referencing pinned host DRAM memory.
+/// Parsed host layer matrix weights referencing pinned host DRAM memory.
 pub struct PinnedLayerWeights<'a> {
     pub wq: Tensor<'a>,
     pub wk: Tensor<'a>,
@@ -25,10 +24,14 @@ pub struct PinnedLayerWeights<'a> {
     pub wgate: Tensor<'a>,
     pub wup: Tensor<'a>,
     pub wdown: Tensor<'a>,
-    pub an: Vec<f32>,
-    pub qn: Vec<f32>,
-    pub kn: Vec<f32>,
-    pub fn_norm: Vec<f32>,
+}
+
+/// Small resident RMSNorm weight buffers per layer on GPU (< 500 KB total).
+pub struct LayerNormsDev {
+    pub an_dev: DeviceBuffer,
+    pub qn_dev: DeviceBuffer,
+    pub kn_dev: DeviceBuffer,
+    pub fn_dev: DeviceBuffer,
 }
 
 fn f32_bytes(v: &[f32]) -> Vec<u8> {
@@ -75,6 +78,7 @@ pub struct StreamingForwardDriver<'a> {
     emb: Tensor<'a>,
     head_norm: Vec<f32>,
     pinned_layers: Vec<PinnedLayerWeights<'a>>,
+    layer_norms: Vec<LayerNormsDev>,
     double_buffer: LayerDoubleBuffer,
     // Per-layer resident KV pools
     layer_kv_pools: Vec<DeviceBuffer>,
@@ -172,8 +176,9 @@ impl<'a> StreamingForwardDriver<'a> {
         let emb = bank_tensor(reader, pinned, "token_embd.weight")?;
         let head_norm = f32_norm(pinned, "output_norm.weight")?;
 
-        // Parse all layer weights in pinned host DRAM
+        // Parse all layer weights in pinned host DRAM and upload small norm vectors
         let mut pinned_layers = Vec::with_capacity(n_layer);
+        let mut layer_norms = Vec::with_capacity(n_layer);
         let mut max_sizes = LayerTensorSizes {
             wq_bytes: 0,
             wk_bytes: 0,
@@ -182,10 +187,6 @@ impl<'a> StreamingForwardDriver<'a> {
             wgate_bytes: 0,
             wup_bytes: 0,
             wdown_bytes: 0,
-            an_bytes: h * 4,
-            qn_bytes: hd * 4,
-            kn_bytes: hd * 4,
-            fn_bytes: h * 4,
         };
 
         for l in 0..n_layer {
@@ -196,10 +197,23 @@ impl<'a> StreamingForwardDriver<'a> {
             let wgate = bank_tensor(reader, pinned, &format!("blk.{l}.ffn_gate.weight"))?;
             let wup = bank_tensor(reader, pinned, &format!("blk.{l}.ffn_up.weight"))?;
             let wdown = bank_tensor(reader, pinned, &format!("blk.{l}.ffn_down.weight"))?;
+
             let an = f32_norm(pinned, &format!("blk.{l}.attn_norm.weight"))?;
             let qn = f32_norm(pinned, &format!("blk.{l}.attn_q_norm.weight"))?;
             let kn = f32_norm(pinned, &format!("blk.{l}.attn_k_norm.weight"))?;
             let fn_norm = f32_norm(pinned, &format!("blk.{l}.ffn_norm.weight"))?;
+
+            let an_dev = upload_f32(&compute_stream, &device, &an)?;
+            let qn_dev = upload_f32(&compute_stream, &device, &qn)?;
+            let kn_dev = upload_f32(&compute_stream, &device, &kn)?;
+            let fn_dev = upload_f32(&compute_stream, &device, &fn_norm)?;
+
+            layer_norms.push(LayerNormsDev {
+                an_dev,
+                qn_dev,
+                kn_dev,
+                fn_dev,
+            });
 
             max_sizes.wq_bytes = max_sizes.wq_bytes.max(wq.data.len());
             max_sizes.wk_bytes = max_sizes.wk_bytes.max(wk.data.len());
@@ -217,20 +231,20 @@ impl<'a> StreamingForwardDriver<'a> {
                 wgate,
                 wup,
                 wdown,
-                an,
-                qn,
-                kn,
-                fn_norm,
             });
         }
 
-        // Allocate GPU layer double buffer
+        // Allocate GPU layer double buffer for matrix weights
         let double_buffer = LayerDoubleBuffer::new(Arc::clone(&device), &max_sizes)?;
 
         // Allocate resident KV pools for each layer
         let mut layer_kv_pools = Vec::with_capacity(n_layer);
         for _ in 0..n_layer {
-            let pool_dev = alloc_dev(&device, layout.floats_total())?;
+            let pool_dev = upload_bytes(
+                &compute_stream,
+                &device,
+                &vec![0u8; layout.floats_total() * 4],
+            )?;
             layer_kv_pools.push(pool_dev);
         }
 
@@ -275,6 +289,9 @@ impl<'a> StreamingForwardDriver<'a> {
         let spec_zk = upload_f32(&compute_stream, &device, &vec![0.0f32; MAX_SPEC_K * kvd])?;
         let spec_zff = upload_f32(&compute_stream, &device, &vec![0.0f32; MAX_SPEC_K * hff])?;
 
+        compute_stream.sync()?;
+        transfer_stream.sync()?;
+
         Ok(Self {
             _device: device,
             compute_stream,
@@ -290,6 +307,7 @@ impl<'a> StreamingForwardDriver<'a> {
             emb,
             head_norm,
             pinned_layers,
+            layer_norms,
             double_buffer,
             layer_kv_pools,
             pos_dev,
@@ -382,6 +400,7 @@ impl<'a> StreamingForwardDriver<'a> {
             // 2. Execute layer L forward compute on compute_stream
             let slot = self.double_buffer.slot(curr_slot_idx);
             let pool_dev = &self.layer_kv_pools[l];
+            let norms = &self.layer_norms[l];
             let layer_info = &self.pinned_layers[l];
 
             // a. Input RMSNorm
@@ -389,7 +408,7 @@ impl<'a> StreamingForwardDriver<'a> {
                 &self.compute_stream,
                 &self.x_dev,
                 &self.zh,
-                &slot.an_dev,
+                &norms.an_dev,
                 &self.zh,
                 &self.input_norm_dev,
                 self.eps,
@@ -434,7 +453,7 @@ impl<'a> StreamingForwardDriver<'a> {
                 &self.compute_stream,
                 &self.q_dev,
                 &self.zq,
-                &slot.qn_dev,
+                &norms.qn_dev,
                 &self.zq,
                 &self.q_dev,
                 self.eps,
@@ -449,7 +468,7 @@ impl<'a> StreamingForwardDriver<'a> {
                 &self.compute_stream,
                 &self.k_dev,
                 &self.zk,
-                &slot.kn_dev,
+                &norms.kn_dev,
                 &self.zk,
                 &self.k_dev,
                 self.eps,
@@ -484,8 +503,8 @@ impl<'a> StreamingForwardDriver<'a> {
                 self.nkv,
                 self.hd,
                 self.layout.block_tokens,
-                1,
-                0,
+                p + 1,
+                p,
                 true,
             )?;
 
@@ -519,7 +538,7 @@ impl<'a> StreamingForwardDriver<'a> {
                 &self.compute_stream,
                 &self.h1_dev,
                 &self.zh,
-                &slot.fn_dev,
+                &norms.fn_dev,
                 &self.zh,
                 &self.ffin_dev,
                 self.eps,
@@ -625,56 +644,7 @@ impl<'a> StreamingForwardDriver<'a> {
 
     /// Computes final output logits using the embedding weight matrix as tied LM head.
     fn lm_head(&self, x: &[f32]) -> Vec<f32> {
-        let mut normed = vec![0.0f32; self.h];
-        let mut sum_sq = 0.0f32;
-        for &v in x {
-            sum_sq += v * v;
-        }
-        let rms = (sum_sq / self.h as f32 + self.eps).sqrt();
-        let inv_rms = 1.0 / rms;
-        for i in 0..self.h {
-            normed[i] = x[i] * inv_rms * self.head_norm[i];
-        }
-
-        let vocab_size = self.emb.ne1;
-        let mut logits = vec![0.0f32; vocab_size];
-
-        match self.emb.ty {
-            crate::forward_cpu::TensorType::Q4K => {
-                let row_bytes = (self.h / 256) * 144;
-                for v in 0..vocab_size {
-                    let offset = v * row_bytes;
-                    let chunk = &self.emb.data[offset..offset + row_bytes];
-                    let row_buf = dequant_q4k_cpu(chunk);
-                    let mut dot = 0.0f32;
-                    for i in 0..self.h {
-                        dot += normed[i] * row_buf[i];
-                    }
-                    logits[v] = dot;
-                }
-            }
-            _ => {
-                let row_len = self.h;
-                for v in 0..vocab_size {
-                    let offset = v * row_len * 4;
-                    let slice = &self.emb.data[offset..offset + row_len * 4];
-                    let mut dot = 0.0f32;
-                    for (i, c) in slice.chunks_exact(4).enumerate() {
-                        let w = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                        dot += normed[i] * w;
-                    }
-                    logits[v] = dot;
-                }
-            }
-        }
-
-        logits
-    }
-}
-
-fn bytemuck_slice(v: &[f32]) -> &[u8] {
-    unsafe {
-        std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * std::mem::size_of::<f32>())
+        crate::forward_cpu::logits_from_hidden(&self.emb, &self.head_norm, x, self.eps)
     }
 }
 
@@ -687,9 +657,5 @@ fn extract_host_weights<'a>(p: &'a PinnedLayerWeights<'a>) -> HostLayerWeights<'
         wgate_data: p.wgate.data,
         wup_data: p.wup.data,
         wdown_data: p.wdown.data,
-        an_data: bytemuck_slice(&p.an),
-        qn_data: bytemuck_slice(&p.qn),
-        kn_data: bytemuck_slice(&p.kn),
-        fn_data: bytemuck_slice(&p.fn_norm),
     }
 }

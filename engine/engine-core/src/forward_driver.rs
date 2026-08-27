@@ -1439,7 +1439,6 @@ impl<'a> ForwardDriver<'a> {
     }
 
     /// Single-token decode step over resident KV pool at current `self.pos`.
-    /// Executes via persistent single-launch CUDA Graph with device-side dynamic position advancing.
     pub fn decode(&mut self, token: u32) -> Result<Vec<f32>, EngineError> {
         self.decode_graph(token)
     }

@@ -8,7 +8,7 @@ use crate::error::EngineError;
 use engine_cuda::{CudaDevice, CudaStream, DeviceBuffer};
 use std::sync::Arc;
 
-/// Byte sizes required for each weight tensor in a single transformer layer.
+/// Byte sizes required for each matrix weight tensor in a single transformer layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayerTensorSizes {
     pub wq_bytes: usize,
@@ -18,14 +18,10 @@ pub struct LayerTensorSizes {
     pub wgate_bytes: usize,
     pub wup_bytes: usize,
     pub wdown_bytes: usize,
-    pub an_bytes: usize,
-    pub qn_bytes: usize,
-    pub kn_bytes: usize,
-    pub fn_bytes: usize,
 }
 
 impl LayerTensorSizes {
-    /// Sum of all tensor sizes in a single layer slot.
+    /// Sum of all matrix tensor sizes in a single layer slot.
     pub fn total_bytes(&self) -> usize {
         self.wq_bytes
             + self.wk_bytes
@@ -34,14 +30,10 @@ impl LayerTensorSizes {
             + self.wgate_bytes
             + self.wup_bytes
             + self.wdown_bytes
-            + self.an_bytes
-            + self.qn_bytes
-            + self.kn_bytes
-            + self.fn_bytes
     }
 }
 
-/// A preallocated GPU slot holding all weights for one transformer layer.
+/// A preallocated GPU slot holding matrix weights for one transformer layer.
 pub struct LayerSlotGpu {
     pub wq_dev: DeviceBuffer,
     pub wk_dev: DeviceBuffer,
@@ -50,10 +42,6 @@ pub struct LayerSlotGpu {
     pub wgate_dev: DeviceBuffer,
     pub wup_dev: DeviceBuffer,
     pub wdown_dev: DeviceBuffer,
-    pub an_dev: DeviceBuffer,
-    pub qn_dev: DeviceBuffer,
-    pub kn_dev: DeviceBuffer,
-    pub fn_dev: DeviceBuffer,
     pub sizes: LayerTensorSizes,
 }
 
@@ -67,10 +55,6 @@ impl LayerSlotGpu {
         let wgate_dev = DeviceBuffer::alloc(Arc::clone(&device), sizes.wgate_bytes)?;
         let wup_dev = DeviceBuffer::alloc(Arc::clone(&device), sizes.wup_bytes)?;
         let wdown_dev = DeviceBuffer::alloc(Arc::clone(&device), sizes.wdown_bytes)?;
-        let an_dev = DeviceBuffer::alloc(Arc::clone(&device), sizes.an_bytes)?;
-        let qn_dev = DeviceBuffer::alloc(Arc::clone(&device), sizes.qn_bytes)?;
-        let kn_dev = DeviceBuffer::alloc(Arc::clone(&device), sizes.kn_bytes)?;
-        let fn_dev = DeviceBuffer::alloc(Arc::clone(&device), sizes.fn_bytes)?;
 
         Ok(Self {
             wq_dev,
@@ -80,16 +64,12 @@ impl LayerSlotGpu {
             wgate_dev,
             wup_dev,
             wdown_dev,
-            an_dev,
-            qn_dev,
-            kn_dev,
-            fn_dev,
             sizes: *sizes,
         })
     }
 }
 
-/// Host layer weight slices ready for DMA transfer.
+/// Host layer weight slices ready for DMA transfer (from pinned memory).
 pub struct HostLayerWeights<'a> {
     pub wq_data: &'a [u8],
     pub wk_data: &'a [u8],
@@ -98,10 +78,6 @@ pub struct HostLayerWeights<'a> {
     pub wgate_data: &'a [u8],
     pub wup_data: &'a [u8],
     pub wdown_data: &'a [u8],
-    pub an_data: &'a [u8],
-    pub qn_data: &'a [u8],
-    pub kn_data: &'a [u8],
-    pub fn_data: &'a [u8],
 }
 
 /// Double-buffered GPU layer weight ring.
@@ -153,10 +129,6 @@ impl LayerDoubleBuffer {
         target_slot.wgate_dev.copy_from_host(stream, weights.wgate_data)?;
         target_slot.wup_dev.copy_from_host(stream, weights.wup_data)?;
         target_slot.wdown_dev.copy_from_host(stream, weights.wdown_data)?;
-        target_slot.an_dev.copy_from_host(stream, weights.an_data)?;
-        target_slot.qn_dev.copy_from_host(stream, weights.qn_data)?;
-        target_slot.kn_dev.copy_from_host(stream, weights.kn_data)?;
-        target_slot.fn_dev.copy_from_host(stream, weights.fn_data)?;
 
         Ok(())
     }

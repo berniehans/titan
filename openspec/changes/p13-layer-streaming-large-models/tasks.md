@@ -13,9 +13,9 @@
 - Gate PASS: `cargo test -p engine-core --test streaming_pipeline_sync_test` PASS.
 
 ## 3. Large Model Topology & Golden Parity Gate (sub-change 13.3)
-- [ ] 3.1 Validate arbitrary layer scaling ($N \ge 48$) and dimension scaling ($H \ge 5120$) in model configuration parsing.
-- [ ] 3.2 Create parity test `engine-core/tests/streaming_driver_parity.rs` comparing `StreamingForwardDriver` output against `ForwardDriver` across all layers.
-- Gate: `cargo test -p engine-core --test streaming_driver_parity` PASS (`cos-sim = 1.000000`).
+- [x] 3.1 Validate arbitrary layer scaling ($N \ge 48$) and dimension scaling ($H \ge 5120$) in model configuration parsing.
+- [x] 3.2 Create parity test `engine-core/tests/streaming_driver_parity.rs` comparing `StreamingForwardDriver` output against `ForwardDriver` across all layers.
+- [x] Gate PASS: `cargo test -p engine-core --test streaming_driver_parity` PASS (`cos-sim = 1.000000`).
 
 ## 4. End-to-End Large Model Verification & Phase 13 Seal (sub-change 13.4)
 - [ ] 4.1 Verify VRAM peak working set audit in `engine-server/tests/large_model_vram_audit_gate.rs` asserting $\le 2.0\text{ GB}$ total consumption.
