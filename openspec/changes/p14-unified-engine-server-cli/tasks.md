@@ -13,10 +13,10 @@
 - Gate PASS: `cargo test -p engine-server --test e2e_chat_completions` PASS.
 
 ## 3. CLI Flag Unification & Startup Diagnostics (sub-change 14.3)
-- [ ] 3.1 Add `--engine` and `--speculative` CLI flags to `titan serve` and `titan chat` in `engine-server/src/main.rs`.
-- [ ] 3.2 Display startup diagnostic banner with GPU specs, VRAM footprint, and selected engine mode.
-- [ ] 3.3 Verify interactive CLI chat with streaming engine on GPU fixture.
-- Gate: `titan chat --help` and `titan serve --help` display all options cleanly.
+- [x] 3.1 Add `--engine` and `--speculative` CLI flags to `titan serve` and `titan chat` in `engine-server/src/main.rs`.
+- [x] 3.2 Display startup diagnostic banner with GPU specs, VRAM footprint, and selected engine mode.
+- [x] 3.3 Verify interactive CLI chat with streaming engine on GPU fixture.
+- Gate PASS: `titan chat --help` and `titan serve --help` display all options cleanly.
 
 ## 4. End-to-End Multi-Mode Verification & Phase 14 Seal (sub-change 14.4)
 - [ ] 4.1 Create `engine-server/tests/e2e_unified_modes_gate.rs` testing live HTTP completions across resident, streaming, and speculative modes.

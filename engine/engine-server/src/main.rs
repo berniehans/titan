@@ -5,10 +5,10 @@
 //! - `chat`: Interactive terminal REPL with multi-turn memory and live token-by-token streaming.
 
 use cudarc::driver::CudaDevice;
-use engine_core::{BpeTokenizer, ForwardDriver, Sampler, SamplerParams};
-use engine_io::{GgufReader, LoadedPinned, ModelConfig, load_to_pinned};
+use engine_core::{Sampler, SamplerParams};
+use engine_io::{GgufReader, LoadedPinned, load_to_pinned};
 use engine_server::models::{ChatMessage, format_chatml};
-use engine_server::runtime::{self, RealModel};
+use engine_server::runtime::{self, EngineMode, RealModel, SpeculativeMode};
 use engine_server::server::{RealServerCfg, build_router_real};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -58,26 +58,70 @@ fn print_banner() {
     );
 }
 
-fn run_chat(model_path: &Path, temperature: f32, top_p: f32) -> Result<(), Box<dyn std::error::Error>> {
+fn print_diagnostics(
+    model_path: &Path,
+    engine_mode: EngineMode,
+    spec_mode: SpeculativeMode,
+    vram_mb: f64,
+    load_ms: f64,
+) {
     print_banner();
-    println!("Loading model from: {:?}", model_path);
+    println!("  ╔══════════════════════════════════════════════════════════════════╗");
+    println!("  ║ Engine Mode:       {:<45} ║", format!("{engine_mode:?}"));
+    println!("  ║ Speculative Mode:  {:<45} ║", format!("{spec_mode:?}"));
+    println!(
+        "  ║ Model File:        {:<45} ║",
+        format!("{}", model_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"))
+    );
+    println!("  ║ VRAM Working Set:  {:<45} ║", format!("{vram_mb:.1} MB"));
+    println!("  ║ Host Load Time:    {:<45} ║", format!("{load_ms:.2} ms"));
+    println!("  ╚══════════════════════════════════════════════════════════════════╝\n");
+}
+
+fn run_chat(
+    model_path: &Path,
+    engine_mode: EngineMode,
+    spec_mode: SpeculativeMode,
+    kv_capacity: usize,
+    temperature: f32,
+    top_p: f32,
+    system_prompt: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let start_load = Instant::now();
     let reader = GgufReader::open(model_path)?;
     let pinned: &'static LoadedPinned = Box::leak(Box::new(load_to_pinned(&reader, model_path)?));
-    let cfg = ModelConfig::from_reader(&reader)?;
-    let tokenizer = BpeTokenizer::from_reader(&reader)?;
     let _device = CudaDevice::new(0)?;
-    println!(
-        "Model weights loaded to pinned RAM in {:.2} ms",
-        start_load.elapsed().as_secs_f64() * 1000.0
+    let load_ms = start_load.elapsed().as_secs_f64() * 1000.0;
+
+    let mut model: RealModel<'static> = runtime::build_unified_driver_model(
+        &reader,
+        pinned,
+        kv_capacity,
+        engine_mode,
+        spec_mode,
+    )?;
+
+    let vram_mb = model
+        .driver
+        .as_ref()
+        .map(|d| d.vram_footprint().total() as f64 / (1024.0 * 1024.0))
+        .unwrap_or(0.0);
+
+    print_diagnostics(
+        model_path,
+        model.engine_mode,
+        model.speculative_mode,
+        vram_mb,
+        load_ms,
     );
 
-    let max_seq_tokens = 2048;
-    let mut driver = ForwardDriver::new(&reader, pinned, &cfg, max_seq_tokens)?;
-    println!("CUDA Graph decode engine initialized (28 layers, resident KV cache).");
-    println!("Type your message and press Enter. Commands: /reset, /exit\n");
+    println!("Interactive chat ready! Type your message and press Enter. Commands: /reset, /exit\n");
 
     let mut messages: Vec<ChatMessage> = Vec::new();
+    if let Some(sys) = system_prompt {
+        messages.push(ChatMessage::system(sys));
+    }
+
     let mut sampler = Sampler::new(42);
     let params = SamplerParams {
         temperature,
@@ -93,6 +137,10 @@ fn run_chat(model_path: &Path, temperature: f32, top_p: f32) -> Result<(), Box<d
         "<|im_start|>".to_string(),
         "<|im_end".to_string(),
     ];
+
+    let tokenizer = model.tokenizer.take().expect("tokenizer");
+    let mut driver = model.driver.take().expect("driver");
+    let proposer = model.ngram_proposer.take();
 
     loop {
         print!("You > ");
@@ -111,6 +159,9 @@ fn run_chat(model_path: &Path, temperature: f32, top_p: f32) -> Result<(), Box<d
         }
         if input == "/reset" || input == "/clear" {
             messages.clear();
+            if let Some(sys) = system_prompt {
+                messages.push(ChatMessage::system(sys));
+            }
             println!("[Conversation history cleared]\n");
             continue;
         }
@@ -135,59 +186,60 @@ fn run_chat(model_path: &Path, temperature: f32, top_p: f32) -> Result<(), Box<d
             assistant_response.push_str(&first_piece);
             context.push(first_tok);
 
-            let proposer = engine_core::NgramDraftProposer::new(3, 4, 2);
             let mut current_tok = first_tok;
             const MAX_GEN: usize = 512;
 
             while context.len() < prompt_tokens.len() + MAX_GEN {
-                let candidates = proposer.propose(&context);
+                if let Some(ref p) = proposer {
+                    let candidates = p.propose(&context);
+                    if !candidates.is_empty() {
+                        let verif = match driver.verify_speculative(
+                            current_tok,
+                            &candidates,
+                            &mut sampler,
+                            &params,
+                            &context,
+                        ) {
+                            Ok(v) => v,
+                            Err(_) => break,
+                        };
 
-                if candidates.is_empty() {
-                    let logits = match driver.decode(current_tok) {
-                        Ok(l) => l,
-                        Err(_) => break,
-                    };
-                    let next_tok = sampler.sample(&logits, &context, &params);
-                    let next_piece = tokenizer.decode(&[next_tok]).unwrap_or_default();
-
-                    if Sampler::is_stop_sequence(next_tok, &next_piece, &stop_tokens, &stop_strings) {
-                        break;
-                    }
-
-                    print!("{}", next_piece);
-                    io::stdout().flush()?;
-                    assistant_response.push_str(&next_piece);
-                    context.push(next_tok);
-                    current_tok = next_tok;
-                } else {
-                    let verif = match driver.verify_speculative(
-                        current_tok,
-                        &candidates,
-                        &mut sampler,
-                        &params,
-                        &context,
-                    ) {
-                        Ok(v) => v,
-                        Err(_) => break,
-                    };
-
-                    let mut stopped = false;
-                    for &emitted_tok in &verif.emitted_tokens {
-                        let piece = tokenizer.decode(&[emitted_tok]).unwrap_or_default();
-                        if Sampler::is_stop_sequence(emitted_tok, &piece, &stop_tokens, &stop_strings) {
-                            stopped = true;
+                        let mut stopped = false;
+                        for &emitted_tok in &verif.emitted_tokens {
+                            let piece = tokenizer.decode(&[emitted_tok]).unwrap_or_default();
+                            if Sampler::is_stop_sequence(emitted_tok, &piece, &stop_tokens, &stop_strings) {
+                                stopped = true;
+                                break;
+                            }
+                            print!("{}", piece);
+                            io::stdout().flush()?;
+                            assistant_response.push_str(&piece);
+                            context.push(emitted_tok);
+                            current_tok = emitted_tok;
+                        }
+                        if stopped {
                             break;
                         }
-                        print!("{}", piece);
-                        io::stdout().flush()?;
-                        assistant_response.push_str(&piece);
-                        context.push(emitted_tok);
-                        current_tok = emitted_tok;
-                    }
-                    if stopped {
-                        break;
+                        continue;
                     }
                 }
+
+                let logits = match driver.decode(current_tok) {
+                    Ok(l) => l,
+                    Err(_) => break,
+                };
+                let next_tok = sampler.sample(&logits, &context, &params);
+                let next_piece = tokenizer.decode(&[next_tok]).unwrap_or_default();
+
+                if Sampler::is_stop_sequence(next_tok, &next_piece, &stop_tokens, &stop_strings) {
+                    break;
+                }
+
+                print!("{}", next_piece);
+                io::stdout().flush()?;
+                assistant_response.push_str(&next_piece);
+                context.push(next_tok);
+                current_tok = next_tok;
             }
         }
 
@@ -198,10 +250,42 @@ fn run_chat(model_path: &Path, temperature: f32, top_p: f32) -> Result<(), Box<d
     Ok(())
 }
 
+fn print_help() {
+    print_banner();
+    println!(
+        r#"TITAN INFERENCE ENGINE - 100% GPU LAYER STREAMING & SPECULATIVE LLM RUNTIME
+
+USAGE:
+    titan <SUBCOMMAND> [OPTIONS]
+
+SUBCOMMANDS:
+    chat      Launch interactive terminal chat REPL
+    serve     Launch OpenAI-compatible HTTP API server
+    help      Print this help message
+
+GLOBAL OPTIONS:
+    -m, --model <PATH>            Path to GGUF model file (default: auto-detected fixture)
+    -e, --engine <MODE>           Execution backend engine: auto | resident | streaming | moe (default: auto)
+    -s, --speculative <MODE>      Speculative acceleration: auto | ngram | none (default: auto)
+    -c, --kv-capacity <TOKENS>    KV cache token capacity (default: 2048 for chat, 512 for serve)
+    -t, --temp, --temperature     Sampling temperature [0.0 - 2.0] (default: 0.7)
+    --top-p <FLOAT>               Top-p nucleus sampling probability [0.0 - 1.0] (default: 0.9)
+    --system <PROMPT>             Initial system prompt for chat
+    -p, --port <PORT>             Port for HTTP server (default: 8000)
+    -h, --help                    Print help
+"#
+    );
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("chat");
+
+    if mode == "help" || mode == "--help" || mode == "-h" {
+        print_help();
+        return Ok(());
+    }
 
     let model_path = resolve_model_path(
         &args
@@ -212,6 +296,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(default_model_path),
     );
 
+    let engine_mode: EngineMode = args
+        .iter()
+        .position(|a| a == "--engine" || a == "-e")
+        .and_then(|idx| args.get(idx + 1))
+        .and_then(|e| e.parse().ok())
+        .unwrap_or(EngineMode::Auto);
+
+    let spec_mode: SpeculativeMode = args
+        .iter()
+        .position(|a| a == "--speculative" || a == "-s")
+        .and_then(|idx| args.get(idx + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SpeculativeMode::Auto);
+
     let port: u16 = args
         .iter()
         .position(|a| a == "--port" || a == "-p")
@@ -219,9 +317,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8000);
 
+    let kv_capacity: usize = args
+        .iter()
+        .position(|a| a == "--kv-capacity" || a == "-c")
+        .and_then(|idx| args.get(idx + 1))
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(if mode == "serve" { 512 } else { 2048 });
+
     let temperature: f32 = args
         .iter()
-        .position(|a| a == "--temp" || a == "-t")
+        .position(|a| a == "--temp" || a == "-t" || a == "--temperature")
         .and_then(|idx| args.get(idx + 1))
         .and_then(|t| t.parse().ok())
         .unwrap_or(0.7);
@@ -233,21 +338,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(0.9);
 
+    let system_prompt = args
+        .iter()
+        .position(|a| a == "--system")
+        .and_then(|idx| args.get(idx + 1))
+        .map(|s| s.as_str());
+
     if mode == "chat" {
-        run_chat(&model_path, temperature, top_p)?;
+        run_chat(
+            &model_path,
+            engine_mode,
+            spec_mode,
+            kv_capacity,
+            temperature,
+            top_p,
+            system_prompt,
+        )?;
     } else if mode == "serve" {
-        print_banner();
-        println!("Loading model for OpenAI Server from: {:?}", model_path);
         let start_load = Instant::now();
         let reader = GgufReader::open(&model_path)?;
         let pinned: &'static LoadedPinned = Box::leak(Box::new(load_to_pinned(&reader, &model_path)?));
         let _device = CudaDevice::new(0)?;
-        println!(
-            "Model weights loaded to pinned RAM in {:.2} ms",
-            start_load.elapsed().as_secs_f64() * 1000.0
+        let load_ms = start_load.elapsed().as_secs_f64() * 1000.0;
+
+        let real_model: RealModel<'static> = runtime::build_unified_driver_model(
+            &reader,
+            pinned,
+            kv_capacity,
+            engine_mode,
+            spec_mode,
+        )?;
+
+        let vram_mb = real_model
+            .driver
+            .as_ref()
+            .map(|d| d.vram_footprint().total() as f64 / (1024.0 * 1024.0))
+            .unwrap_or(0.0);
+
+        print_diagnostics(
+            &model_path,
+            real_model.engine_mode,
+            real_model.speculative_mode,
+            vram_mb,
+            load_ms,
         );
 
-        let real_model: RealModel<'static> = runtime::build_real_driver_model(&reader, pinned, 128)?;
         let shared: Arc<Mutex<RealModel<'static>>> = Arc::new(Mutex::new(real_model));
 
         let cfg = Arc::new(RealServerCfg {
@@ -258,7 +393,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let addr = format!("0.0.0.0:{port}");
         let listener = tokio::net::TcpListener::bind(&addr).await?;
-        println!("\n=======================================================");
+        println!("=======================================================");
         println!("  TITAN OPENAI-COMPATIBLE API SERVER LISTENING ON:    ");
         println!("  http://localhost:{port}                              ");
         println!("=======================================================");
@@ -266,12 +401,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("    • POST http://localhost:{port}/v1/chat/completions");
         println!("    • POST http://localhost:{port}/v1/completions");
         println!("    • GET  http://localhost:{port}/v1/models");
-        println!("\n  Connect any OpenAI client (Cursor, LibreChat, Open-WebUI, LiteLLM)!");
+        println!("\n  Connect any OpenAI client (Cursor, LibreChat, Open-WebUI, LiteLLM)!\n");
 
         let app = build_router_real(cfg);
         axum::serve(listener, app).await?;
     } else {
-        println!("Usage: titan [chat|serve] [--model <path>] [--port <port>] [--temp <0.7>] [--top-p <0.9>]");
+        print_help();
     }
 
     Ok(())

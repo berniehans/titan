@@ -3,6 +3,10 @@ name = "engine-server"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "titan"
+path = "src/main.rs"
+
 [dependencies]
 engine-kvcache = { path = "../engine-kvcache" }
 engine-core = { path = "../engine-core" }
