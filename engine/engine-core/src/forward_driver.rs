@@ -782,6 +782,328 @@ impl<'a> ForwardDriver<'a> {
         Ok(self.lm_head(&last_hidden))
     }
 
+    /// Verifies $K$ proposed candidate tokens in parallel in a single GPU pass.
+    ///
+    /// `base_token`: The certified token from the previous step to evaluate at `self.pos`.
+    /// `candidates`: Slice of $K$ candidate tokens for positions `self.pos + 1 .. self.pos + K`.
+    pub fn verify_speculative(
+        &mut self,
+        base_token: u32,
+        candidates: &[u32],
+        sampler: &mut crate::sampler::Sampler,
+        params: &crate::sampler::SamplerParams,
+        context: &[u32],
+    ) -> Result<crate::speculative::SpeculativeVerificationResult, EngineError> {
+        if candidates.is_empty() {
+            let logits = self.decode(base_token)?;
+            let next_tok = sampler.sample(&logits, context, params);
+            return Ok(crate::speculative::SpeculativeVerificationResult {
+                emitted_tokens: vec![next_tok],
+                n_accepted: 0,
+                bonus_token: next_tok,
+                total_emitted: 1,
+            });
+        }
+
+        let mut batch_tokens = Vec::with_capacity(candidates.len() + 1);
+        batch_tokens.push(base_token);
+        batch_tokens.extend_from_slice(candidates);
+
+        let k = batch_tokens.len();
+        let current_pos = self.pos;
+
+        if current_pos + k > self.layout.block_tokens {
+            let logits = self.decode(base_token)?;
+            let next_tok = sampler.sample(&logits, context, params);
+            return Ok(crate::speculative::SpeculativeVerificationResult {
+                emitted_tokens: vec![next_tok],
+                n_accepted: 0,
+                bonus_token: next_tok,
+                total_emitted: 1,
+            });
+        }
+
+        // 1. Embed K candidate tokens on host and upload
+        let mut x_host = Vec::with_capacity(k * self.h);
+        for &tok in &batch_tokens {
+            let emb_vec = embed_lookup(&self.emb, tok as usize);
+            x_host.extend_from_slice(&emb_vec);
+        }
+
+        let x_dev = upload_f32(&self.stream, &self.device, &x_host)?;
+        let norm_dev = alloc_dev(&self.device, k * self.h)?;
+        let q_dev = alloc_dev(&self.device, k * self._qdim)?;
+        let k_dev = alloc_dev(&self.device, k * self._kvd)?;
+        let v_dev = alloc_dev(&self.device, k * self._kvd)?;
+        let attn_dev = alloc_dev(&self.device, k * self._qdim)?;
+        let op_dev = alloc_dev(&self.device, k * self.h)?;
+        let ffin_dev = alloc_dev(&self.device, k * self.h)?;
+        let gate_dev = alloc_dev(&self.device, k * self.hff)?;
+        let up_dev = alloc_dev(&self.device, k * self.hff)?;
+        let proj_dev = alloc_dev(&self.device, k * self.hff)?;
+
+        let zh_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; k * self.h])?;
+        let zq_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; k * self._qdim])?;
+        let zk_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; k * self._kvd])?;
+        let zff_dev = upload_f32(&self.stream, &self.device, &vec![0.0f32; k * self.hff])?;
+
+        for layer in &self.layers {
+            // a. Input RMSNorm
+            self.nr.launch_batched_with_pos_ptr(
+                &self.stream,
+                &x_dev,
+                &zh_dev,
+                &layer.an_dev,
+                &zh_dev,
+                &norm_dev,
+                self.eps,
+                self.h,
+                0,
+                0.0,
+                0,
+                MODE_NORM,
+                None,
+                1,
+            )?;
+
+            // b. Q, K, V Projections
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wq_dev,
+                &norm_dev,
+                &q_dev,
+                self.h,
+                self._qdim,
+                k,
+                layer.wq_fmt,
+            )?;
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wk_dev,
+                &norm_dev,
+                &k_dev,
+                self.h,
+                self._kvd,
+                k,
+                layer.wk_fmt,
+            )?;
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wv_dev,
+                &norm_dev,
+                &v_dev,
+                self.h,
+                self._kvd,
+                k,
+                layer.wv_fmt,
+            )?;
+
+            // c. Q/K RMSNorm + RoPE
+            self.nr.launch_batched_with_pos_ptr(
+                &self.stream,
+                &q_dev,
+                &zq_dev,
+                &layer.qn_dev,
+                &zq_dev,
+                &q_dev,
+                self.eps,
+                self.hd,
+                self.n_rot,
+                self.base,
+                current_pos as u32,
+                MODE_NORM | MODE_ROPE,
+                None,
+                self.nh,
+            )?;
+            self.nr.launch_batched_with_pos_ptr(
+                &self.stream,
+                &k_dev,
+                &zk_dev,
+                &layer.kn_dev,
+                &zk_dev,
+                &k_dev,
+                self.eps,
+                self.hd,
+                self.n_rot,
+                self.base,
+                current_pos as u32,
+                MODE_NORM | MODE_ROPE,
+                None,
+                self.nkv,
+            )?;
+
+            // d. Append K, V into resident paged KV pool
+            self.pkv.append_kv(
+                &self.stream,
+                &self.layout,
+                &layer.pool_dev,
+                &k_dev,
+                &v_dev,
+                &self.bt_dev,
+                current_pos,
+                k,
+            )?;
+
+            // e. FlashAttention-2 causal kernel
+            self.flash_attn.launch(
+                &self.stream,
+                &q_dev,
+                &layer.pool_dev,
+                &self.bt_dev,
+                &attn_dev,
+                self.nh,
+                self.nkv,
+                self.hd,
+                self.layout.block_tokens,
+                k,
+                current_pos,
+            )?;
+
+            // f. Output projection
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wo_dev,
+                &attn_dev,
+                &op_dev,
+                self._qdim,
+                self.h,
+                k,
+                layer.wo_fmt,
+            )?;
+
+            // g. Residual add + FFN RMSNorm
+            self.nr.launch_batched_with_pos_ptr(
+                &self.stream,
+                &op_dev,
+                &x_dev,
+                &layer.fn_dev,
+                &zh_dev,
+                &ffin_dev,
+                self.eps,
+                self.h,
+                0,
+                0.0,
+                0,
+                MODE_NORM,
+                None,
+                1,
+            )?;
+            self.nr.launch_batched_with_pos_ptr(
+                &self.stream,
+                &op_dev,
+                &x_dev,
+                &zh_dev,
+                &zh_dev,
+                &x_dev,
+                self.eps,
+                self.h,
+                0,
+                0.0,
+                0,
+                0,
+                None,
+                1,
+            )?;
+
+            // h. FFN gate & up projections
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wgate_dev,
+                &ffin_dev,
+                &gate_dev,
+                self.h,
+                self.hff,
+                k,
+                layer.wgate_fmt,
+            )?;
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wup_dev,
+                &ffin_dev,
+                &up_dev,
+                self.h,
+                self.hff,
+                k,
+                layer.wup_fmt,
+            )?;
+
+            // i. SwiGLU
+            self.nr.launch_batched_with_pos_ptr(
+                &self.stream,
+                &gate_dev,
+                &zff_dev,
+                &zff_dev,
+                &up_dev,
+                &proj_dev,
+                self.eps,
+                self.hff,
+                0,
+                0.0,
+                0,
+                MODE_SWIGLU,
+                None,
+                1,
+            )?;
+
+            // j. Down projection
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wdown_dev,
+                &proj_dev,
+                &op_dev,
+                self.hff,
+                self.h,
+                k,
+                layer.wdown_fmt,
+            )?;
+
+            // k. Layer output residual add
+            self.nr.launch_batched_with_pos_ptr(
+                &self.stream,
+                &op_dev,
+                &x_dev,
+                &zh_dev,
+                &zh_dev,
+                &x_dev,
+                self.eps,
+                self.h,
+                0,
+                0.0,
+                0,
+                0,
+                None,
+                1,
+            )?;
+        }
+
+        // 2. Download hidden states and compute logits for all K candidate positions
+        let x_out_all = download_f32(&self.stream, &x_dev, k * self.h)?;
+        let mut target_logits = Vec::with_capacity(k);
+        for i in 0..k {
+            let hidden_slice = &x_out_all[i * self.h..(i + 1) * self.h];
+            let logits = self.lm_head(hidden_slice);
+            target_logits.push(logits);
+        }
+
+        let target_logits_refs: Vec<&[f32]> = target_logits.iter().map(|v| v.as_slice()).collect();
+
+        // 3. Verify candidates against target logits
+        let verif_res = crate::speculative::SpeculativeVerifier::verify_stochastic(
+            candidates,
+            &[],
+            &target_logits_refs,
+            sampler,
+            params,
+            context,
+        );
+
+        // 4. Update sequence position to match committed tokens
+        self.pos = current_pos + 1 + verif_res.n_accepted;
+        self.stream.sync()?;
+
+        Ok(verif_res)
+    }
+
     /// Appends all `tokens` sequentially into resident KV starting at `pos=0`,
     /// updates `pos = tokens.len()`, and returns the final position's next-token logits.
     pub fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<f32>, EngineError> {

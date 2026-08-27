@@ -8,13 +8,14 @@ use crate::sampler::{Sampler, SamplerParams};
 /// Result of speculative candidate verification.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpeculativeVerificationResult {
-    /// Sequence of accepted candidate tokens plus one bonus/correction token.
-    pub accepted_tokens: Vec<u32>,
-    /// Number of candidate tokens that were verified and accepted (0..=K).
+    /// Newly emitted tokens starting with `candidates[0]` (or target prediction) through bonus token.
+    /// Note: Does not include the already-committed `base_token`.
+    pub emitted_tokens: Vec<u32>,
+    /// Number of proposed candidate tokens that were verified and accepted (0..=K).
     pub n_accepted: usize,
-    /// The final bonus token sampled from the target distribution.
+    /// The final bonus / correction token sampled from the target distribution.
     pub bonus_token: u32,
-    /// Total tokens emitted in this single speculative step (`n_accepted + 1`).
+    /// Total new tokens emitted in this single speculative step (`emitted_tokens.len()`).
     pub total_emitted: usize,
 }
 
@@ -24,64 +25,66 @@ pub struct SpeculativeVerifier;
 impl SpeculativeVerifier {
     /// Performs deterministic greedy verification against target logits.
     ///
-    /// `candidates`: Slice of $K$ proposed candidate tokens.
-    /// `target_logits`: Array of $K$ logit slices, each of length `vocab_size`.
+    /// `candidates`: Slice of $K$ proposed candidate tokens for positions $t+1, \dots, t+K$.
+    /// `target_logits`: Array of $K+1$ logit slices:
+    ///   - `target_logits[0]`: Prediction for position $t+1$ (evaluated against `candidates[0]`).
+    ///   - `target_logits[i]`: Prediction for position $t+i+1$ (evaluated against `candidates[i]`).
+    ///   - `target_logits[K]`: Bonus token prediction for position $t+K+1$.
     pub fn verify_greedy(
         candidates: &[u32],
         target_logits: &[&[f32]],
     ) -> SpeculativeVerificationResult {
         assert_eq!(
-            candidates.len(),
             target_logits.len(),
-            "Candidate length must match target logits length"
+            candidates.len() + 1,
+            "Target logits must have length candidates.len() + 1"
         );
 
         let k = candidates.len();
-        if k == 0 {
-            return SpeculativeVerificationResult {
-                accepted_tokens: Vec::new(),
-                n_accepted: 0,
-                bonus_token: 0,
-                total_emitted: 0,
-            };
-        }
-
-        let mut accepted = Vec::with_capacity(k + 1);
+        let mut emitted = Vec::with_capacity(k + 1);
         let mut n_accepted = 0;
 
-        for (_i, (&cand, &logits)) in candidates.iter().zip(target_logits.iter()).enumerate() {
+        for i in 0..k {
+            let cand = candidates[i];
+            let logits = target_logits[i];
             let target_tok = Sampler::argmax(logits);
+
             if target_tok == cand {
-                accepted.push(cand);
+                emitted.push(cand);
                 n_accepted += 1;
             } else {
-                // First mismatch: accept target_tok as correction and terminate verification
-                accepted.push(target_tok);
+                // First mismatch: emit target_tok as correction and terminate verification
+                emitted.push(target_tok);
+                let bonus_token = target_tok;
+                let total_emitted = emitted.len();
                 return SpeculativeVerificationResult {
-                    accepted_tokens: accepted,
+                    emitted_tokens: emitted,
                     n_accepted,
-                    bonus_token: target_tok,
-                    total_emitted: n_accepted + 1,
+                    bonus_token,
+                    total_emitted,
                 };
             }
         }
 
-        // If all K candidates were accepted, the last token in accepted is candidates[K-1].
-        // The bonus token is candidates[K-1] (or sampled from final position logits).
-        let bonus_token = candidates[k - 1];
+        // All K candidates accepted: sample bonus token from target_logits[K]
+        let last_logits = target_logits[k];
+        let bonus_token = Sampler::argmax(last_logits);
+        emitted.push(bonus_token);
+        let total_emitted = emitted.len();
+
         SpeculativeVerificationResult {
-            accepted_tokens: accepted,
+            emitted_tokens: emitted,
             n_accepted,
             bonus_token,
-            total_emitted: n_accepted,
+            total_emitted,
         }
     }
 
     /// Performs distribution-preserving modified rejection sampling for stochastic generation.
     ///
-    /// `candidates`: Slice of $K$ proposed candidate tokens.
+    /// `candidates`: Slice of $K$ proposed candidate tokens for positions $t+1, \dots, t+K$.
     /// `draft_probs`: Slice of $K$ draft probability vectors (or empty if uniform).
-    /// `target_logits`: Slice of $K$ target logit slices.
+    /// `target_logits`: Slice of $K+1$ target logit slices.
     /// `sampler`: The sampler instance for RNG.
     /// `params`: Sampling parameters (temperature, top_p, top_k).
     pub fn verify_stochastic(
@@ -96,17 +99,14 @@ impl SpeculativeVerifier {
             return Self::verify_greedy(candidates, target_logits);
         }
 
-        let k = candidates.len();
-        if k == 0 {
-            return SpeculativeVerificationResult {
-                accepted_tokens: Vec::new(),
-                n_accepted: 0,
-                bonus_token: 0,
-                total_emitted: 0,
-            };
-        }
+        assert_eq!(
+            target_logits.len(),
+            candidates.len() + 1,
+            "Target logits must have length candidates.len() + 1"
+        );
 
-        let mut accepted = Vec::with_capacity(k + 1);
+        let k = candidates.len();
+        let mut emitted = Vec::with_capacity(k + 1);
         let mut n_accepted = 0;
         let mut current_context = context.to_vec();
 
@@ -115,7 +115,6 @@ impl SpeculativeVerifier {
             let logits = target_logits[i];
             let vocab_size = logits.len();
 
-            // Compute target distribution
             let target_prob = sampler.compute_distribution(logits, &current_context, params);
 
             let p_cand = if (cand as usize) < target_prob.len() {
@@ -131,12 +130,11 @@ impl SpeculativeVerifier {
                 1.0 / vocab_size as f32
             };
 
-            // Acceptance probability r = min(1, p(x) / q(x))
             let r = if q_cand > 0.0 { (p_cand / q_cand).min(1.0) } else { 1.0 };
             let u = sampler.sample_uniform();
 
             if u <= r {
-                accepted.push(cand);
+                emitted.push(cand);
                 current_context.push(cand);
                 n_accepted += 1;
             } else {
@@ -171,26 +169,28 @@ impl SpeculativeVerifier {
                     sampler.sample(logits, &current_context, params)
                 };
 
-                accepted.push(bonus_token);
+                emitted.push(bonus_token);
+                let total_emitted = emitted.len();
                 return SpeculativeVerificationResult {
-                    accepted_tokens: accepted,
+                    emitted_tokens: emitted,
                     n_accepted,
                     bonus_token,
-                    total_emitted: n_accepted + 1,
+                    total_emitted,
                 };
             }
         }
 
         // All K accepted: sample bonus token from target logits of last position
-        let last_logits = target_logits[k - 1];
+        let last_logits = target_logits[k];
         let bonus_token = sampler.sample(last_logits, &current_context, params);
-        accepted.push(bonus_token);
+        emitted.push(bonus_token);
+        let total_emitted = emitted.len();
 
         SpeculativeVerificationResult {
-            accepted_tokens: accepted,
+            emitted_tokens: emitted,
             n_accepted,
             bonus_token,
-            total_emitted: n_accepted + 1,
+            total_emitted,
         }
     }
 }
