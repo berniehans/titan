@@ -1,10 +1,10 @@
 # Implementation Tasks: Phase 13 — Large Model Scaling (>6 GB VRAM: 14B & 32B via Layer Streaming Pipeline)
 
 ## 1. Double-Buffered Layer Weight Ring (sub-change 13.1)
-- [ ] 1.1 Implement `LayerDoubleBuffer` in `engine-core/src/layer_double_buffer.rs` allocating two ping-pong VRAM slots sized for maximum layer weight size.
-- [ ] 1.2 Implement synchronous and asynchronous host-to-device slot population methods.
-- [ ] 1.3 Create unit test `engine-core/tests/layer_double_buffer_test.rs` asserting zero reallocation across repeated layer ping-pong swaps.
-- Gate: `cargo test -p engine-core --test layer_double_buffer_test` PASS.
+- [x] 1.1 Implement `LayerDoubleBuffer` in `engine-core/src/layer_double_buffer.rs` allocating two ping-pong VRAM slots sized for maximum layer weight size.
+- [x] 1.2 Implement synchronous and asynchronous host-to-device slot population methods.
+- [x] 1.3 Create unit test `engine-core/tests/layer_double_buffer_test.rs` asserting zero reallocation across repeated layer ping-pong swaps.
+- Gate PASS: `cargo test -p engine-core --test layer_double_buffer_test` PASS.
 
 ## 2. StreamingForwardDriver Dual-Stream Pipeline (sub-change 13.2)
 - [ ] 2.1 Implement `StreamingForwardDriver` in `engine-core/src/streaming_forward_driver.rs` with dedicated `compute_stream` and `transfer_stream`.
