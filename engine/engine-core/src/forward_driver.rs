@@ -120,7 +120,7 @@ fn ggml_to_bank(t: GgmlType) -> Option<TensorType> {
     }
 }
 
-fn bank_tensor<'a>(
+pub(crate) fn bank_tensor<'a>(
     read: &GgufReader,
     pinned: &'a LoadedPinned,
     name: &str,
@@ -146,7 +146,7 @@ fn bank_tensor<'a>(
     })
 }
 
-fn f32_norm(pinned: &LoadedPinned, name: &str) -> Result<Vec<f32>, EngineError> {
+pub(crate) fn f32_norm(pinned: &LoadedPinned, name: &str) -> Result<Vec<f32>, EngineError> {
     let b = pinned
         .tensor(name)
         .ok_or_else(|| engine_io::GgufError::MissingMetadata(name.to_string()))?;
@@ -200,7 +200,7 @@ fn download_f32(
     Ok(bytes_f32(&raw))
 }
 
-fn ggml_to_gemv(t: TensorType) -> Result<GemvFormat, EngineError> {
+pub(crate) fn ggml_to_gemv(t: TensorType) -> Result<GemvFormat, EngineError> {
     match t {
         TensorType::Q4K => Ok(GemvFormat::Q4K),
         TensorType::Q6K => Ok(GemvFormat::Q6K),

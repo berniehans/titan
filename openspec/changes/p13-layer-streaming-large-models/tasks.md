@@ -7,10 +7,10 @@
 - Gate PASS: `cargo test -p engine-core --test layer_double_buffer_test` PASS.
 
 ## 2. StreamingForwardDriver Dual-Stream Pipeline (sub-change 13.2)
-- [ ] 2.1 Implement `StreamingForwardDriver` in `engine-core/src/streaming_forward_driver.rs` with dedicated `compute_stream` and `transfer_stream`.
-- [ ] 2.2 Implement asynchronous event barrier overlapping layer $L+1$ transfer with layer $L$ execution.
-- [ ] 2.3 Create unit test `engine-core/tests/streaming_pipeline_sync_test.rs` validating event recording, stream waits, and double-buffer ping-pong transitions.
-- Gate: `cargo test -p engine-core --test streaming_pipeline_sync_test` PASS.
+- [x] 2.1 Implement `StreamingForwardDriver` in `engine-core/src/streaming_forward_driver.rs` with dedicated `compute_stream` and `transfer_stream`.
+- [x] 2.2 Implement asynchronous event barrier overlapping layer $L+1$ transfer with layer $L$ execution.
+- [x] 2.3 Create unit test `engine-core/tests/streaming_pipeline_sync_test.rs` validating event recording, stream waits, and double-buffer ping-pong transitions.
+- Gate PASS: `cargo test -p engine-core --test streaming_pipeline_sync_test` PASS.
 
 ## 3. Large Model Topology & Golden Parity Gate (sub-change 13.3)
 - [ ] 3.1 Validate arbitrary layer scaling ($N \ge 48$) and dimension scaling ($H \ge 5120$) in model configuration parsing.

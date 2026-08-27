@@ -8,6 +8,7 @@ pub mod ngram_draft;
 pub mod pipeline;
 pub mod sampler;
 pub mod speculative;
+pub mod streaming_forward_driver;
 pub mod tokenizer;
 pub mod vram_accounting;
 
@@ -15,6 +16,7 @@ pub use dequant::{dequant_q4k_cpu, dequant_q6k_cpu};
 pub use error::EngineError;
 pub use forward_driver::{ForwardDriver, VramFootprint};
 pub use layer_double_buffer::{HostLayerWeights, LayerDoubleBuffer, LayerSlotGpu, LayerTensorSizes};
+pub use streaming_forward_driver::StreamingForwardDriver;
 pub use moe::{
     BandwidthMeasurement, CpuMoeConfig, ExpertSlotCache, ExpertTensorDesc, GpuProfileInfo,
     HardwareBandwidthProfile, HostExpertBank, LayerCacheStats, MoeBackend, MoeBudgetPlan,
