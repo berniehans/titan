@@ -240,6 +240,112 @@ impl Sampler {
         probs.first().map(|p| p.0 as u32).unwrap_or(0)
     }
 
+    /// Samples the next token with grammar constraint predicate `is_allowed(token_id)`.
+    pub fn sample_constrained<F>(
+        &mut self,
+        logits: &[f32],
+        context_tokens: &[u32],
+        params: &SamplerParams,
+        mut is_allowed: F,
+    ) -> u32
+    where
+        F: FnMut(u32) -> bool,
+    {
+        if logits.is_empty() {
+            return 0;
+        }
+
+        // 1. Check candidates in descending order of logit likelihood
+        let mut top_candidates: Vec<(usize, f32)> = logits
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, l)| l.is_finite())
+            .collect();
+
+        top_candidates.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut filtered: Vec<(usize, f32)> = Vec::with_capacity(64);
+        for (idx, logit) in top_candidates {
+            if is_allowed(idx as u32) {
+                filtered.push((idx, logit));
+                if filtered.len() >= 64 {
+                    break;
+                }
+            }
+        }
+
+        if filtered.is_empty() {
+            return self.sample(logits, context_tokens, params);
+        }
+
+        // 2. Repetition penalty
+        if params.repetition_penalty > 1.0 && !context_tokens.is_empty() {
+            let pen = params.repetition_penalty;
+            let mut seen = std::collections::HashSet::new();
+            for &tok in context_tokens {
+                let idx = tok as usize;
+                if let Some(pos) = filtered.iter().position(|&(i, _)| i == idx) {
+                    if seen.insert(idx) {
+                        if filtered[pos].1 > 0.0 {
+                            filtered[pos].1 /= pen;
+                        } else {
+                            filtered[pos].1 *= pen;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Greedy argmax fast path
+        if params.temperature <= 1e-4 {
+            let mut best_idx = filtered[0].0;
+            let mut best_logit = f32::NEG_INFINITY;
+            for &(idx, logit) in &filtered {
+                if logit > best_logit {
+                    best_logit = logit;
+                    best_idx = idx;
+                }
+            }
+            return best_idx as u32;
+        }
+
+        // 4. Softmax + nucleus sampling
+        let inv_temp = 1.0 / params.temperature;
+        for cand in &mut filtered {
+            cand.1 *= inv_temp;
+        }
+
+        filtered.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let max_logit = filtered[0].1;
+        let mut sum_exp = 0.0f32;
+        let mut probs: Vec<(usize, f32)> = Vec::with_capacity(filtered.len());
+        for (idx, logit) in filtered {
+            let exp_val = (logit - max_logit).exp();
+            probs.push((idx, exp_val));
+            sum_exp += exp_val;
+        }
+
+        if sum_exp <= 0.0 {
+            return probs[0].0 as u32;
+        }
+
+        let inv_sum = 1.0 / sum_exp;
+        for p in &mut probs {
+            p.1 *= inv_sum;
+        }
+
+        let r = self.rng.next_f32() * params.top_p;
+        let mut accum = 0.0f32;
+        for (idx, prob) in probs {
+            accum += prob;
+            if accum >= r {
+                return idx as u32;
+            }
+        }
+        0
+    }
+
     /// Computes greedy argmax of raw logits.
     pub fn argmax(logits: &[f32]) -> u32 {
         let mut best_idx = 0;

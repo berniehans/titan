@@ -16,7 +16,7 @@ pub mod vram_accounting;
 pub use dequant::{dequant_q4k_cpu, dequant_q6k_cpu};
 pub use error::EngineError;
 pub use forward_driver::{ForwardDriver, VramFootprint};
-pub use grammar::{BitmaskBuffer, GrammarParser, JsonObjectGrammar};
+pub use grammar::{JsonGrammar, JsonParserState};
 pub use layer_double_buffer::{HostLayerWeights, LayerDoubleBuffer, LayerSlotGpu, LayerTensorSizes};
 pub use streaming_forward_driver::StreamingForwardDriver;
 pub use moe::{

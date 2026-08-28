@@ -246,6 +246,24 @@ impl BpeTokenizer {
         String::from_utf8(bytes)
             .map_err(|e| EngineError::Gguf(engine_io::GgufError::InvalidUtf8(e)))
     }
+
+    /// Decodes a single token ID into its string representation using lossy UTF-8 conversion.
+    pub fn decode_piece(&self, id: u32) -> String {
+        let mut bytes = Vec::new();
+        if let Some(tok) = self.tokens.get(id as usize) {
+            for c in tok.chars() {
+                let cp = c as u32;
+                if let Some(&b) = self.byte_map.get(&cp) {
+                    bytes.push(b);
+                } else {
+                    let mut buf = [0u8; 4];
+                    let s = c.encode_utf8(&mut buf);
+                    bytes.extend_from_slice(s.as_bytes());
+                }
+            }
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
 }
 
 /// Splits ASCII text into words using the Qwen2 regex rules.
