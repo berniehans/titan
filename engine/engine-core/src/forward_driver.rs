@@ -1416,8 +1416,8 @@ impl<'a> ForwardDriver<'a> {
                 self.layout.block_tokens,
             )?;
 
-            // Stage 5: PagedAttention Decode (GPU)
-            self.pa.launch_with_pos_ptr(
+            // Stage 5: FlashDecoding Split-KV Attention (GPU)
+            self.pa.launch_flash_decoding(
                 &self.stream,
                 &self.q_dev,
                 &layer.pool_dev,
@@ -1427,8 +1427,8 @@ impl<'a> ForwardDriver<'a> {
                 self.nkv,
                 self.hd,
                 self.layout.block_tokens,
-                1,
-                0,
+                self.pos + 1,
+                self.pos,
                 true,
                 Some(&self.pos_dev),
             )?;
