@@ -1,31 +1,91 @@
-# OS
+﻿# ==============================================================================
+# TITAN PROJECT .GITIGNORE
+# ==============================================================================
+
+# OS generated files
 Thumbs.db
 Desktop.ini
+.DS_Store
+*.tmp
+*.temp
+*.log
 
-# Editors
+# Editor & IDE configurations
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
 
-# Rust / Cargo
+# Rust / Cargo Build Artifacts
 engine/target/
+target/
+Cargo.lock.bak
+**/*.rs.bk
 
-# downloads / fixtures / models
+# Compiled Binaries & Libraries (Windows / Linux / macOS)
+*.dll
+*.exe
+*.so
+*.dylib
+*.lib
+*.obj
+*.pdb
+*.exp
+*.ilk
+*.bin
+
+# CUDA / Profiling Artifacts
+*.ptx
+*.cubin
+*.nsys-rep
+*.sqlite
+engine/f2_trace*
+f2_trace*
+
+# Compressed Archives
+*.zip
+*.7z
+*.tar.gz
+*.tar.bz2
+*.rar
+
+# Machine Learning Weights & Large Model Files
+models/
 testdata/*.gguf
 testdata/.cache/
-models/
 *.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# External Benchmark Runtimes & Binaries
+benchmarks/
 llama.cpp/
 
-# local benchmark scratch
+# Python Virtual Environments & Bytecode
+tools/.venv/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local Working & Scratch Artifacts
+local-artifacts/
 t*.json
 texto.json
 val.json
 
-# nsys traces (large binaries, regenerated on demand)
-engine/f2_trace.nsys-rep
-engine/f2_trace.sqlite
-engine/f2_trace_*.csv
-
-# local working artifacts (bot session plans, traces, scratch) — never pushed
-local-artifacts/
+# Large Documents & Binary Attachments
+*.docx
+*.pptx
+*.xlsx
+*.pdf
