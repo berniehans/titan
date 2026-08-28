@@ -257,6 +257,7 @@ dependencies = [
  "cudarc",
  "engine-cuda",
  "engine-io",
+ "engine-kvcache",
  "flate2",
  "serde",
  "serde_json",

@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 engine-cuda = { path = "../engine-cuda" }
 engine-io = { path = "../engine-io" }
+engine-kvcache = { path = "../engine-kvcache" }
 cudarc.workspace = true
 thiserror.workspace = true
 serde.workspace = true

@@ -369,6 +369,7 @@ pub struct ForwardDriver<'a> {
     logits_host: Vec<f32>,
     history_dev: DeviceBuffer,
     step_counter_dev: DeviceBuffer,
+    pub radix_tree: engine_kvcache::RadixTree,
 }
 
 impl<'a> ForwardDriver<'a> {
@@ -679,6 +680,7 @@ impl<'a> ForwardDriver<'a> {
             logits_host: vec![0.0f32; vocab_size],
             history_dev,
             step_counter_dev,
+            radix_tree: engine_kvcache::RadixTree::new(layout.block_tokens),
         };
         driver
             .vram_footprint()
@@ -703,10 +705,22 @@ impl<'a> ForwardDriver<'a> {
             }.into());
         }
 
+        // 1. Radix Prefix Cache Match
+        let match_res = self.radix_tree.match_prefix(tokens);
+        let mut current_pos = if match_res.matched_tokens > 0 && self.pos == match_res.matched_tokens {
+            match_res.matched_tokens
+        } else {
+            0
+        };
+
+        if current_pos == tokens.len() {
+            let logits = download_f32(&self.stream, &self.logits_dev, self.vocab_size)?;
+            self.stream.sync()?;
+            return Ok(logits);
+        }
+
         let chunk_limit = chunk_size.max(1).min(512);
         let mut last_hidden = Vec::new();
-        let mut current_pos = 0;
-
         let t_all_start = std::time::Instant::now();
         while current_pos < tokens.len() {
             let chunk_len = (tokens.len() - current_pos).min(chunk_limit);
@@ -962,6 +976,7 @@ impl<'a> ForwardDriver<'a> {
         self.record_lm_head_pass(&self.x_dev)?;
         let logits = download_f32(&self.stream, &self.logits_dev, self.vocab_size)?;
         self.stream.sync()?;
+        self.radix_tree.insert(tokens, &[0], false);
         Ok(logits)
     }
 
