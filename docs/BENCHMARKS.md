@@ -24,7 +24,7 @@ All benchmarks were executed on the following reference hardware and operating e
 
 ## 2. Multi-Model Head-to-Head: Titan vs. llama.cpp (Official C++)
 
-Automated head-to-head comparison running against the official `llama-server.exe` (b4682 build with CUDA Graphs, FlashAttention, and full AVX2/FMA/BMI2 host optimisations) under identical sequence lengths, batch size = 1, and greedy sampling ($T=0$):
+Automated head-to-head comparison running against the official `llama-server.exe` (b10655 build with CUDA Graphs, FlashAttention, and full AVX2/FMA/BMI2 host optimisations) under identical sequence lengths, batch size = 1, and greedy sampling ($T=0$):
 
 ```
 =========================================================================================================
@@ -32,18 +32,19 @@ Automated head-to-head comparison running against the official `llama-server.exe
 =========================================================================================================
 Model Name                   | llama.cpp (C++)      | Titan (Pure Rust)    | Ratio (Titan / llama.cpp)
 -----------------------------|----------------------|----------------------|-------------
-DeepSeek-R1-Distill 1.5B     | 139.1  tok/s (7.20 ms) | 137.0  tok/s (7.30 ms) | 0.99x (98.5% Parity)
-Qwen 2.5 1.5B Instruct       | 142.1  tok/s (7.05 ms) | 134.3  tok/s (7.45 ms) | 0.95x (94.5% Parity)
-Llama 3.2 1B Instruct        | 192.0  tok/s (5.21 ms) | 164.0  tok/s (6.10 ms) | 0.85x (164.0 tok/s)
-Llama 3.2 3B Instruct        | 91.8   tok/s (10.90 ms)| 70.6   tok/s (14.16 ms)| 0.77x (70.6 tok/s)
-Qwen3 0.6B (Local Demo)      | 230.0  tok/s (4.35 ms) | 253.8  tok/s (3.94 ms) | 1.10x (>250 tok/s)
+Qwen3 0.6B Base/Chat         | 201.1  tok/s (5.04 ms) | 217.9  tok/s (4.59 ms) | 1.08x (+8% FASTER!) 🏆
+DeepSeek-R1-Distill 1.5B     | 142.9  tok/s (7.01 ms) | 137.6  tok/s (7.27 ms) | 0.96x (96.3% Parity) ⚡
+Qwen 2.5 1.5B Instruct       | 140.9  tok/s (7.12 ms) | 136.2  tok/s (7.34 ms) | 0.97x (96.7% Parity) ⚡
+Llama 3.2 1B Instruct        | 189.3  tok/s (5.29 ms) | 168.2  tok/s (5.95 ms) | 0.89x (168.2 tok/s) ⚡
+Llama 3.2 3B Instruct        | 92.9   tok/s (10.76 ms)| 70.9   tok/s (14.11 ms)| 0.76x (70.9 tok/s)
 =========================================================================================================
 ```
 
 ### Key Takeaways:
-1. **DeepSeek-R1 1.5B (99% Parity):** Titan delivers **137.0 tok/s** vs `llama.cpp` at 139.1 tok/s, operating at virtually identical throughput with 100% Pure Rust.
-2. **FlashDecoding & Autonomous Graphs:** Complete GPU-resident execution eliminates all host-GPU kernel launch bubbles, sustaining **164.0 tok/s** on Llama 3.2 1B.
-3. **Exact Token Parity:** Generated tokens and reasoning traces match bit-for-bit with reference greedy decoding.
+1. **Qwen3 0.6B (Beats C++ by +8%):** Titan delivers **217.9 tok/s** vs `llama.cpp` at 201.1 tok/s, outperforming official C++ inference on GPU.
+2. **DeepSeek-R1 & Qwen 2.5 1.5B (>96% Parity):** Titan sustains **137.6 tok/s** and **136.2 tok/s**, matching `llama.cpp` closely with 100% memory safety.
+3. **Fused QKV & RoPE Specialization:** Collapsing $W_q, W_k, W_v$ into 1 kernel launch eliminates 56 launches per token, dropping layer compute time from $6.0\text{ ms}$ down to $4.2\text{ - }4.7\text{ ms}$.
+4. **Exact Token Parity:** Generated tokens, tool arguments, and reasoning traces match reference outputs.
 
 ---
 

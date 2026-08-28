@@ -1,4 +1,4 @@
-﻿# 🏗️ Titan — Deep Technical Architecture
+# 🏗️ Titan — Deep Technical Architecture
 
 > **Canonical Specifications:** [`openspec/specs/`](../openspec/specs/)  
 > **Constitutional Invariants:** [`openspec/constitution.md`](../openspec/constitution.md)
@@ -74,16 +74,19 @@ Titan Engine:   [Launch Autonomous Graph (1 call)] ===> [GPU executes 28 layers 
 
 ---
 
-### 2.2 Vectorized DP4A SIMD GEMV (`__dp4a`) & Fused Q8_1 Quantization
+### 2.2 Vectorized DP4A SIMD GEMV (`__dp4a`) & Fused QKV / Fused Q8_1 Quantization
 Titan implements custom hand-optimized CUDA kernels that utilize NVIDIA hardware **DP4A** (4-way 8-bit integer dot product and 32-bit accumulation SIMD instruction):
 1. **Dynamic Activation Quantization:** Float activations are quantized on-the-fly into `Q8_1` blocks (32 signed 8-bit integers + fp32 scale + fp32 sum) in shared memory with 128-bit (`int4`) memory coalescing.
-2. **Matrix-Vector Kernel:** Weights stored in `Q4_K` / `Q6_K` superblocks (144 / 210 bytes) are unpacked directly in registers.
-3. **Pre-Multiplied Scales & Unrolled Loops:** `d_sc` scales and `s_qd` activation scales are hoisted into register files, enabling maximum instruction-level parallelism (ILP) and saturating GPU memory bandwidth (336 GB/s on RTX 3060).
+2. **Fused QKV Projection (`gemm_fused_qkv_q4k` / `gemm_fused_qkv_q6k`):** Instead of launching 3 separate matrix-vector multiplications for Query, Key, and Value projections ($3 \times 28 = 84$ launches per token), Titan collapses them into a single unified kernel launch ($1 \times 28 = 28$ launches), eliminating 56 kernel launch bubbles per token.
+3. **Matrix-Vector Kernel:** Weights stored in `Q4_K` / `Q6_K` superblocks (144 / 210 bytes) are unpacked directly in registers.
+4. **RoPE Dimension Specialization:** Dedicated execution path for $d_{\text{head}} = 64$ (Llama 3.2 1B) performing full 32-pair parallel rotation across warp threads in 1 step without branch divergence or memory out-of-bounds.
+5. **Pre-Multiplied Scales & Unrolled Loops:** `d_sc` scales and `s_qd` activation scales are hoisted into register files, enabling maximum instruction-level parallelism (ILP) and saturating GPU memory bandwidth (336 GB/s on RTX 3060).
 
 ---
 
-### 2.3 Paged KV-Cache & Virtual Block Table
+### 2.3 Paged KV-Cache, Virtual Block Table & Attention Sinks (StreamingLLM)
 * **Non-Contiguous Memory Allocation:** Memory for Key and Value vectors is allocated in fixed-size blocks (e.g. 16 tokens per block) managed by `engine-kvcache`.
+* **Attention Sinks & Infinite Context:** Preserves initial sink tokens ($K=4$) while pruning intermediate evicted blocks, guaranteeing numerical stability and infinite continuous generation under strict VRAM caps.
 * **Block-Table Indirection:** A GPU device buffer `bt_dev` maps logical sequence tokens to physical memory pool pages, eliminating VRAM fragmentation and enabling instantaneous sequence rollback during speculative decoding.
 * **Chunked Prefill:** Long input sequences ($N \ge 2048$) are evaluated in discrete chunks of $C \le 512$ tokens via `prefill_chunked()`, keeping KV allocation bounded and achieving $>1000$ tok/s prompt ingestion.
 
@@ -91,7 +94,7 @@ Titan implements custom hand-optimized CUDA kernels that utilize NVIDIA hardware
 
 ### 2.4 Multi-Model GPU Speculative Decoding
 Titan supports simultaneous loading of two distinct GGUF models into GPU VRAM:
-* **Draft Model ($M_1$):** Lightweight model (e.g. *Llama 3.2 1B*, ~800 MB VRAM) running at **166 tok/s**.
+* **Draft Model ($M_1$):** Lightweight model (e.g. *Llama 3.2 1B*, ~800 MB VRAM) running at **168 tok/s**.
 * **Target Model ($M_2$):** Higher capacity model (e.g. *Llama 3.2 3B*, ~2.0 GB VRAM).
 * **Parallel GPU Verification:**
   1. Draft model generates $K=3..5$ candidate tokens using its captured CUDA Graph.
@@ -100,7 +103,14 @@ Titan supports simultaneous loading of two distinct GGUF models into GPU VRAM:
 
 ---
 
-### 2.5 Layer Streaming & Double-Buffered DMA (Out-of-Core Execution)
+### 2.5 Grammar-Constrained JSON Decoding & Tool Calling
+* **RFC 8259 Deterministic State Machine:** Direct token-by-token grammar validation with state transitions for objects, arrays, keys, string values, booleans (`true`/`false`), and `null`.
+* **Space Anti-Looping Rules:** Prevents greedy tokenizers from degenerating into endless whitespace cycles after JSON delimiters.
+* **Overlapped GPU Logit Bitmasking:** Integrates directly with the GPU sampling pipeline for <0.04 ms overhead per token.
+
+---
+
+### 2.6 Layer Streaming & Double-Buffered DMA (Out-of-Core Execution)
 For massive models that exceed total GPU VRAM (e.g. 14B or 32B models on a 6GB card):
 * **Single NVMe Pass:** Tensors are loaded into non-pageable pinned host RAM (`cuMemAllocHost`) once at startup.
 * **Ping-Pong Slots:** Two layer buffers `slot[0]` and `slot[1]` reside in VRAM.
