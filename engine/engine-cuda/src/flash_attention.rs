@@ -49,6 +49,7 @@ impl FlashAttention2 {
             nvrtc::CompileOptions {
                 arch: Some(KERNEL_ARCH),
                 include_paths: vec![],
+                use_fast_math: Some(true),
                 ..Default::default()
             },
         )

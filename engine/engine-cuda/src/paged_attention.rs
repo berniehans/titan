@@ -50,6 +50,7 @@ impl PagedAttention {
             KERNEL_SRC,
             nvrtc::CompileOptions {
                 arch: Some(KERNEL_ARCH),
+                use_fast_math: Some(true),
                 ..Default::default()
             },
         )
@@ -250,7 +251,7 @@ impl PagedAttention {
 
         let scale: f32 = 1.0f32 / (head_dim as f32).sqrt();
         let grid_x: u32 = n_head as u32;
-        let shared_bytes = ((head_dim + 34) * std::mem::size_of::<f32>()) as u32;
+        let shared_bytes = 0u32;
 
         let q_addr: u64 = q.device_ptr();
         let pool_addr: u64 = pool.device_ptr();

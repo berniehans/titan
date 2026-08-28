@@ -58,6 +58,11 @@ impl PagedKvLayout {
     pub fn floats_total(&self) -> usize {
         self.n_blocks * self.floats_per_block()
     }
+
+    /// Total capacity in logical tokens across all blocks.
+    pub fn total_tokens(&self) -> usize {
+        self.n_blocks * self.block_tokens
+    }
 }
 
 /// RAII wrapper around compiled and loaded paged KV-cache kernels.

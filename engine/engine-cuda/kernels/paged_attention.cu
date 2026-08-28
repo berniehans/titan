@@ -42,20 +42,16 @@ extern "C" __global__ void paged_attention_decode_kernel(
 
     const float* qrow = q + (size_t)qh * (size_t)head_dim;
 
-    extern __shared__ float smem[];
-    float* s_acc = smem;
-    float* s_part = smem + head_dim;
-    float* s_m = smem + head_dim + 32;
-    float* s_l = s_m + 1;
+    // Cache Q head (128 floats = 32 float4 vectors across 32 threads)
+    const float4 q_val = (tid < 32 && (tid * 4 + 3) < head_dim) ? ((const float4*)qrow)[tid] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
-    for (int j = tid; j < head_dim; j += 32) {
-        s_acc[j] = 0.0f;
-    }
-    if (tid == 0) {
-        s_m[0] = -__int_as_float(0x7f800000u);
-        s_l[0] = 0.0f;
-    }
-    __syncthreads();
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    float acc2 = 0.0f;
+    float acc3 = 0.0f;
+
+    float s_m = -__int_as_float(0x7f800000u);
+    float s_l = 0.0f;
 
     const int n_blocks = (seq_tokens + block_tokens - 1) / block_tokens;
 
@@ -80,45 +76,33 @@ extern "C" __global__ void paged_attention_decode_kernel(
             const float* k = krow + (size_t)t * floats_per_token;
             const float* v = vrow + (size_t)t * floats_per_token;
 
-            float part = 0.0f;
-            for (int j = tid; j < head_dim; j += 32) {
-                part += qrow[j] * k[j];
-            }
-            s_part[tid] = part;
-            __syncthreads();
+            const float4 k_val = ((const float4*)k)[tid];
+            const float4 v_val = ((const float4*)v)[tid];
 
-            for (int stride = 16; stride > 0; stride >>= 1) {
-                if (tid < stride) {
-                    s_part[tid] += s_part[tid + stride];
-                }
-                __syncthreads();
+            float part = __fmaf_rn(q_val.x, k_val.x, __fmaf_rn(q_val.y, k_val.y, __fmaf_rn(q_val.z, k_val.z, q_val.w * k_val.w)));
+
+            #pragma unroll
+            for (int mask = 16; mask > 0; mask >>= 1) {
+                part += __shfl_down_sync(0xffffffff, part, mask);
             }
 
-            if (tid == 0) {
-                float score = s_part[0] * scale;
-                float m_old = s_m[0];
-                float m_new = fmaxf(m_old, score);
-                float corr = expf(m_old - m_new);
-                float p_new = expf(score - m_new);
-                s_l[0] = s_l[0] * corr + p_new;
-                s_m[0] = m_new;
-                s_part[0] = corr;
-                s_part[1] = p_new;
-            }
-            __syncthreads();
+            const float total_score = __shfl_sync(0xffffffff, part, 0) * scale;
+            const float m_new = fmaxf(s_m, total_score);
+            const float corr = __expf(s_m - m_new);
+            const float p_new = __expf(total_score - m_new);
 
-            const float corr = s_part[0];
-            const float p_new = s_part[1];
-            for (int j = tid; j < head_dim; j += 32) {
-                s_acc[j] = s_acc[j] * corr + v[j] * p_new;
-            }
-            __syncthreads();
+            s_l = __fmaf_rn(s_l, corr, p_new);
+            s_m = m_new;
+
+            acc0 = __fmaf_rn(acc0, corr, v_val.x * p_new);
+            acc1 = __fmaf_rn(acc1, corr, v_val.y * p_new);
+            acc2 = __fmaf_rn(acc2, corr, v_val.z * p_new);
+            acc3 = __fmaf_rn(acc3, corr, v_val.w * p_new);
         }
     }
 
-    const float l = s_l[0];
     float* out_head = out + (size_t)qh * (size_t)head_dim;
-    for (int j = tid; j < head_dim; j += 32) {
-        out_head[j] = s_acc[j] / l;
-    }
+    const float inv_l = 1.0f / s_l;
+
+    ((float4*)out_head)[tid] = make_float4(acc0 * inv_l, acc1 * inv_l, acc2 * inv_l, acc3 * inv_l);
 }

@@ -9,18 +9,21 @@
 //   F16:  ne0 * 2 bytes (fp16 LE)
 
 __device__ __forceinline__ float f16_to_f32(unsigned bits) {
-    const unsigned sign = (bits >> 15) & 1u;
+    const unsigned sign = (bits & 0x8000u) << 16;
     const unsigned exp  = (bits >> 10) & 0x1Fu;
     const unsigned mant = bits & 0x3FFu;
     if (exp == 0u) {
-        if (mant == 0u) return sign ? -0.0f : 0.0f;
-        const float val = (float)mant * exp2f(-24.0f);
-        return sign ? -val : val;
+        if (mant == 0u) {
+            return __uint_as_float(sign);
+        }
+        float val = (float)mant * 5.9604644775390625e-8f;
+        return (bits & 0x8000u) ? -val : val;
     } else if (exp == 31u) {
-        return sign ? -__int_as_float(0x7f800000u) : __int_as_float(0x7f800000u);
+        unsigned res = sign | 0x7F800000u | (mant << 13);
+        return __uint_as_float(res);
     }
-    const float val = (1.0f + (float)mant / 1024.0f) * exp2f((float)(int)exp - 15.0f);
-    return sign ? -val : val;
+    unsigned res = sign | ((exp + 112u) << 23) | (mant << 13);
+    return __uint_as_float(res);
 }
 
 __device__ __forceinline__ void get_scale_min(int j, const unsigned char* scales, unsigned* s, unsigned* m) {

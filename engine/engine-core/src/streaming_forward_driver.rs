@@ -6,7 +6,7 @@
 
 use crate::error::EngineError;
 use crate::forward_cpu::{Tensor, embed_lookup};
-use crate::forward_driver::{MAX_SPEC_K, bank_tensor, f32_norm, ggml_to_gemv};
+use crate::forward_driver::{MAX_SPEC_K, bank_tensor, f32_norm, f32_norm_opt, ggml_to_gemv};
 use crate::layer_double_buffer::{HostLayerWeights, LayerDoubleBuffer, LayerTensorSizes};
 use engine_cuda::{
     BatchedGEMM, CudaDevice, CudaEvent, CudaStream, DeviceBuffer, MODE_NORM, MODE_ROPE,
@@ -76,6 +76,7 @@ pub struct StreamingForwardDriver<'a> {
     pa: PagedAttention,
     layout: PagedKvLayout,
     emb: Tensor<'a>,
+    lm_head_weight: Tensor<'a>,
     head_norm: Vec<f32>,
     pinned_layers: Vec<PinnedLayerWeights<'a>>,
     layer_norms: Vec<LayerNormsDev>,
@@ -132,6 +133,7 @@ pub struct StreamingForwardDriver<'a> {
     base: f32,
     n_layer: usize,
     pub pos: usize,
+    has_qk_norm: bool,
 }
 
 impl<'a> StreamingForwardDriver<'a> {
@@ -180,9 +182,15 @@ impl<'a> StreamingForwardDriver<'a> {
         };
 
         let emb = bank_tensor(reader, pinned, "token_embd.weight")?;
+        let lm_head_weight = if reader.get_tensor("output.weight").is_some() {
+            bank_tensor(reader, pinned, "output.weight")?
+        } else {
+            emb
+        };
         let head_norm = f32_norm(pinned, "output_norm.weight")?;
 
         // Parse all layer weights in pinned host DRAM and upload small norm vectors
+        let has_qk_norm = pinned.tensor("blk.0.attn_q_norm.weight").is_some();
         let mut pinned_layers = Vec::with_capacity(n_layer);
         let mut layer_norms = Vec::with_capacity(n_layer);
         let mut max_sizes = LayerTensorSizes {
@@ -205,8 +213,8 @@ impl<'a> StreamingForwardDriver<'a> {
             let wdown = bank_tensor(reader, pinned, &format!("blk.{l}.ffn_down.weight"))?;
 
             let an = f32_norm(pinned, &format!("blk.{l}.attn_norm.weight"))?;
-            let qn = f32_norm(pinned, &format!("blk.{l}.attn_q_norm.weight"))?;
-            let kn = f32_norm(pinned, &format!("blk.{l}.attn_k_norm.weight"))?;
+            let qn = f32_norm_opt(pinned, &format!("blk.{l}.attn_q_norm.weight"), hd);
+            let kn = f32_norm_opt(pinned, &format!("blk.{l}.attn_k_norm.weight"), hd);
             let fn_norm = f32_norm(pinned, &format!("blk.{l}.ffn_norm.weight"))?;
 
             let an_dev = upload_f32(&compute_stream, &device, &an)?;
@@ -311,6 +319,7 @@ impl<'a> StreamingForwardDriver<'a> {
             pa,
             layout,
             emb,
+            lm_head_weight,
             head_norm,
             pinned_layers,
             layer_norms,
@@ -363,6 +372,7 @@ impl<'a> StreamingForwardDriver<'a> {
             base,
             n_layer,
             pos: 0,
+            has_qk_norm,
         })
     }
 
@@ -460,6 +470,11 @@ impl<'a> StreamingForwardDriver<'a> {
             )?;
 
             // c. Per-head Q/K RMSNorm + RoPE
+            let qk_mode = if self.has_qk_norm {
+                MODE_NORM | MODE_ROPE
+            } else {
+                MODE_ROPE
+            };
             self.nr.launch_with_pos_ptr(
                 &self.compute_stream,
                 &self.q_dev,
@@ -472,7 +487,7 @@ impl<'a> StreamingForwardDriver<'a> {
                 self.n_rot,
                 self.base,
                 0,
-                MODE_NORM | MODE_ROPE,
+                qk_mode,
                 Some(&self.pos_dev),
             )?;
             self.nr.launch_with_pos_ptr(
@@ -487,7 +502,7 @@ impl<'a> StreamingForwardDriver<'a> {
                 self.n_rot,
                 self.base,
                 0,
-                MODE_NORM | MODE_ROPE,
+                qk_mode,
                 Some(&self.pos_dev),
             )?;
 
@@ -695,7 +710,7 @@ impl<'a> StreamingForwardDriver<'a> {
 
     /// Computes final output logits using the embedding weight matrix as tied LM head.
     fn lm_head(&self, x: &[f32]) -> Vec<f32> {
-        crate::forward_cpu::logits_from_hidden(&self.emb, &self.head_norm, x, self.eps)
+        crate::forward_cpu::logits_from_hidden(&self.lm_head_weight, &self.head_norm, x, self.eps)
     }
 }
 

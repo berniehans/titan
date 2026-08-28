@@ -132,20 +132,17 @@ impl Sampler {
             return 0;
         }
 
-        // 2. Apply repetition penalty:
+        // 2. Apply repetition penalty in O(context) with direct indexing:
         if params.repetition_penalty > 1.0 && !context_tokens.is_empty() {
             let pen = params.repetition_penalty;
+            let mut seen = std::collections::HashSet::new();
             for &tok in context_tokens {
                 let idx = tok as usize;
-                if idx < logits.len() {
-                    for cand in &mut filtered {
-                        if cand.0 == idx {
-                            if cand.1 > 0.0 {
-                                cand.1 /= pen;
-                            } else {
-                                cand.1 *= pen;
-                            }
-                        }
+                if idx < filtered.len() && seen.insert(idx) {
+                    if filtered[idx].1 > 0.0 {
+                        filtered[idx].1 /= pen;
+                    } else {
+                        filtered[idx].1 *= pen;
                     }
                 }
             }
@@ -170,13 +167,21 @@ impl Sampler {
             cand.1 *= inv_temp;
         }
 
-        // 5. Sort candidates descending by logit:
-        filtered.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        // 6. Top-K filtering:
-        if params.top_k > 0 && params.top_k < filtered.len() {
-            filtered.truncate(params.top_k);
+        // 5. O(N) top-K partition instead of full 151k sort:
+        let k = if params.top_k > 0 && params.top_k < filtered.len() {
+            params.top_k
+        } else {
+            filtered.len().min(1024)
+        };
+        if k < filtered.len() {
+            filtered.select_nth_unstable_by(k, |a, b| {
+                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            filtered.truncate(k);
         }
+
+        // 6. Sort only top-k candidates descending by logit:
+        filtered.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // 7. Compute Softmax probabilities:
         let max_logit = filtered[0].1;

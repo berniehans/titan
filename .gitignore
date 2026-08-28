@@ -10,9 +10,17 @@ Desktop.ini
 # Rust / Cargo
 engine/target/
 
-# downloads / fixtures
+# downloads / fixtures / models
 testdata/*.gguf
 testdata/.cache/
+models/
+*.gguf
+llama.cpp/
+
+# local benchmark scratch
+t*.json
+texto.json
+val.json
 
 # nsys traces (large binaries, regenerated on demand)
 engine/f2_trace.nsys-rep

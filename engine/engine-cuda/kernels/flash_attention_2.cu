@@ -55,16 +55,12 @@ extern "C" __global__ void flash_attention_2_kernel(
 
     // Each thread in warp loads 4 elements (32 * 4 = 128)
     const int elem_idx = tid * 4;
-    float q_local[4];
-    q_local[0] = q_vec[elem_idx + 0];
-    q_local[1] = q_vec[elem_idx + 1];
-    q_local[2] = q_vec[elem_idx + 2];
-    q_local[3] = q_vec[elem_idx + 3];
+    const float4 q_local = *(const float4*)(q_vec + elem_idx);
 
     // Online softmax state in registers
     float m_prev = -1e30f;
     float l_prev = 0.0f;
-    float o_acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float4 o_acc = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
     // Causal attention: attend to all positions k_pos in [0, global_q_pos]
     for (int k_pos = 0; k_pos <= global_q_pos; ++k_pos) {
@@ -72,14 +68,13 @@ extern "C" __global__ void flash_attention_2_kernel(
         const int in_block = k_pos % block_tokens;
         const unsigned phys = block_table[b];
 
-        const float* k_ptr = pool + (size_t)phys * (size_t)floats_per_block + (size_t)kh * (size_t)head_dim + (size_t)in_block * (size_t)floats_per_token;
-        const float* v_ptr = pool + (size_t)phys * (size_t)floats_per_block + (size_t)kh * (size_t)head_dim + (size_t)row_len + (size_t)in_block * (size_t)floats_per_token;
+        const float4* k_ptr4 = (const float4*)(pool + (size_t)phys * (size_t)floats_per_block + (size_t)kh * (size_t)head_dim + (size_t)in_block * (size_t)floats_per_token + (size_t)elem_idx);
+        const float4* v_ptr4 = (const float4*)(pool + (size_t)phys * (size_t)floats_per_block + (size_t)kh * (size_t)head_dim + (size_t)row_len + (size_t)in_block * (size_t)floats_per_token + (size_t)elem_idx);
+
+        const float4 k_val = *k_ptr4;
 
         // 1. Compute dot product Q . K
-        float local_dot = q_local[0] * k_ptr[elem_idx + 0]
-                        + q_local[1] * k_ptr[elem_idx + 1]
-                        + q_local[2] * k_ptr[elem_idx + 2]
-                        + q_local[3] * k_ptr[elem_idx + 3];
+        float local_dot = __fmaf_rn(q_local.x, k_val.x, __fmaf_rn(q_local.y, k_val.y, __fmaf_rn(q_local.z, k_val.z, q_local.w * k_val.w)));
 
         float score = warp_reduce_sum(local_dot) * scale;
 
@@ -88,27 +83,20 @@ extern "C" __global__ void flash_attention_2_kernel(
         float alpha = __expf(m_prev - m_curr);
         float beta  = __expf(score - m_curr);
 
-        l_prev = l_prev * alpha + beta;
+        l_prev = __fmaf_rn(l_prev, alpha, beta);
 
-        float v0 = v_ptr[elem_idx + 0];
-        float v1 = v_ptr[elem_idx + 1];
-        float v2 = v_ptr[elem_idx + 2];
-        float v3 = v_ptr[elem_idx + 3];
+        const float4 v_val = *v_ptr4;
 
-        o_acc[0] = o_acc[0] * alpha + beta * v0;
-        o_acc[1] = o_acc[1] * alpha + beta * v1;
-        o_acc[2] = o_acc[2] * alpha + beta * v2;
-        o_acc[3] = o_acc[3] * alpha + beta * v3;
+        o_acc.x = __fmaf_rn(o_acc.x, alpha, beta * v_val.x);
+        o_acc.y = __fmaf_rn(o_acc.y, alpha, beta * v_val.y);
+        o_acc.z = __fmaf_rn(o_acc.z, alpha, beta * v_val.z);
+        o_acc.w = __fmaf_rn(o_acc.w, alpha, beta * v_val.w);
 
         m_prev = m_curr;
     }
 
     // 3. Final normalization
     float inv_l = (l_prev > 0.0f) ? (1.0f / l_prev) : 0.0f;
-    float* out_vec = out + (size_t)q_pos_in_chunk * q_stride + (size_t)qh * (size_t)head_dim;
-
-    out_vec[elem_idx + 0] = o_acc[0] * inv_l;
-    out_vec[elem_idx + 1] = o_acc[1] * inv_l;
-    out_vec[elem_idx + 2] = o_acc[2] * inv_l;
-    out_vec[elem_idx + 3] = o_acc[3] * inv_l;
+    float4* out_vec4 = (float4*)(out + (size_t)q_pos_in_chunk * q_stride + (size_t)qh * (size_t)head_dim + (size_t)elem_idx);
+    *out_vec4 = make_float4(o_acc.x * inv_l, o_acc.y * inv_l, o_acc.z * inv_l, o_acc.w * inv_l);
 }

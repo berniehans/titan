@@ -29,6 +29,7 @@ fn prompts_path() -> PathBuf {
 #[test]
 #[ignore]
 fn test_forward_driver_cuda_graph_decode_parity() -> Result<(), DynError> {
+    engine_cuda::ensure_cuda_dll_paths();
     let fix = fixture_path();
     let reader = GgufReader::open(&fix)?;
     let pinned = engine_io::load_to_pinned(&reader, &fix)?;

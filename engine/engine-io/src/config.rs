@@ -77,41 +77,52 @@ impl ModelConfig {
         let m = reader.metadata();
 
         let architecture = read_string(m, "general.architecture")?;
-        let n_layer = read_u32(m, "qwen3.block_count")?;
-        let hidden_size = read_u32(m, "qwen3.embedding_length")?;
-        let intermediate_size = read_u32(m, "qwen3.feed_forward_length")?;
-        let n_head = read_u32(m, "qwen3.attention.head_count")?;
-        let n_head_kv = read_u32(m, "qwen3.attention.head_count_kv")?;
-        let context_length = read_u32(m, "qwen3.context_length")?;
+        let arch = architecture.as_str();
+
+        let get_u32 = |suffix: &str| -> Result<u32, GgufError> {
+            let key = format!("{arch}.{suffix}");
+            if let Some(v) = m.get(&key).and_then(extract_u32) {
+                return Ok(v);
+            }
+            // Fallback aliases
+            for alt in &["qwen3", "qwen2", "qwen", "llama"] {
+                let alt_key = format!("{alt}.{suffix}");
+                if let Some(v) = m.get(&alt_key).and_then(extract_u32) {
+                    return Ok(v);
+                }
+            }
+            Err(GgufError::MissingMetadata(key))
+        };
+
+        let get_f32 = |suffix: &str| -> Option<f32> {
+            let key = format!("{arch}.{suffix}");
+            if let Some(v) = m.get(&key).and_then(extract_f32) {
+                return Some(v);
+            }
+            for alt in &["qwen3", "qwen2", "qwen", "llama"] {
+                let alt_key = format!("{alt}.{suffix}");
+                if let Some(v) = m.get(&alt_key).and_then(extract_f32) {
+                    return Some(v);
+                }
+            }
+            None
+        };
+
+        let n_layer = get_u32("block_count")?;
+        let hidden_size = get_u32("embedding_length")?;
+        let intermediate_size = get_u32("feed_forward_length")?;
+        let n_head = get_u32("attention.head_count")?;
+        let n_head_kv = get_u32("attention.head_count_kv").unwrap_or(n_head);
+        let context_length = get_u32("context_length").unwrap_or(4096);
 
         // Optional head dims; derive from n_embd/n_head when absent.
-        let head_dim = match m.get("qwen3.attention.key_length") {
-            Some(v) => extract_u32(v).ok_or_else(|| {
-                GgufError::UnexpectedMetadataType("qwen3.attention.key_length".to_string())
-            })?,
-            None if n_head > 0 => hidden_size / n_head,
-            None => 0,
-        };
-        let value_dim = match m.get("qwen3.attention.value_length") {
-            Some(v) => extract_u32(v).ok_or_else(|| {
-                GgufError::UnexpectedMetadataType("qwen3.attention.value_length".to_string())
-            })?,
-            None => head_dim,
-        };
+        let head_dim = get_u32("attention.key_length").unwrap_or(if n_head > 0 { hidden_size / n_head } else { 0 });
+        let value_dim = get_u32("attention.value_length").unwrap_or(head_dim);
 
         // Optional rope / norm defaults mirror llama.cpp.
-        let rope_freq_base = m
-            .get("qwen3.rope.freq_base")
-            .and_then(extract_f32)
-            .unwrap_or(DEFAULT_ROPE_FREQ_BASE);
-        let rope_freq_scale = m
-            .get("qwen3.rope.freq_scale")
-            .and_then(extract_f32)
-            .unwrap_or(1.0);
-        let rms_norm_eps = m
-            .get("qwen3.attention.layer_norm_rms_epsilon")
-            .and_then(extract_f32)
-            .unwrap_or(DEFAULT_RMS_EPS);
+        let rope_freq_base = get_f32("rope.freq_base").unwrap_or(DEFAULT_ROPE_FREQ_BASE);
+        let rope_freq_scale = get_f32("rope.freq_scale").unwrap_or(1.0);
+        let rms_norm_eps = get_f32("attention.layer_norm_rms_epsilon").unwrap_or(DEFAULT_RMS_EPS);
 
         // Vocab size comes from the token array length.
         let vocab_size = match m.get("tokenizer.ggml.tokens").and_then(GgufValue::as_array) {
@@ -204,6 +215,7 @@ fn read_string(
         .ok_or_else(|| GgufError::MissingMetadata(key.to_string()))
 }
 
+#[allow(dead_code)]
 fn read_u32(m: &std::collections::HashMap<String, GgufValue>, key: &str) -> Result<u32, GgufError> {
     m.get(key)
         .and_then(extract_u32)

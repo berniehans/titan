@@ -18,7 +18,7 @@ fn get_scale_min(j: usize, scales: &[u8]) -> (u8, u8) {
     }
 }
 
-fn f16_to_f32(bits: u16) -> f32 {
+pub fn f16_to_f32(bits: u16) -> f32 {
     let sign = (bits >> 15) as u32;
     let exp = ((bits >> 10) & 0x1F) as u32;
     let mant = (bits & 0x3FF) as u32;

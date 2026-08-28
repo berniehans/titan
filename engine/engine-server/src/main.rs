@@ -288,14 +288,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let model_path = resolve_model_path(
-        &args
-            .iter()
-            .position(|a| a == "--model" || a == "-m")
-            .and_then(|idx| args.get(idx + 1))
-            .map(PathBuf::from)
-            .unwrap_or_else(default_model_path),
-    );
+    let positional_model = args.get(2).filter(|s| !s.starts_with('-')).map(PathBuf::from);
+    let raw_model_path = positional_model
+        .or_else(|| {
+            args.iter()
+                .position(|a| a == "--model" || a == "-m")
+                .and_then(|idx| args.get(idx + 1))
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(default_model_path);
+
+    let model_path = resolve_model_path(&raw_model_path);
 
     let engine_mode: EngineMode = args
         .iter()
@@ -345,7 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|idx| args.get(idx + 1))
         .map(|s| s.as_str());
 
-    if mode == "chat" {
+    if mode == "chat" || mode == "run" {
         run_chat(
             &model_path,
             engine_mode,

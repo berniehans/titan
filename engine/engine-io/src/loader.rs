@@ -62,17 +62,10 @@ impl LoadedLayout {
                 layer_spans.insert(layer_idx, spans);
                 if min_offset <= max_end {
                     let total_layer_size = max_end - min_offset;
-                    // Contiguity precondition: the span [min_offset, max_end)
-                    // must be exactly covered by this layer's tensors. A
-                    // malformed GGUF with interleaved layer tensors would
-                    // otherwise make layer(idx) borrow other layers' bytes.
                     let sum_sizes: u64 = layer_tensors.iter().map(|lt| lt.size_bytes).sum();
-                    if total_layer_size != sum_sizes {
-                        return Err(GgufError::InvalidTensorShape(format!(
-                            "layer {layer_idx}: tensors are not contiguous (span {total_layer_size} != sum {sum_sizes})"
-                        )));
+                    if total_layer_size == sum_sizes {
+                        layer_ranges.insert(layer_idx, (min_offset, total_layer_size));
                     }
-                    layer_ranges.insert(layer_idx, (min_offset, total_layer_size));
                 }
             }
         }

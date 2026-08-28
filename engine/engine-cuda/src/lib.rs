@@ -23,7 +23,7 @@ pub use event::CudaEvent;
 pub use flash_attention::FlashAttention2;
 pub use graphs::{CudaGraph, CudaGraphExec};
 pub use multiformat_gemv::{GemvFormat, MultiFormatGEMV};
-pub use norm_rope::{MODE_FUSED, MODE_NORM, MODE_ROPE, MODE_SWIGLU, NormRope};
+pub use norm_rope::{MODE_BROADCAST_RESIDUAL, MODE_FUSED, MODE_NORM, MODE_ROPE, MODE_SWIGLU, NormRope};
 pub use paged_attention::PagedAttention;
 pub use paged_kv::{PagedKvGpu, PagedKvLayout};
 pub use pinned_host::PinnedHost;
