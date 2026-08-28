@@ -68,6 +68,7 @@ fn cos_sim(a: &[f32], b: &[f32]) -> f64 {
 #[test]
 #[ignore]
 fn test_subgate_1_driver_parity_and_generator_hook() -> Result<(), DynError> {
+    engine_cuda::ensure_cuda_dll_paths();
     let fix = fixture_path().ok_or("fixture missing (GPU test)")?;
     let reader = GgufReader::open(&fix)?;
     let pinned = load_to_pinned(&reader, &fix)?;

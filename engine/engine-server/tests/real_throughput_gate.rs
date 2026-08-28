@@ -79,6 +79,7 @@ fn load_prompts() -> Vec<String> {
 #[test]
 #[ignore]
 fn test_subgate_3_real_path_throughput_vs_baseline() -> Result<(), DynError> {
+    engine_cuda::ensure_cuda_dll_paths();
     let baseline = load_baseline_artifact();
     let prompts = load_prompts();
     assert_eq!(prompts.len(), 3, "expected 3 representative prompts");

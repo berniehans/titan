@@ -93,6 +93,7 @@ impl FlashAttention2 {
 
     /// Launches FlashAttention-2 causal prefill kernel.
     #[allow(clippy::too_many_arguments)]
+    /// Launches FlashAttention-2 causal kernel with a static host pos_offset.
     pub fn launch(
         &self,
         stream: &CudaStream,
@@ -107,11 +108,39 @@ impl FlashAttention2 {
         q_tokens: usize,
         pos_offset: usize,
     ) -> Result<(), CudaError> {
-        if q_tokens == 0 || n_head == 0 || head_dim == 0 {
-            return Ok(());
-        }
+        self.launch_with_pos_ptr(
+            stream,
+            q,
+            pool,
+            block_table,
+            out,
+            n_head,
+            n_head_kv,
+            head_dim,
+            block_tokens,
+            q_tokens,
+            pos_offset,
+            None,
+        )
+    }
 
-        let q_expected = q_tokens * n_head * head_dim * std::mem::size_of::<f32>();
+    /// Launches FlashAttention-2 causal kernel with an optional dynamic device pos_ptr (for CUDA Graphs).
+    pub fn launch_with_pos_ptr(
+        &self,
+        stream: &CudaStream,
+        q: &DeviceBuffer,
+        pool: &DeviceBuffer,
+        block_table: &DeviceBuffer,
+        out: &DeviceBuffer,
+        n_head: usize,
+        n_head_kv: usize,
+        head_dim: usize,
+        block_tokens: usize,
+        q_tokens: usize,
+        pos_offset: usize,
+        pos_ptr: Option<&DeviceBuffer>,
+    ) -> Result<(), CudaError> {
+        let q_expected = q_tokens * n_head * head_dim * 4;
         if q.size() < q_expected {
             return Err(CudaError::InvalidSize {
                 expected: q_expected,
@@ -151,8 +180,9 @@ impl FlashAttention2 {
         let pool_addr: u64 = pool.device_ptr();
         let block_table_addr: u64 = block_table.device_ptr();
         let out_addr: u64 = out.device_ptr();
+        let pos_ptr_addr: u64 = pos_ptr.map(|p| p.device_ptr()).unwrap_or(0);
 
-        let args: [*mut std::ffi::c_void; 11] = [
+        let args: [*mut std::ffi::c_void; 12] = [
             &q_addr as *const u64 as *mut std::ffi::c_void,
             &pool_addr as *const u64 as *mut std::ffi::c_void,
             &block_table_addr as *const u64 as *mut std::ffi::c_void,
@@ -164,6 +194,7 @@ impl FlashAttention2 {
             &q_tokens_i as *const i32 as *mut std::ffi::c_void,
             &pos_offset_i as *const i32 as *mut std::ffi::c_void,
             &scale as *const f32 as *mut std::ffi::c_void,
+            &pos_ptr_addr as *const u64 as *mut std::ffi::c_void,
         ];
 
         self.device.bind_to_thread()?;

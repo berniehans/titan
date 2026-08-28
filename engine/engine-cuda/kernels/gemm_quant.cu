@@ -178,12 +178,13 @@ __device__ __forceinline__ void load_activation_smem(
     signed char* __restrict__ s_qx,
     float* __restrict__ s_qd,
     float* __restrict__ s_qs,
-    int ne0)
+    int ne0,
+    int batch_idx)
 {
     const int tid = threadIdx.x;
     const int num_threads = blockDim.x;
     const int ne0_16 = ne0 / 16;
-    const int4* in_qx16 = (const int4*)qx;
+    const int4* in_qx16 = (const int4*)(qx + (size_t)batch_idx * (size_t)ne0);
     int4* out_qx16 = (int4*)s_qx;
 
     #pragma unroll
@@ -192,11 +193,14 @@ __device__ __forceinline__ void load_activation_smem(
     }
 
     const int num_blocks_32 = ne0 / 32;
+    const float* qd_batch = qd + (size_t)batch_idx * (size_t)num_blocks_32;
+    const float* qs_batch = (qs != nullptr) ? (qs + (size_t)batch_idx * (size_t)num_blocks_32) : nullptr;
+
     #pragma unroll
     for (int i = tid; i < num_blocks_32; i += num_threads) {
-        s_qd[i] = qd[i];
-        if (s_qs != nullptr && qs != nullptr) {
-            s_qs[i] = qs[i];
+        s_qd[i] = qd_batch[i];
+        if (s_qs != nullptr && qs_batch != nullptr) {
+            s_qs[i] = qs_batch[i];
         }
     }
     __syncthreads();
@@ -211,6 +215,7 @@ extern "C" __global__ void quantize_row_q8_1_kernel(
     int ne0,
     float eps)
 {
+    const int batch_idx = blockIdx.y;
     const int tid = threadIdx.x;
     const int num_threads = blockDim.x;
     const int lane = tid & 31;
@@ -218,13 +223,17 @@ extern "C" __global__ void quantize_row_q8_1_kernel(
     const int num_warps = num_threads >> 5;
     const int num_blocks_32 = ne0 / 32;
 
-    __shared__ float s_warp_sum[32];
-    __shared__ float s_rms_scale;
+    const float* x_row = x + (size_t)batch_idx * (size_t)ne0;
+    signed char* qx_row = out_qx + (size_t)batch_idx * (size_t)ne0;
+    float* qd_row = out_qd + (size_t)batch_idx * (size_t)num_blocks_32;
+    float* qs_row = out_qs + (size_t)batch_idx * (size_t)num_blocks_32;
 
-    float rms_scale = 1.0f;
     if (norm_weight != nullptr) {
+        __shared__ float s_warp_sum[32];
+        __shared__ float s_rms_scale;
+
         const int ne0_4 = ne0 / 4;
-        const float4* x4 = (const float4*)x;
+        const float4* x4 = (const float4*)x_row;
         float sum_sq = 0.0f;
         for (int i = tid; i < ne0_4; i += num_threads) {
             const float4 xi = x4[i];
@@ -252,41 +261,63 @@ extern "C" __global__ void quantize_row_q8_1_kernel(
             s_rms_scale = rsqrtf(total / (float)ne0 + eps);
         }
         __syncthreads();
-        rms_scale = s_rms_scale;
-    }
+        const float rms_scale = s_rms_scale;
 
-    for (int b = warp_id; b < num_blocks_32; b += num_warps) {
-        const int elem_idx = b * 32 + lane;
-        float val = x[elem_idx];
-        if (norm_weight != nullptr) {
-            val = val * rms_scale * norm_weight[elem_idx];
+        for (int b = warp_id; b < num_blocks_32; b += num_warps) {
+            const int elem_idx = b * 32 + lane;
+            const float val = x_row[elem_idx] * rms_scale * norm_weight[elem_idx];
+
+            float amax = fabsf(val);
+            #pragma unroll
+            for (int mask = 16; mask > 0; mask >>= 1) {
+                amax = fmaxf(amax, __shfl_down_sync(0xffffffff, amax, mask));
+            }
+            amax = __shfl_sync(0xffffffff, amax, 0);
+
+            const float d = amax / 127.0f;
+            const float id = (d > 0.0f) ? (1.0f / d) : 0.0f;
+            const signed char q_clamped = (signed char)max(-128, min(127, (int)roundf(val * id)));
+            qx_row[elem_idx] = q_clamped;
+
+            float bsum = val;
+            #pragma unroll
+            for (int mask = 16; mask > 0; mask >>= 1) {
+                bsum += __shfl_down_sync(0xffffffff, bsum, mask);
+            }
+
+            if (lane == 0) {
+                qd_row[b] = d;
+                qs_row[b] = bsum;
+            }
         }
+    } else {
+        const int b = blockIdx.x * num_warps + warp_id;
+        if (b < num_blocks_32) {
+            const int elem_idx = b * 32 + lane;
+            const float val = x_row[elem_idx];
 
-        float amax = fabsf(val);
-        #pragma unroll
-        for (int mask = 16; mask > 0; mask >>= 1) {
-            amax = fmaxf(amax, __shfl_down_sync(0xffffffff, amax, mask));
-        }
-        amax = __shfl_sync(0xffffffff, amax, 0);
+            float amax = fabsf(val);
+            #pragma unroll
+            for (int mask = 16; mask > 0; mask >>= 1) {
+                amax = fmaxf(amax, __shfl_down_sync(0xffffffff, amax, mask));
+            }
+            amax = __shfl_sync(0xffffffff, amax, 0);
 
-        const float d = amax / 127.0f;
-        const float id = (d > 0.0f) ? (1.0f / d) : 0.0f;
+            const float d = amax / 127.0f;
+            const float id = (d > 0.0f) ? (1.0f / d) : 0.0f;
+            const signed char q_clamped = (signed char)max(-128, min(127, (int)roundf(val * id)));
+            qx_row[elem_idx] = q_clamped;
 
-        const float qf = roundf(val * id);
-        const int qi = (int)qf;
-        const signed char q_clamped = (signed char)max(-128, min(127, qi));
+            float bsum = val;
+            #pragma unroll
+            for (int mask = 16; mask > 0; mask >>= 1) {
+                bsum += __shfl_down_sync(0xffffffff, bsum, mask);
+            }
 
-        out_qx[elem_idx] = q_clamped;
-
-        float bsum = val;
-        #pragma unroll
-        for (int mask = 16; mask > 0; mask >>= 1) {
-            bsum += __shfl_down_sync(0xffffffff, bsum, mask);
-        }
-
-        if (lane == 0) {
-            out_qd[b] = d;
-            out_qs[b] = bsum;
+            if (lane == 0) {
+                qd_row[b] = d;
+                qs_row[b] = bsum;
+            }
         }
     }
 }
@@ -307,13 +338,15 @@ extern "C" __global__ void gemm_q4k_kernel(
     float* s_qd = (float*)(s_qx + ne0);
     float* s_qs = s_qd + (ne0 / 32);
 
-    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0);
+    const int batch_idx = blockIdx.y;
+    if (batch_idx >= batch_size) return;
+
+    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0, batch_idx);
 
     const int warp_id = threadIdx.x / 32;
     const int lane = threadIdx.x % 32;
     const int col = blockIdx.x * (blockDim.x / 32) + warp_id;
-    const int batch_idx = blockIdx.y;
-    if (batch_idx >= batch_size || col >= ne1) return;
+    if (col >= ne1) return;
 
     float* out_row = out + (size_t)batch_idx * (size_t)ne1;
 
@@ -385,13 +418,13 @@ extern "C" __global__ void gemm_q4k_kernel(
     if (lane == 0) {
         float acc = local_acc + min_sum;
         if (residual != nullptr) {
-            acc += residual[col];
+            acc += residual[(size_t)batch_idx * (size_t)ne1 + (size_t)col];
         }
         out_row[col] = acc;
     }
 }
 
-extern "C" __global__ void gemm_q4k_splitk_kernel(
+extern "C" __global__ void gemm_q4k_multi_row_kernel(
     const unsigned char* __restrict__ weights,
     const signed char* __restrict__ qx,
     const float* __restrict__ qd,
@@ -403,44 +436,33 @@ extern "C" __global__ void gemm_q4k_splitk_kernel(
     const float* __restrict__ residual)
 {
     extern __shared__ char smem[];
-    signed char* s_qx = (signed char*)smem;
-    float* s_qd = (float*)(s_qx + ne0);
-    float* s_qs = s_qd + (ne0 / 32);
-    float* s_part = (float*)(s_qs + (ne0 / 32));
+    const int q8_block_count = ne0 / 32;
+    const size_t row_bytes_qx = (size_t)ne0;
+    const size_t row_bytes_qd = (size_t)q8_block_count * sizeof(float);
+    const size_t row_bytes_qs = (size_t)q8_block_count * sizeof(float);
+    const size_t row_total_bytes = row_bytes_qx + row_bytes_qd + row_bytes_qs;
 
-    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0);
+    for (int r = 0; r < batch_size; ++r) {
+        signed char* s_qx_r = (signed char*)(smem + (size_t)r * row_total_bytes);
+        float* s_qd_r = (float*)(s_qx_r + ne0);
+        float* s_qs_r = s_qd_r + q8_block_count;
+        load_activation_smem(qx, qd, qs, s_qx_r, s_qd_r, s_qs_r, ne0, r);
+    }
+    __syncthreads();
 
     const int warp_id = threadIdx.x / 32;
     const int lane = threadIdx.x % 32;
-
-    const int col = blockIdx.x;
-    const int batch_idx = blockIdx.y;
-    if (batch_idx >= batch_size || col >= ne1) return;
-
-    float* out_row = out + (size_t)batch_idx * (size_t)ne1;
+    const int col = blockIdx.x * (blockDim.x / 32) + warp_id;
+    if (col >= ne1) return;
 
     const int n_blocks = ne0 / 256;
-    const int blocks_per_split = (n_blocks + 7) / 8;
-    const int b_start = warp_id * blocks_per_split;
-    const int b_end = (b_start + blocks_per_split < n_blocks) ? (b_start + blocks_per_split) : n_blocks;
-
     const unsigned char* col_weights = weights + (size_t)col * (size_t)n_blocks * 144u;
 
-    float local_acc = 0.0f;
-    float min_sum = 0.0f;
+    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float min_sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
-    for (int b = b_start; b < b_end; ++b) {
+    for (int b = 0; b < n_blocks; ++b) {
         const int q8_b = b * 8;
-        const signed char* qx_base = s_qx + q8_b * 32;
-        const signed char qx0 = qx_base[0 * 32 + lane];
-        const signed char qx1 = qx_base[1 * 32 + lane];
-        const signed char qx2 = qx_base[2 * 32 + lane];
-        const signed char qx3 = qx_base[3 * 32 + lane];
-        const signed char qx4 = qx_base[4 * 32 + lane];
-        const signed char qx5 = qx_base[5 * 32 + lane];
-        const signed char qx6 = qx_base[6 * 32 + lane];
-        const signed char qx7 = qx_base[7 * 32 + lane];
-
         const unsigned char* blk = col_weights + (size_t)b * 144u;
         const uint4 raw = *(const uint4*)blk;
         const unsigned char* qs_ptr = blk + 16;
@@ -453,44 +475,77 @@ extern "C" __global__ void gemm_q4k_splitk_kernel(
         const unsigned char q2 = qs_ptr[2 * 32 + lane];
         const unsigned char q3 = qs_ptr[3 * 32 + lane];
 
-        float dot = 0.0f;
-        dot = __fmaf_rn(s.d_sc[0] * s_qd[q8_b + 0], (float)((int)(q0 & 0x0Fu) * (int)qx0), dot);
-        dot = __fmaf_rn(s.d_sc[1] * s_qd[q8_b + 1], (float)((int)(q0 >> 4)    * (int)qx1), dot);
-        dot = __fmaf_rn(s.d_sc[2] * s_qd[q8_b + 2], (float)((int)(q1 & 0x0Fu) * (int)qx2), dot);
-        dot = __fmaf_rn(s.d_sc[3] * s_qd[q8_b + 3], (float)((int)(q1 >> 4)    * (int)qx3), dot);
-        dot = __fmaf_rn(s.d_sc[4] * s_qd[q8_b + 4], (float)((int)(q2 & 0x0Fu) * (int)qx4), dot);
-        dot = __fmaf_rn(s.d_sc[5] * s_qd[q8_b + 5], (float)((int)(q2 >> 4)    * (int)qx5), dot);
-        dot = __fmaf_rn(s.d_sc[6] * s_qd[q8_b + 6], (float)((int)(q3 & 0x0Fu) * (int)qx6), dot);
-        dot = __fmaf_rn(s.d_sc[7] * s_qd[q8_b + 7], (float)((int)(q3 >> 4)    * (int)qx7), dot);
-        local_acc += dot;
+        const int v0 = (int)(q0 & 0x0Fu);
+        const int v1 = (int)(q0 >> 4);
+        const int v2 = (int)(q1 & 0x0Fu);
+        const int v3 = (int)(q1 >> 4);
+        const int v4 = (int)(q2 & 0x0Fu);
+        const int v5 = (int)(q2 >> 4);
+        const int v6 = (int)(q3 & 0x0Fu);
+        const int v7 = (int)(q3 >> 4);
 
-        if (lane == 0) {
-            float ms = 0.0f;
-            #pragma unroll
-            for (int sb = 0; sb < 8; ++sb) {
-                ms = __fmaf_rn(s.m[sb], s_qs[q8_b + sb], ms);
+        #pragma unroll
+        for (int r = 0; r < 4; ++r) {
+            if (r >= batch_size) break;
+            const signed char* s_qx_r = (const signed char*)(smem + (size_t)r * row_total_bytes);
+            const float* s_qd_r = (const float*)(s_qx_r + ne0);
+            const float* s_qs_r = s_qd_r + q8_block_count;
+
+            const signed char* qx_base = s_qx_r + q8_b * 32;
+            const signed char qx0 = qx_base[0 * 32 + lane];
+            const signed char qx1 = qx_base[1 * 32 + lane];
+            const signed char qx2 = qx_base[2 * 32 + lane];
+            const signed char qx3 = qx_base[3 * 32 + lane];
+            const signed char qx4 = qx_base[4 * 32 + lane];
+            const signed char qx5 = qx_base[5 * 32 + lane];
+            const signed char qx6 = qx_base[6 * 32 + lane];
+            const signed char qx7 = qx_base[7 * 32 + lane];
+
+            const float d_sc0 = s.d_sc[0] * s_qd_r[q8_b + 0];
+            const float d_sc1 = s.d_sc[1] * s_qd_r[q8_b + 1];
+            const float d_sc2 = s.d_sc[2] * s_qd_r[q8_b + 2];
+            const float d_sc3 = s.d_sc[3] * s_qd_r[q8_b + 3];
+            const float d_sc4 = s.d_sc[4] * s_qd_r[q8_b + 4];
+            const float d_sc5 = s.d_sc[5] * s_qd_r[q8_b + 5];
+            const float d_sc6 = s.d_sc[6] * s_qd_r[q8_b + 6];
+            const float d_sc7 = s.d_sc[7] * s_qd_r[q8_b + 7];
+
+            float dot = 0.0f;
+            dot = __fmaf_rn(d_sc0, (float)(v0 * (int)qx0), dot);
+            dot = __fmaf_rn(d_sc1, (float)(v1 * (int)qx1), dot);
+            dot = __fmaf_rn(d_sc2, (float)(v2 * (int)qx2), dot);
+            dot = __fmaf_rn(d_sc3, (float)(v3 * (int)qx3), dot);
+            dot = __fmaf_rn(d_sc4, (float)(v4 * (int)qx4), dot);
+            dot = __fmaf_rn(d_sc5, (float)(v5 * (int)qx5), dot);
+            dot = __fmaf_rn(d_sc6, (float)(v6 * (int)qx6), dot);
+            dot = __fmaf_rn(d_sc7, (float)(v7 * (int)qx7), dot);
+            acc[r] += dot;
+
+            if (lane == 0) {
+                float ms = 0.0f;
+                #pragma unroll
+                for (int sb = 0; sb < 8; ++sb) {
+                    ms = __fmaf_rn(s.m[sb], s_qs_r[q8_b + sb], ms);
+                }
+                min_sum[r] += ms;
             }
-            min_sum += ms;
         }
     }
 
     #pragma unroll
-    for (int mask = 16; mask > 0; mask >>= 1) {
-        local_acc += __shfl_down_sync(0xffffffff, local_acc, mask);
-    }
-
-    if (lane == 0) {
-        s_part[warp_id] = local_acc + min_sum;
-    }
-    __syncthreads();
-
-    if (threadIdx.x == 0) {
-        float total = s_part[0] + s_part[1] + s_part[2] + s_part[3]
-                    + s_part[4] + s_part[5] + s_part[6] + s_part[7];
-        if (residual != nullptr) {
-            total += residual[col];
+    for (int r = 0; r < 4; ++r) {
+        if (r >= batch_size) break;
+        #pragma unroll
+        for (int mask = 16; mask > 0; mask >>= 1) {
+            acc[r] += __shfl_down_sync(0xffffffff, acc[r], mask);
         }
-        out_row[col] = total;
+        if (lane == 0) {
+            float total = acc[r] + min_sum[r];
+            if (residual != nullptr) {
+                total += residual[(size_t)r * (size_t)ne1 + (size_t)col];
+            }
+            out[(size_t)r * (size_t)ne1 + (size_t)col] = total;
+        }
     }
 }
 
@@ -510,13 +565,15 @@ extern "C" __global__ void gemm_q6k_kernel(
     float* s_qd = (float*)(s_qx + ne0);
     float* s_qs = s_qd + (ne0 / 32);
 
-    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0);
+    const int batch_idx = blockIdx.y;
+    if (batch_idx >= batch_size) return;
+
+    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0, batch_idx);
 
     const int warp_id = threadIdx.x / 32;
     const int lane = threadIdx.x % 32;
     const int col = blockIdx.x * (blockDim.x / 32) + warp_id;
-    const int batch_idx = blockIdx.y;
-    if (batch_idx >= batch_size || col >= ne1) return;
+    if (col >= ne1) return;
 
     float* out_row = out + (size_t)batch_idx * (size_t)ne1;
 
@@ -590,7 +647,7 @@ extern "C" __global__ void gemm_q6k_kernel(
     if (lane == 0) {
         float acc = local_acc;
         if (residual != nullptr) {
-            acc += residual[col];
+            acc += residual[(size_t)batch_idx * (size_t)ne1 + (size_t)col];
         }
         out_row[col] = acc;
     }
@@ -619,13 +676,14 @@ extern "C" __global__ void gemm_fused_qkv_kernel(
     float* s_qd = (float*)(s_qx + ne0);
     float* s_qs = s_qd + (ne0 / 32);
 
-    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0);
+    const int batch_idx = blockIdx.y;
+    if (batch_idx >= batch_size) return;
+
+    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0, batch_idx);
 
     const int warp_id = threadIdx.x / 32;
     const int lane = threadIdx.x % 32;
     const int col = blockIdx.x * (blockDim.x / 32) + warp_id;
-    const int batch_idx = blockIdx.y;
-    if (batch_idx >= batch_size) return;
 
     const int total_cols = qdim + kvd + kvd;
     if (col >= total_cols) return;
@@ -655,35 +713,56 @@ extern "C" __global__ void gemm_fused_qkv_kernel(
             const unsigned char* blk = col_w + (size_t)b * 144u;
             const uint4 raw = *(const uint4*)blk;
             const unsigned char* qs_ptr = blk + 16;
-            Q4K_BlockScales s;
-            unpack_q4k_scales(raw, &s);
 
             const unsigned char q0 = qs_ptr[0 * 32 + lane];
             const unsigned char q1 = qs_ptr[1 * 32 + lane];
             const unsigned char q2 = qs_ptr[2 * 32 + lane];
             const unsigned char q3 = qs_ptr[3 * 32 + lane];
 
-            const float d_sc0 = s.d_sc[0] * s_qd[q8_b + 0];
-            const float d_sc1 = s.d_sc[1] * s_qd[q8_b + 1];
-            const float d_sc2 = s.d_sc[2] * s_qd[q8_b + 2];
-            const float d_sc3 = s.d_sc[3] * s_qd[q8_b + 3];
-            const float d_sc4 = s.d_sc[4] * s_qd[q8_b + 4];
-            const float d_sc5 = s.d_sc[5] * s_qd[q8_b + 5];
-            const float d_sc6 = s.d_sc[6] * s_qd[q8_b + 6];
-            const float d_sc7 = s.d_sc[7] * s_qd[q8_b + 7];
+            int sum0 = (int)(q0 & 0x0Fu) * (int)qx0;
+            int sum1 = (int)(q0 >> 4)    * (int)qx1;
+            int sum2 = (int)(q1 & 0x0Fu) * (int)qx2;
+            int sum3 = (int)(q1 >> 4)    * (int)qx3;
+            int sum4 = (int)(q2 & 0x0Fu) * (int)qx4;
+            int sum5 = (int)(q2 >> 4)    * (int)qx5;
+            int sum6 = (int)(q3 & 0x0Fu) * (int)qx6;
+            int sum7 = (int)(q3 >> 4)    * (int)qx7;
 
-            float dot = 0.0f;
-            dot = __fmaf_rn(d_sc0, (float)((int)(q0 & 0x0Fu) * (int)qx0), dot);
-            dot = __fmaf_rn(d_sc1, (float)((int)(q0 >> 4)    * (int)qx1), dot);
-            dot = __fmaf_rn(d_sc2, (float)((int)(q1 & 0x0Fu) * (int)qx2), dot);
-            dot = __fmaf_rn(d_sc3, (float)((int)(q1 >> 4)    * (int)qx3), dot);
-            dot = __fmaf_rn(d_sc4, (float)((int)(q2 & 0x0Fu) * (int)qx4), dot);
-            dot = __fmaf_rn(d_sc5, (float)((int)(q2 >> 4)    * (int)qx5), dot);
-            dot = __fmaf_rn(d_sc6, (float)((int)(q3 & 0x0Fu) * (int)qx6), dot);
-            dot = __fmaf_rn(d_sc7, (float)((int)(q3 >> 4)    * (int)qx7), dot);
-            local_acc += dot;
+            #pragma unroll
+            for (int mask = 16; mask > 0; mask >>= 1) {
+                sum0 += __shfl_down_sync(0xffffffff, sum0, mask);
+                sum1 += __shfl_down_sync(0xffffffff, sum1, mask);
+                sum2 += __shfl_down_sync(0xffffffff, sum2, mask);
+                sum3 += __shfl_down_sync(0xffffffff, sum3, mask);
+                sum4 += __shfl_down_sync(0xffffffff, sum4, mask);
+                sum5 += __shfl_down_sync(0xffffffff, sum5, mask);
+                sum6 += __shfl_down_sync(0xffffffff, sum6, mask);
+                sum7 += __shfl_down_sync(0xffffffff, sum7, mask);
+            }
 
             if (lane == 0) {
+                Q4K_BlockScales s;
+                unpack_q4k_scales(raw, &s);
+
+                const float d_sc0 = s.d_sc[0] * s_qd[q8_b + 0];
+                const float d_sc1 = s.d_sc[1] * s_qd[q8_b + 1];
+                const float d_sc2 = s.d_sc[2] * s_qd[q8_b + 2];
+                const float d_sc3 = s.d_sc[3] * s_qd[q8_b + 3];
+                const float d_sc4 = s.d_sc[4] * s_qd[q8_b + 4];
+                const float d_sc5 = s.d_sc[5] * s_qd[q8_b + 5];
+                const float d_sc6 = s.d_sc[6] * s_qd[q8_b + 6];
+                const float d_sc7 = s.d_sc[7] * s_qd[q8_b + 7];
+
+                float dot = __fmaf_rn(d_sc0, (float)sum0, 0.0f);
+                dot = __fmaf_rn(d_sc1, (float)sum1, dot);
+                dot = __fmaf_rn(d_sc2, (float)sum2, dot);
+                dot = __fmaf_rn(d_sc3, (float)sum3, dot);
+                dot = __fmaf_rn(d_sc4, (float)sum4, dot);
+                dot = __fmaf_rn(d_sc5, (float)sum5, dot);
+                dot = __fmaf_rn(d_sc6, (float)sum6, dot);
+                dot = __fmaf_rn(d_sc7, (float)sum7, dot);
+                local_acc += dot;
+
                 float ms = 0.0f;
                 #pragma unroll
                 for (int sb = 0; sb < 8; ++sb) {
@@ -691,11 +770,6 @@ extern "C" __global__ void gemm_fused_qkv_kernel(
                 }
                 min_sum += ms;
             }
-        }
-
-        #pragma unroll
-        for (int mask = 16; mask > 0; mask >>= 1) {
-            local_acc += __shfl_down_sync(0xffffffff, local_acc, mask);
         }
 
         if (lane == 0) {
@@ -729,35 +803,56 @@ extern "C" __global__ void gemm_fused_qkv_kernel(
             const unsigned char* blk = col_w + (size_t)b * 144u;
             const uint4 raw = *(const uint4*)blk;
             const unsigned char* qs_ptr = blk + 16;
-            Q4K_BlockScales s;
-            unpack_q4k_scales(raw, &s);
 
             const unsigned char q0 = qs_ptr[0 * 32 + lane];
             const unsigned char q1 = qs_ptr[1 * 32 + lane];
             const unsigned char q2 = qs_ptr[2 * 32 + lane];
             const unsigned char q3 = qs_ptr[3 * 32 + lane];
 
-            const float d_sc0 = s.d_sc[0] * s_qd[q8_b + 0];
-            const float d_sc1 = s.d_sc[1] * s_qd[q8_b + 1];
-            const float d_sc2 = s.d_sc[2] * s_qd[q8_b + 2];
-            const float d_sc3 = s.d_sc[3] * s_qd[q8_b + 3];
-            const float d_sc4 = s.d_sc[4] * s_qd[q8_b + 4];
-            const float d_sc5 = s.d_sc[5] * s_qd[q8_b + 5];
-            const float d_sc6 = s.d_sc[6] * s_qd[q8_b + 6];
-            const float d_sc7 = s.d_sc[7] * s_qd[q8_b + 7];
+            int sum0 = (int)(q0 & 0x0Fu) * (int)qx0;
+            int sum1 = (int)(q0 >> 4)    * (int)qx1;
+            int sum2 = (int)(q1 & 0x0Fu) * (int)qx2;
+            int sum3 = (int)(q1 >> 4)    * (int)qx3;
+            int sum4 = (int)(q2 & 0x0Fu) * (int)qx4;
+            int sum5 = (int)(q2 >> 4)    * (int)qx5;
+            int sum6 = (int)(q3 & 0x0Fu) * (int)qx6;
+            int sum7 = (int)(q3 >> 4)    * (int)qx7;
 
-            float dot = 0.0f;
-            dot = __fmaf_rn(d_sc0, (float)((int)(q0 & 0x0Fu) * (int)qx0), dot);
-            dot = __fmaf_rn(d_sc1, (float)((int)(q0 >> 4)    * (int)qx1), dot);
-            dot = __fmaf_rn(d_sc2, (float)((int)(q1 & 0x0Fu) * (int)qx2), dot);
-            dot = __fmaf_rn(d_sc3, (float)((int)(q1 >> 4)    * (int)qx3), dot);
-            dot = __fmaf_rn(d_sc4, (float)((int)(q2 & 0x0Fu) * (int)qx4), dot);
-            dot = __fmaf_rn(d_sc5, (float)((int)(q2 >> 4)    * (int)qx5), dot);
-            dot = __fmaf_rn(d_sc6, (float)((int)(q3 & 0x0Fu) * (int)qx6), dot);
-            dot = __fmaf_rn(d_sc7, (float)((int)(q3 >> 4)    * (int)qx7), dot);
-            local_acc += dot;
+            #pragma unroll
+            for (int mask = 16; mask > 0; mask >>= 1) {
+                sum0 += __shfl_down_sync(0xffffffff, sum0, mask);
+                sum1 += __shfl_down_sync(0xffffffff, sum1, mask);
+                sum2 += __shfl_down_sync(0xffffffff, sum2, mask);
+                sum3 += __shfl_down_sync(0xffffffff, sum3, mask);
+                sum4 += __shfl_down_sync(0xffffffff, sum4, mask);
+                sum5 += __shfl_down_sync(0xffffffff, sum5, mask);
+                sum6 += __shfl_down_sync(0xffffffff, sum6, mask);
+                sum7 += __shfl_down_sync(0xffffffff, sum7, mask);
+            }
 
             if (lane == 0) {
+                Q4K_BlockScales s;
+                unpack_q4k_scales(raw, &s);
+
+                const float d_sc0 = s.d_sc[0] * s_qd[q8_b + 0];
+                const float d_sc1 = s.d_sc[1] * s_qd[q8_b + 1];
+                const float d_sc2 = s.d_sc[2] * s_qd[q8_b + 2];
+                const float d_sc3 = s.d_sc[3] * s_qd[q8_b + 3];
+                const float d_sc4 = s.d_sc[4] * s_qd[q8_b + 4];
+                const float d_sc5 = s.d_sc[5] * s_qd[q8_b + 5];
+                const float d_sc6 = s.d_sc[6] * s_qd[q8_b + 6];
+                const float d_sc7 = s.d_sc[7] * s_qd[q8_b + 7];
+
+                float dot = __fmaf_rn(d_sc0, (float)sum0, 0.0f);
+                dot = __fmaf_rn(d_sc1, (float)sum1, dot);
+                dot = __fmaf_rn(d_sc2, (float)sum2, dot);
+                dot = __fmaf_rn(d_sc3, (float)sum3, dot);
+                dot = __fmaf_rn(d_sc4, (float)sum4, dot);
+                dot = __fmaf_rn(d_sc5, (float)sum5, dot);
+                dot = __fmaf_rn(d_sc6, (float)sum6, dot);
+                dot = __fmaf_rn(d_sc7, (float)sum7, dot);
+                local_acc += dot;
+
                 float ms = 0.0f;
                 #pragma unroll
                 for (int sb = 0; sb < 8; ++sb) {
@@ -765,11 +860,6 @@ extern "C" __global__ void gemm_fused_qkv_kernel(
                 }
                 min_sum += ms;
             }
-        }
-
-        #pragma unroll
-        for (int mask = 16; mask > 0; mask >>= 1) {
-            local_acc += __shfl_down_sync(0xffffffff, local_acc, mask);
         }
 
         if (lane == 0) {
@@ -859,6 +949,80 @@ extern "C" __global__ void gemm_fused_qkv_kernel(
     }
 }
 
+__device__ __forceinline__ void compute_q4k_block_dp4a_quant(
+    const unsigned char* __restrict__ col_w,
+    const signed char* __restrict__ s_qx,
+    const float* __restrict__ s_qd,
+    const float* __restrict__ s_qs,
+    int b,
+    int lane,
+    float* __restrict__ local_acc
+) {
+    const int group = lane / 8;
+    const int group_lane = lane % 8;
+    const int sb_low = 2 * group;
+    const int sb_high = 2 * group + 1;
+    const int q8_b = b * 8;
+
+    const unsigned char* blk = col_w + (size_t)b * 144u;
+    const uint4 raw = *(const uint4*)blk;
+    const unsigned char* qs_ptr = blk + 16;
+
+    const float d = f16_to_f32((unsigned short)(raw.x & 0xFFFFu));
+    const float neg_dmin = -f16_to_f32((unsigned short)(raw.x >> 16));
+    const unsigned int w0 = raw.y;
+    const unsigned int w1 = raw.z;
+    const unsigned int w2 = raw.w;
+
+    unsigned int sc_low = 0, sc_high = 0;
+    unsigned int m_low = 0, m_high = 0;
+    if (group == 0) {
+        sc_low  = (w0 >> 0) & 0x3Fu;
+        sc_high = (w0 >> 8) & 0x3Fu;
+        m_low   = (w1 >> 0) & 0x3Fu;
+        m_high  = (w1 >> 8) & 0x3Fu;
+    } else if (group == 1) {
+        sc_low  = (w0 >> 16) & 0x3Fu;
+        sc_high = (w0 >> 24) & 0x3Fu;
+        m_low   = (w1 >> 16) & 0x3Fu;
+        m_high  = (w1 >> 24) & 0x3Fu;
+    } else if (group == 2) {
+        sc_low  = ((w2 >> 0) & 0x0Fu) | (((w0 >> 6)  & 0x03u) << 4);
+        sc_high = ((w2 >> 8) & 0x0Fu) | (((w0 >> 14) & 0x03u) << 4);
+        m_low   = ((w2 >> 4) & 0x0Fu) | (((w1 >> 6)  & 0x03u) << 4);
+        m_high  = ((w2 >> 12) & 0x0Fu) | (((w1 >> 14) & 0x03u) << 4);
+    } else {
+        sc_low  = ((w2 >> 16) & 0x0Fu) | (((w0 >> 22) & 0x03u) << 4);
+        sc_high = ((w2 >> 24) & 0x0Fu) | (((w0 >> 30) & 0x03u) << 4);
+        m_low   = ((w2 >> 20) & 0x0Fu) | (((w1 >> 22) & 0x03u) << 4);
+        m_high  = ((w2 >> 28) & 0x0Fu) | (((w1 >> 30) & 0x03u) << 4);
+    }
+
+    const float d_sc_low  = d * (float)sc_low  * s_qd[q8_b + sb_low];
+    const float d_sc_high = d * (float)sc_high * s_qd[q8_b + sb_high];
+
+    const unsigned int q32 = *(const unsigned int*)(qs_ptr + group * 32 + group_lane * 4);
+    const unsigned int q_low  = q32 & 0x0F0F0F0Fu;
+    const unsigned int q_high = (q32 >> 4) & 0x0F0F0F0Fu;
+
+    const int a_low  = *(const int*)(s_qx + (q8_b + sb_low)  * 32 + group_lane * 4);
+    const int a_high = *(const int*)(s_qx + (q8_b + sb_high) * 32 + group_lane * 4);
+
+    const int p_low  = __dp4a((int)q_low,  a_low,  0);
+    const int p_high = __dp4a((int)q_high, a_high, 0);
+
+    float dot = __fmaf_rn(d_sc_low,  (float)p_low,  0.0f);
+    dot       = __fmaf_rn(d_sc_high, (float)p_high, dot);
+
+    if (group_lane == 0) {
+        const float ms_low  = neg_dmin * (float)m_low  * s_qs[q8_b + sb_low];
+        const float ms_high = neg_dmin * (float)m_high * s_qs[q8_b + sb_high];
+        dot += ms_low + ms_high;
+    }
+
+    *local_acc += dot;
+}
+
 extern "C" __global__ void gemm_fused_qkv_q4k_kernel(
     const unsigned char* __restrict__ wq,
     const unsigned char* __restrict__ wk,
@@ -882,78 +1046,34 @@ extern "C" __global__ void gemm_fused_qkv_q4k_kernel(
     float* s_qd = (float*)(s_qx + ne0);
     float* s_qs = s_qd + (ne0 / 32);
 
-    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0);
-
-    const int warp_id = threadIdx.x / 32;
-    const int lane = threadIdx.x % 32;
-    const int col = blockIdx.x * (blockDim.x / 32) + warp_id;
     const int batch_idx = blockIdx.y;
     if (batch_idx >= batch_size) return;
 
-    const int total_cols = qdim + kvd + kvd;
-    if (col >= total_cols) return;
+    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0, batch_idx);
 
+    const int warp_id = threadIdx.x / 32;
+    const int lane = threadIdx.x % 32;
+    const int col_offset = warp_id / 2;
+    const int k_split = warp_id % 2;
+    const int col = blockIdx.x * 4 + col_offset;
+
+    __shared__ float s_warp_acc[8];
+
+    const int total_cols = qdim + kvd + kvd;
     const int n_blocks = ne0 / 256;
 
     const unsigned char* col_w = (col < qdim)
         ? (wq + (size_t)col * (size_t)n_blocks * 144u)
         : ((col < qdim + kvd)
             ? (wk + (size_t)(col - qdim) * (size_t)n_blocks * 144u)
-            : (wv + (size_t)(col - qdim - kvd) * (size_t)n_blocks * 144u));
+            : ((col < total_cols) ? (wv + (size_t)(col - qdim - kvd) * (size_t)n_blocks * 144u) : nullptr));
 
     float local_acc = 0.0f;
-    float min_sum = 0.0f;
 
-    for (int b = 0; b < n_blocks; ++b) {
-        const int q8_b = b * 8;
-        const signed char* qx_base = s_qx + q8_b * 32;
-        const signed char qx0 = qx_base[0 * 32 + lane];
-        const signed char qx1 = qx_base[1 * 32 + lane];
-        const signed char qx2 = qx_base[2 * 32 + lane];
-        const signed char qx3 = qx_base[3 * 32 + lane];
-        const signed char qx4 = qx_base[4 * 32 + lane];
-        const signed char qx5 = qx_base[5 * 32 + lane];
-        const signed char qx6 = qx_base[6 * 32 + lane];
-        const signed char qx7 = qx_base[7 * 32 + lane];
-
-        const unsigned char* blk = col_w + (size_t)b * 144u;
-        const uint4 raw = *(const uint4*)blk;
-        const unsigned char* qs_ptr = blk + 16;
-        Q4K_BlockScales s;
-        unpack_q4k_scales(raw, &s);
-
-        const unsigned char q0 = qs_ptr[0 * 32 + lane];
-        const unsigned char q1 = qs_ptr[1 * 32 + lane];
-        const unsigned char q2 = qs_ptr[2 * 32 + lane];
-        const unsigned char q3 = qs_ptr[3 * 32 + lane];
-
-        const float d_sc0 = s.d_sc[0] * s_qd[q8_b + 0];
-        const float d_sc1 = s.d_sc[1] * s_qd[q8_b + 1];
-        const float d_sc2 = s.d_sc[2] * s_qd[q8_b + 2];
-        const float d_sc3 = s.d_sc[3] * s_qd[q8_b + 3];
-        const float d_sc4 = s.d_sc[4] * s_qd[q8_b + 4];
-        const float d_sc5 = s.d_sc[5] * s_qd[q8_b + 5];
-        const float d_sc6 = s.d_sc[6] * s_qd[q8_b + 6];
-        const float d_sc7 = s.d_sc[7] * s_qd[q8_b + 7];
-
-        float dot = 0.0f;
-        dot = __fmaf_rn(d_sc0, (float)((int)(q0 & 0x0Fu) * (int)qx0), dot);
-        dot = __fmaf_rn(d_sc1, (float)((int)(q0 >> 4)    * (int)qx1), dot);
-        dot = __fmaf_rn(d_sc2, (float)((int)(q1 & 0x0Fu) * (int)qx2), dot);
-        dot = __fmaf_rn(d_sc3, (float)((int)(q1 >> 4)    * (int)qx3), dot);
-        dot = __fmaf_rn(d_sc4, (float)((int)(q2 & 0x0Fu) * (int)qx4), dot);
-        dot = __fmaf_rn(d_sc5, (float)((int)(q2 >> 4)    * (int)qx5), dot);
-        dot = __fmaf_rn(d_sc6, (float)((int)(q3 & 0x0Fu) * (int)qx6), dot);
-        dot = __fmaf_rn(d_sc7, (float)((int)(q3 >> 4)    * (int)qx7), dot);
-        local_acc += dot;
-
-        if (lane == 0) {
-            float ms = 0.0f;
-            #pragma unroll
-            for (int sb = 0; sb < 8; ++sb) {
-                ms = __fmaf_rn(s.m[sb], s_qs[q8_b + sb], ms);
-            }
-            min_sum += ms;
+    if (col < total_cols) {
+        #pragma unroll 2
+        for (int b = k_split; b < n_blocks; b += 2) {
+            compute_q4k_block_dp4a_quant(col_w, s_qx, s_qd, s_qs, b, lane, &local_acc);
         }
     }
 
@@ -963,7 +1083,12 @@ extern "C" __global__ void gemm_fused_qkv_q4k_kernel(
     }
 
     if (lane == 0) {
-        float acc = local_acc + min_sum;
+        s_warp_acc[warp_id] = local_acc;
+    }
+    __syncthreads();
+
+    if (lane == 0 && (warp_id % 2 == 0) && col < total_cols) {
+        float acc = s_warp_acc[warp_id] + s_warp_acc[warp_id + 1];
         if (col < qdim) {
             if (qb != nullptr) acc += qb[col];
             q_out[(size_t)batch_idx * (size_t)qdim + (size_t)col] = acc;
@@ -999,13 +1124,15 @@ extern "C" __global__ void gemm_q4k_fused_gate_up_swiglu_kernel(
     float* s_qd = (float*)(s_qx + ne0);
     float* s_qs = s_qd + (ne0 / 32);
 
-    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0);
+    const int batch_idx = blockIdx.y;
+    if (batch_idx >= batch_size) return;
+
+    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0, batch_idx);
 
     const int warp_id = threadIdx.x / 32;
     const int lane = threadIdx.x % 32;
     const int col = blockIdx.x * (blockDim.x / 32) + warp_id;
-    const int batch_idx = blockIdx.y;
-    if (batch_idx >= batch_size || col >= ne1) return;
+    if (col >= ne1) return;
 
     float* out_row = out + (size_t)batch_idx * (size_t)ne1;
 
@@ -1385,15 +1512,79 @@ extern "C" __global__ void get_rows_q4k_kernel(
     }
 }
 
+extern "C" __global__ void get_rows_q6k_kernel(
+    const unsigned char* __restrict__ emb_weights,
+    const int* __restrict__ token_ids_ptr,
+    float* __restrict__ x_out,
+    int hidden_dim,
+    int n_tokens)
+{
+    const int token_idx = blockIdx.x;
+    if (token_idx >= n_tokens) return;
+
+    const int tok = token_ids_ptr[token_idx];
+    const int warp_id = threadIdx.x / 32;
+    const int lane = threadIdx.x % 32;
+    const int n_blocks = hidden_dim / 256;
+    const unsigned char* row_weights = emb_weights + (size_t)tok * (size_t)n_blocks * 210u;
+    float* x_row = x_out + (size_t)token_idx * (size_t)hidden_dim;
+
+    const int is = lane / 16;
+
+    for (int b = warp_id; b < n_blocks; b += blockDim.x / 32) {
+        const unsigned char* blk = row_weights + (size_t)b * 210u;
+        float* x_blk = x_row + (size_t)b * 256u;
+
+        const float d = f16_to_f32(*(const unsigned short*)(blk + 208));
+        const unsigned char* ql = blk;
+        const unsigned char* qh = blk + 128;
+        const signed char* sc = (const signed char*)(blk + 192);
+
+        // Half 0 (first 128 weights)
+        const unsigned char ql0 = ql[lane];
+        const unsigned char ql1 = ql[lane + 32];
+        const unsigned char qh0 = qh[lane];
+
+        const int q0 = (int)(ql0 & 0x0Fu) | (((int)(qh0 >> 0) & 3) << 4);
+        const int q1 = (int)(ql1 & 0x0Fu) | (((int)(qh0 >> 2) & 3) << 4);
+        const int q2 = (int)(ql0 >> 4)    | (((int)(qh0 >> 4) & 3) << 4);
+        const int q3 = (int)(ql1 >> 4)    | (((int)(qh0 >> 6) & 3) << 4);
+
+        x_blk[0 * 32 + lane] = d * (float)sc[0 + is] * (float)(q0 - 32);
+        x_blk[1 * 32 + lane] = d * (float)sc[2 + is] * (float)(q1 - 32);
+        x_blk[2 * 32 + lane] = d * (float)sc[4 + is] * (float)(q2 - 32);
+        x_blk[3 * 32 + lane] = d * (float)sc[6 + is] * (float)(q3 - 32);
+
+        // Half 1 (next 128 weights)
+        const unsigned char ql2 = ql[64 + lane];
+        const unsigned char ql3 = ql[96 + lane];
+        const unsigned char qh1 = qh[32 + lane];
+
+        const int q4 = (int)(ql2 & 0x0Fu) | (((int)(qh1 >> 0) & 3) << 4);
+        const int q5 = (int)(ql3 & 0x0Fu) | (((int)(qh1 >> 2) & 3) << 4);
+        const int q6 = (int)(ql2 >> 4)    | (((int)(qh1 >> 4) & 3) << 4);
+        const int q7 = (int)(ql3 >> 4)    | (((int)(qh1 >> 6) & 3) << 4);
+
+        x_blk[4 * 32 + lane] = d * (float)sc[8  + is] * (float)(q4 - 32);
+        x_blk[5 * 32 + lane] = d * (float)sc[10 + is] * (float)(q5 - 32);
+        x_blk[6 * 32 + lane] = d * (float)sc[12 + is] * (float)(q6 - 32);
+        x_blk[7 * 32 + lane] = d * (float)sc[14 + is] * (float)(q7 - 32);
+    }
+}
+
 extern "C" __global__ void gpu_sample_greedy_kernel(
     const float* __restrict__ logits,
     int* __restrict__ selected_token,
-    int vocab_size)
+    int vocab_size,
+    int batch_size)
 {
+    const int batch_idx = blockIdx.x;
+    if (batch_idx >= batch_size) return;
+
     float max_val = -1e30f;
     int max_idx = 0;
 
-    const float4* __restrict__ logits4 = (const float4*)logits;
+    const float4* __restrict__ logits4 = (const float4*)(logits + (size_t)batch_idx * (size_t)vocab_size);
     const int n4 = vocab_size / 4;
 
     for (int i = threadIdx.x; i < n4; i += blockDim.x) {
@@ -1437,7 +1628,7 @@ extern "C" __global__ void gpu_sample_greedy_kernel(
                 block_max_idx = s_max_idx[w];
             }
         }
-        *selected_token = block_max_idx;
+        selected_token[batch_idx] = block_max_idx;
     }
 }
 
@@ -2686,6 +2877,177 @@ extern "C" __global__ void gemm_q4k_fused_gate_up_swiglu_mma_kernel(
         out_row[col] = (gate_val / (1.0f + __expf(-gate_val))) * up_val;
     }
 }
+
+extern "C" __global__ void gemm_q4k_splitk_kernel(
+    const unsigned char* __restrict__ weights,
+    const signed char* __restrict__ qx,
+    const float* __restrict__ qd,
+    const float* __restrict__ qs,
+    float* __restrict__ scratch_out,
+    int ne0,
+    int ne1,
+    int batch_size,
+    int split_k
+) {
+    extern __shared__ char smem[];
+    signed char* s_qx = (signed char*)smem;
+    const int qx_bytes_aligned = (ne0 + 15) & ~15;
+    float* s_qd = (float*)(smem + qx_bytes_aligned);
+    float* s_qs = s_qd + (ne0 / 32);
+
+    const int tid = threadIdx.x;
+    const int total_threads = blockDim.x;
+    for (int i = tid; i < ne0; i += total_threads) {
+        s_qx[i] = qx[i];
+    }
+    const int n_blocks_32 = ne0 / 32;
+    for (int i = tid; i < n_blocks_32; i += total_threads) {
+        s_qd[i] = qd[i];
+        s_qs[i] = qs[i];
+    }
+    __syncthreads();
+
+    const int warp_id = threadIdx.x / 32;
+    const int lane = threadIdx.x % 32;
+    const int col = blockIdx.x * (blockDim.x / 32) + warp_id;
+    const int batch_idx = blockIdx.y;
+    const int split_idx = blockIdx.z;
+    if (batch_idx >= batch_size || col >= ne1 || split_idx >= split_k) return;
+
+    const int n_blocks = ne0 / 256;
+    const int blocks_per_split = (n_blocks + split_k - 1) / split_k;
+    const int b_start = split_idx * blocks_per_split;
+    const int b_end = (b_start + blocks_per_split < n_blocks) ? (b_start + blocks_per_split) : n_blocks;
+
+    if (b_start >= n_blocks) {
+        if (lane == 0) {
+            scratch_out[(size_t)split_idx * (size_t)(batch_size * ne1) + (size_t)batch_idx * (size_t)ne1 + (size_t)col] = 0.0f;
+        }
+        return;
+    }
+
+    const unsigned char* col_weights = weights + (size_t)col * (size_t)n_blocks * 144u;
+
+    float local_acc = 0.0f;
+    float min_sum = 0.0f;
+
+    #pragma unroll 2
+    for (int b = b_start; b < b_end; ++b) {
+        const int q8_b = b * 8;
+        const signed char* qx_base = s_qx + q8_b * 32;
+        const signed char qx0 = qx_base[0 * 32 + lane];
+        const signed char qx1 = qx_base[1 * 32 + lane];
+        const signed char qx2 = qx_base[2 * 32 + lane];
+        const signed char qx3 = qx_base[3 * 32 + lane];
+        const signed char qx4 = qx_base[4 * 32 + lane];
+        const signed char qx5 = qx_base[5 * 32 + lane];
+        const signed char qx6 = qx_base[6 * 32 + lane];
+        const signed char qx7 = qx_base[7 * 32 + lane];
+
+        const unsigned char* blk = col_weights + (size_t)b * 144u;
+        const uint4 raw = *(const uint4*)blk;
+        const unsigned char* qs_ptr = blk + 16;
+
+        const unsigned char q0 = qs_ptr[0 * 32 + lane];
+        const unsigned char q1 = qs_ptr[1 * 32 + lane];
+        const unsigned char q2 = qs_ptr[2 * 32 + lane];
+        const unsigned char q3 = qs_ptr[3 * 32 + lane];
+
+        int sum0 = (int)(q0 & 0x0Fu) * (int)qx0;
+        int sum1 = (int)(q0 >> 4)    * (int)qx1;
+        int sum2 = (int)(q1 & 0x0Fu) * (int)qx2;
+        int sum3 = (int)(q1 >> 4)    * (int)qx3;
+        int sum4 = (int)(q2 & 0x0Fu) * (int)qx4;
+        int sum5 = (int)(q2 >> 4)    * (int)qx5;
+        int sum6 = (int)(q3 & 0x0Fu) * (int)qx6;
+        int sum7 = (int)(q3 >> 4)    * (int)qx7;
+
+        #pragma unroll
+        for (int mask = 16; mask > 0; mask >>= 1) {
+            sum0 += __shfl_down_sync(0xffffffff, sum0, mask);
+            sum1 += __shfl_down_sync(0xffffffff, sum1, mask);
+            sum2 += __shfl_down_sync(0xffffffff, sum2, mask);
+            sum3 += __shfl_down_sync(0xffffffff, sum3, mask);
+            sum4 += __shfl_down_sync(0xffffffff, sum4, mask);
+            sum5 += __shfl_down_sync(0xffffffff, sum5, mask);
+            sum6 += __shfl_down_sync(0xffffffff, sum6, mask);
+            sum7 += __shfl_down_sync(0xffffffff, sum7, mask);
+        }
+
+        if (lane == 0) {
+            const float d = f16_to_f32((unsigned short)(raw.x & 0xFFFFu));
+            const float neg_dmin = -f16_to_f32((unsigned short)(raw.x >> 16));
+            const unsigned int w0 = raw.y;
+            const unsigned int w1 = raw.z;
+            const unsigned int w2 = raw.w;
+
+            const float d_sc0 = d * (float)((w0 >> 0) & 0x3Fu) * s_qd[q8_b + 0];
+            const float d_sc1 = d * (float)((w0 >> 8) & 0x3Fu) * s_qd[q8_b + 1];
+            const float d_sc2 = d * (float)((w0 >> 16) & 0x3Fu) * s_qd[q8_b + 2];
+            const float d_sc3 = d * (float)((w0 >> 24) & 0x3Fu) * s_qd[q8_b + 3];
+            const float d_sc4 = d * (float)(((w2 >> 0) & 0x0Fu) | (((w0 >> 6) & 0x03u) << 4)) * s_qd[q8_b + 4];
+            const float d_sc5 = d * (float)(((w2 >> 8) & 0x0Fu) | (((w0 >> 14) & 0x03u) << 4)) * s_qd[q8_b + 5];
+            const float d_sc6 = d * (float)(((w2 >> 16) & 0x0Fu) | (((w0 >> 22) & 0x03u) << 4)) * s_qd[q8_b + 6];
+            const float d_sc7 = d * (float)(((w2 >> 24) & 0x0Fu) | (((w0 >> 30) & 0x03u) << 4)) * s_qd[q8_b + 7];
+
+            float dot = __fmaf_rn(d_sc0, (float)sum0, 0.0f);
+            dot = __fmaf_rn(d_sc1, (float)sum1, dot);
+            dot = __fmaf_rn(d_sc2, (float)sum2, dot);
+            dot = __fmaf_rn(d_sc3, (float)sum3, dot);
+            dot = __fmaf_rn(d_sc4, (float)sum4, dot);
+            dot = __fmaf_rn(d_sc5, (float)sum5, dot);
+            dot = __fmaf_rn(d_sc6, (float)sum6, dot);
+            dot = __fmaf_rn(d_sc7, (float)sum7, dot);
+            local_acc += dot;
+
+            float ms = 0.0f;
+            const float m0 = neg_dmin * (float)((w1 >> 0) & 0x3Fu);
+            const float m1 = neg_dmin * (float)((w1 >> 8) & 0x3Fu);
+            const float m2 = neg_dmin * (float)((w1 >> 16) & 0x3Fu);
+            const float m3 = neg_dmin * (float)((w1 >> 24) & 0x3Fu);
+            const float m4 = neg_dmin * (float)(((w2 >> 4) & 0x0Fu) | (((w1 >> 6) & 0x03u) << 4));
+            const float m5 = neg_dmin * (float)(((w2 >> 12) & 0x0Fu) | (((w1 >> 14) & 0x03u) << 4));
+            const float m6 = neg_dmin * (float)(((w2 >> 20) & 0x0Fu) | (((w1 >> 22) & 0x03u) << 4));
+            const float m7 = neg_dmin * (float)(((w2 >> 28) & 0x0Fu) | (((w1 >> 30) & 0x03u) << 4));
+
+            ms = __fmaf_rn(m0, s_qs[q8_b + 0], ms);
+            ms = __fmaf_rn(m1, s_qs[q8_b + 1], ms);
+            ms = __fmaf_rn(m2, s_qs[q8_b + 2], ms);
+            ms = __fmaf_rn(m3, s_qs[q8_b + 3], ms);
+            ms = __fmaf_rn(m4, s_qs[q8_b + 4], ms);
+            ms = __fmaf_rn(m5, s_qs[q8_b + 5], ms);
+            ms = __fmaf_rn(m6, s_qs[q8_b + 6], ms);
+            ms = __fmaf_rn(m7, s_qs[q8_b + 7], ms);
+            min_sum += ms;
+        }
+    }
+
+    if (lane == 0) {
+        const float res_val = local_acc + min_sum;
+        scratch_out[(size_t)split_idx * (size_t)(batch_size * ne1) + (size_t)batch_idx * (size_t)ne1 + (size_t)col] = res_val;
+    }
+}
+
+extern "C" __global__ void reduce_splitk_kernel(
+    const float* __restrict__ scratch,
+    float* __restrict__ out,
+    const float* __restrict__ residual,
+    int size,
+    int split_k
+) {
+    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= size) return;
+
+    float sum = 0.0f;
+    for (int s = 0; s < split_k; ++s) {
+        sum += scratch[(size_t)s * (size_t)size + (size_t)idx];
+    }
+    if (residual != nullptr) {
+        sum += residual[idx];
+    }
+    out[idx] = sum;
+}
+
 
 
 

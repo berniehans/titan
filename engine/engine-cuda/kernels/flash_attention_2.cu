@@ -30,7 +30,8 @@ extern "C" __global__ void flash_attention_2_kernel(
     int block_tokens,
     int q_tokens,
     int pos_offset,
-    float scale)
+    float scale,
+    const unsigned int* __restrict__ pos_ptr)
 {
     // Grid: blockIdx.x = q_head (0..n_head-1), blockIdx.y = q_pos_in_chunk (0..q_tokens-1)
     // Block: threadIdx.x = 0..31 (warp of 32 threads for head_dim = 128)
@@ -40,7 +41,8 @@ extern "C" __global__ void flash_attention_2_kernel(
 
     if (qh >= n_head || q_pos_in_chunk >= q_tokens || tid >= 32) return;
 
-    const int global_q_pos = pos_offset + q_pos_in_chunk;
+    const int cur_offset = (pos_ptr != nullptr) ? (int)*pos_ptr : pos_offset;
+    const int global_q_pos = cur_offset + q_pos_in_chunk;
 
     const int gqa_group = n_head / n_head_kv;
     const int kh = qh / gqa_group;
@@ -55,7 +57,7 @@ extern "C" __global__ void flash_attention_2_kernel(
 
     // Each thread in warp loads 4 elements (32 * 4 = 128)
     const int elem_idx = tid * 4;
-    const float4 q_local = *(const float4*)(q_vec + elem_idx);
+    const float4 q_local = (elem_idx + 3 < head_dim) ? *(const float4*)(q_vec + elem_idx) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
     // Online softmax state in registers
     float m_prev = -1e30f;
@@ -71,7 +73,7 @@ extern "C" __global__ void flash_attention_2_kernel(
         const float4* k_ptr4 = (const float4*)(pool + (size_t)phys * (size_t)floats_per_block + (size_t)kh * (size_t)head_dim + (size_t)in_block * (size_t)floats_per_token + (size_t)elem_idx);
         const float4* v_ptr4 = (const float4*)(pool + (size_t)phys * (size_t)floats_per_block + (size_t)kh * (size_t)head_dim + (size_t)row_len + (size_t)in_block * (size_t)floats_per_token + (size_t)elem_idx);
 
-        const float4 k_val = *k_ptr4;
+        const float4 k_val = (elem_idx + 3 < head_dim) ? *k_ptr4 : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
         // 1. Compute dot product Q . K
         float local_dot = __fmaf_rn(q_local.x, k_val.x, __fmaf_rn(q_local.y, k_val.y, __fmaf_rn(q_local.z, k_val.z, q_local.w * k_val.w)));
@@ -85,7 +87,7 @@ extern "C" __global__ void flash_attention_2_kernel(
 
         l_prev = __fmaf_rn(l_prev, alpha, beta);
 
-        const float4 v_val = *v_ptr4;
+        const float4 v_val = (elem_idx + 3 < head_dim) ? *v_ptr4 : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
         o_acc.x = __fmaf_rn(o_acc.x, alpha, beta * v_val.x);
         o_acc.y = __fmaf_rn(o_acc.y, alpha, beta * v_val.y);
@@ -97,6 +99,8 @@ extern "C" __global__ void flash_attention_2_kernel(
 
     // 3. Final normalization
     float inv_l = (l_prev > 0.0f) ? (1.0f / l_prev) : 0.0f;
-    float4* out_vec4 = (float4*)(out + (size_t)q_pos_in_chunk * q_stride + (size_t)qh * (size_t)head_dim + (size_t)elem_idx);
-    *out_vec4 = make_float4(o_acc.x * inv_l, o_acc.y * inv_l, o_acc.z * inv_l, o_acc.w * inv_l);
+    if (elem_idx + 3 < head_dim) {
+        float4* out_vec4 = (float4*)(out + (size_t)q_pos_in_chunk * q_stride + (size_t)qh * (size_t)head_dim + (size_t)elem_idx);
+        *out_vec4 = make_float4(o_acc.x * inv_l, o_acc.y * inv_l, o_acc.z * inv_l, o_acc.w * inv_l);
+    }
 }

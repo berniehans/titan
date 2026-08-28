@@ -263,4 +263,27 @@ impl RadixTree {
         }
         count_blocks(&self.root)
     }
+
+    /// Invalidates and prunes any trie branches referencing any of the specified physical blocks.
+    /// Prevents stale/dangling physical block pointer reuse when blocks are recycled or pruned.
+    pub fn invalidate_physical_blocks(&mut self, freed_blocks: &[PhysicalBlockId]) {
+        if freed_blocks.is_empty() {
+            return;
+        }
+        let block_set: std::collections::HashSet<PhysicalBlockId> = freed_blocks.iter().copied().collect();
+        Self::prune_nodes_with_blocks(&mut self.root, &block_set);
+    }
+
+    fn prune_nodes_with_blocks(
+        node: &mut RadixNode,
+        block_set: &std::collections::HashSet<PhysicalBlockId>,
+    ) {
+        node.children.retain(|_, child| {
+            let contains_freed = child.blocks.iter().any(|b| block_set.contains(b));
+            !contains_freed
+        });
+        for child in node.children.values_mut() {
+            Self::prune_nodes_with_blocks(child, block_set);
+        }
+    }
 }

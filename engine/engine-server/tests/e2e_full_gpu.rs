@@ -57,6 +57,7 @@ fn fixture_path() -> Option<PathBuf> {
 fn build_model(
     window_bytes: usize,
 ) -> Result<(SharedRealModel, GgufReader, &'static LoadedPinned), DynError> {
+    engine_cuda::ensure_cuda_dll_paths();
     let fixture = fixture_path().ok_or("fixture not present (GPU E2E requires the GGUF)")?;
     let reader = GgufReader::open(&fixture)?;
     let pinned: &'static LoadedPinned = Box::leak(Box::new(load_to_pinned(&reader, &fixture)?));

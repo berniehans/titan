@@ -69,8 +69,8 @@ extern "C" __global__ void paged_attention_decode_kernel(
             const float* k = krow + (size_t)t * floats_per_token;
             const float* v = vrow + (size_t)t * floats_per_token;
 
-            const float4 k_val = ((const float4*)k)[tid];
-            const float4 v_val = ((const float4*)v)[tid];
+            const float4 k_val = (tid * 4 + 3 < head_dim) ? ((const float4*)k)[tid] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            const float4 v_val = (tid * 4 + 3 < head_dim) ? ((const float4*)v)[tid] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
             float part = __fmaf_rn(q_val.x, k_val.x, __fmaf_rn(q_val.y, k_val.y, __fmaf_rn(q_val.z, k_val.z, q_val.w * k_val.w)));
 
@@ -97,7 +97,9 @@ extern "C" __global__ void paged_attention_decode_kernel(
     float* out_head = out + (size_t)qh * (size_t)head_dim;
     const float inv_l = 1.0f / s_l;
 
-    ((float4*)out_head)[tid] = make_float4(acc0 * inv_l, acc1 * inv_l, acc2 * inv_l, acc3 * inv_l);
+    if (tid * 4 + 3 < head_dim) {
+        ((float4*)out_head)[tid] = make_float4(acc0 * inv_l, acc1 * inv_l, acc2 * inv_l, acc3 * inv_l);
+    }
 }
 
 // FlashDecoding Split-KV Kernel:
@@ -177,8 +179,8 @@ extern "C" __global__ void flash_decoding_split_kernel(
                 const float* k = krow + (size_t)t * floats_per_token;
                 const float* v = vrow + (size_t)t * floats_per_token;
 
-                const float4 k_val = ((const float4*)k)[tid];
-                const float4 v_val = ((const float4*)v)[tid];
+                const float4 k_val = (tid * 4 + 3 < head_dim) ? ((const float4*)k)[tid] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+                const float4 v_val = (tid * 4 + 3 < head_dim) ? ((const float4*)v)[tid] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
                 float part = __fmaf_rn(q_val.x, k_val.x, __fmaf_rn(q_val.y, k_val.y, __fmaf_rn(q_val.z, k_val.z, q_val.w * k_val.w)));
 
@@ -205,7 +207,9 @@ extern "C" __global__ void flash_decoding_split_kernel(
 
     const size_t split_offset = ((size_t)qh * (size_t)max_splits + (size_t)split_idx);
     float* acc_head_split = partial_acc + split_offset * (size_t)head_dim;
-    ((float4*)acc_head_split)[tid] = make_float4(acc0, acc1, acc2, acc3);
+    if (tid * 4 + 3 < head_dim) {
+        ((float4*)acc_head_split)[tid] = make_float4(acc0, acc1, acc2, acc3);
+    }
 
     if (tid == 0) {
         partial_m[split_offset] = s_m;
@@ -256,7 +260,7 @@ extern "C" __global__ void flash_decoding_reduce_kernel(
             l_global += ls * weight;
 
             const float* acc_head_split = partial_acc + split_offset * (size_t)head_dim;
-            const float4 acc_val = ((const float4*)acc_head_split)[tid];
+            const float4 acc_val = (tid * 4 + 3 < head_dim) ? ((const float4*)acc_head_split)[tid] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
             final_acc0 = __fmaf_rn(acc_val.x, weight, final_acc0);
             final_acc1 = __fmaf_rn(acc_val.y, weight, final_acc1);
@@ -268,5 +272,7 @@ extern "C" __global__ void flash_decoding_reduce_kernel(
     float* out_head = out + (size_t)qh * (size_t)head_dim;
     const float inv_l = (l_global > 0.0f) ? (1.0f / l_global) : 0.0f;
 
-    ((float4*)out_head)[tid] = make_float4(final_acc0 * inv_l, final_acc1 * inv_l, final_acc2 * inv_l, final_acc3 * inv_l);
+    if (tid * 4 + 3 < head_dim) {
+        ((float4*)out_head)[tid] = make_float4(final_acc0 * inv_l, final_acc1 * inv_l, final_acc2 * inv_l, final_acc3 * inv_l);
+    }
 }

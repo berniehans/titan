@@ -307,6 +307,9 @@ pub struct ForwardDriver<'a> {
     proj_dev: DeviceBuffer,
     // speculative preallocated working buffers (max_k = 8):
     spec_x_dev: DeviceBuffer,
+    spec_qx_dev: DeviceBuffer,
+    spec_qd_dev: DeviceBuffer,
+    spec_qs_dev: DeviceBuffer,
     spec_norm_dev: DeviceBuffer,
     spec_q_dev: DeviceBuffer,
     spec_k_dev: DeviceBuffer,
@@ -342,9 +345,12 @@ pub struct ForwardDriver<'a> {
     prefill_zff_dev: DeviceBuffer,
     decode_graph: Option<engine_cuda::CudaGraphExec>,
     autonomous_graph: Option<engine_cuda::CudaGraphExec>,
+    speculative_graph: Option<engine_cuda::CudaGraphExec>,
     emb_dev: DeviceBuffer,
     token_id_dev: DeviceBuffer,
     selected_token_dev: DeviceBuffer,
+    spec_tokens_dev: DeviceBuffer,
+    splitk_scratch_dev: DeviceBuffer,
     // dims
     h: usize,
     hd: usize,
@@ -362,6 +368,7 @@ pub struct ForwardDriver<'a> {
     has_attn_bias: bool,
     lm_head_dev: DeviceBuffer,
     lm_head_fmt: GemvFormat,
+    emb_fmt: GemvFormat,
     head_norm_dev: DeviceBuffer,
     head_normed_dev: DeviceBuffer,
     logits_dev: DeviceBuffer,
@@ -531,9 +538,14 @@ impl<'a> ForwardDriver<'a> {
         let gate_dev = alloc_dev(&device, hff)?;
         let up_dev = alloc_dev(&device, hff)?;
         let proj_dev = alloc_dev(&device, hff)?;
+        let max_splitk_out = (cfg.vocab_size as usize).max(hff).max(h);
+        let splitk_scratch_dev = alloc_dev(&device, 4 * max_splitk_out)?;
 
         const MAX_SPEC_K: usize = 8;
         let spec_x_dev = alloc_dev(&device, MAX_SPEC_K * h)?;
+        let spec_qx_dev = upload_bytes(&stream, &device, &vec![0u8; MAX_SPEC_K * max_quant_dim])?;
+        let spec_qd_dev = alloc_dev(&device, MAX_SPEC_K * (max_quant_dim / 32))?;
+        let spec_qs_dev = alloc_dev(&device, MAX_SPEC_K * (max_quant_dim / 32))?;
         let spec_norm_dev = alloc_dev(&device, MAX_SPEC_K * h)?;
         let spec_q_dev = alloc_dev(&device, MAX_SPEC_K * qdim)?;
         let spec_k_dev = alloc_dev(&device, MAX_SPEC_K * kvd)?;
@@ -560,7 +572,8 @@ impl<'a> ForwardDriver<'a> {
         let spec_logits_dev = alloc_dev(&device, MAX_SPEC_K * vocab_size)?;
         let emb_dev = upload_bytes(&stream, &device, &emb.data)?;
         let token_id_dev = upload_bytes(&stream, &device, &[0u8; 4])?;
-        let selected_token_dev = upload_bytes(&stream, &device, &[0u8; 4])?;
+        let selected_token_dev = upload_bytes(&stream, &device, &[0u8; 64])?;
+        let spec_tokens_dev = upload_bytes(&stream, &device, &[0u8; 64])?;
         let history_dev = alloc_dev(&device, 2048)?;
         let step_counter_dev = upload_bytes(&stream, &device, &[0u8; 4])?;
 
@@ -620,6 +633,9 @@ impl<'a> ForwardDriver<'a> {
             up_dev,
             proj_dev,
             spec_x_dev,
+            spec_qx_dev,
+            spec_qd_dev,
+            spec_qs_dev,
             spec_norm_dev,
             spec_q_dev,
             spec_k_dev,
@@ -654,9 +670,12 @@ impl<'a> ForwardDriver<'a> {
             prefill_zff_dev,
             decode_graph: None,
             autonomous_graph: None,
+            speculative_graph: None,
             emb_dev,
             token_id_dev,
             selected_token_dev,
+            spec_tokens_dev,
+            splitk_scratch_dev,
             h,
             hd,
             nh,
@@ -673,6 +692,7 @@ impl<'a> ForwardDriver<'a> {
             has_attn_bias,
             lm_head_dev,
             lm_head_fmt,
+            emb_fmt: ggml_to_gemv(emb.ty)?,
             head_norm_dev,
             head_normed_dev,
             logits_dev,
@@ -1032,6 +1052,63 @@ impl<'a> ForwardDriver<'a> {
             });
         }
 
+        if params.temperature <= 1e-6 && k == 4 {
+            if self.speculative_graph.is_none() {
+                self.capture_speculative_verification_graph(4)?;
+            }
+
+            let mut batch_token_bytes = [0u8; 16];
+            for (i, &t) in batch_tokens.iter().enumerate() {
+                batch_token_bytes[i * 4..(i + 1) * 4].copy_from_slice(&t.to_le_bytes());
+            }
+            self.spec_tokens_dev.copy_from_host(&self.stream, &batch_token_bytes)?;
+            let pos_bytes = (current_pos as u32).to_le_bytes();
+            self.pos_dev.copy_from_host(&self.stream, &pos_bytes)?;
+
+            if let Some(ref exec) = self.speculative_graph {
+                exec.launch(&self.stream)?;
+            }
+
+            let mut sampled_bytes = [0u8; 16];
+            self.selected_token_dev.copy_to_host(&self.stream, &mut sampled_bytes)?;
+            self.stream.sync()?;
+
+            let mut target_preds = Vec::with_capacity(4);
+            for chunk in sampled_bytes.chunks_exact(4) {
+                target_preds.push(u32::from_le_bytes(chunk.try_into().unwrap()));
+            }
+
+            let mut n_accepted = 0;
+            let mut emitted_tokens = Vec::with_capacity(4);
+            for i in 0..candidates.len() {
+                if candidates[i] == target_preds[i] {
+                    n_accepted += 1;
+                    emitted_tokens.push(candidates[i]);
+                } else {
+                    emitted_tokens.push(target_preds[i]);
+                    break;
+                }
+            }
+
+            let bonus_token = if n_accepted == candidates.len() {
+                let bonus = target_preds[candidates.len()];
+                emitted_tokens.push(bonus);
+                bonus
+            } else {
+                target_preds[n_accepted]
+            };
+
+            let total_emitted = emitted_tokens.len();
+            self.pos = current_pos + 1 + n_accepted;
+
+            return Ok(crate::speculative::SpeculativeVerificationResult {
+                emitted_tokens,
+                n_accepted,
+                bonus_token,
+                total_emitted,
+            });
+        }
+
         // 1. Embed K candidate tokens on host and upload directly to preallocated buffer
         let mut x_host = Vec::with_capacity(k * self.h);
         for &tok in &batch_tokens {
@@ -1041,61 +1118,107 @@ impl<'a> ForwardDriver<'a> {
 
         self.spec_x_dev.copy_from_host(&self.stream, &f32_bytes(&x_host))?;
 
-        for layer in &self.layers {
-            // b. Fused QKV Projection with Fused Input RMSNorm
+        for (l_i, layer) in self.layers.iter().enumerate() {
+            // a. Quantize spec_x_dev with input RMSNorm -> (spec_qx_dev, spec_qd_dev, spec_qs_dev)
+            self.batched_gemm.quantize_q8_1_batched(
+                &self.stream,
+                &self.spec_x_dev,
+                Some(&layer.an_dev),
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                self.h,
+                k,
+                self.eps,
+            )?;
+
+            // b. Fused QKV Projection
             let (qb_opt, kb_opt, vb_opt) = if self.has_attn_bias {
                 (Some(&layer.qb_dev), Some(&layer.kb_dev), Some(&layer.vb_dev))
             } else {
                 (None, None, None)
             };
-
-            self.nr.launch_batched_with_pos_ptr(
-                &self.stream,
-                &self.spec_x_dev,
-                &self.spec_zh,
-                &layer.an_dev,
-                &self.spec_zh,
-                &self.spec_norm_dev,
-                self.eps,
-                self.h,
-                0,
-                0.0,
-                0,
-                MODE_NORM | MODE_BROADCAST_RESIDUAL,
-                None,
-                k,
-                1,
-            )?;
-            self.batched_gemm.gemm(
-                &self.stream,
-                &layer.wq_dev,
-                &self.spec_norm_dev,
-                &self.spec_q_dev,
-                self.h,
-                self._qdim,
-                k,
-                layer.wq_fmt,
-            )?;
-            self.batched_gemm.gemm(
-                &self.stream,
-                &layer.wk_dev,
-                &self.spec_norm_dev,
-                &self.spec_k_dev,
-                self.h,
-                self._kvd,
-                k,
-                layer.wk_fmt,
-            )?;
-            self.batched_gemm.gemm(
-                &self.stream,
-                &layer.wv_dev,
-                &self.spec_norm_dev,
-                &self.spec_v_dev,
-                self.h,
-                self._kvd,
-                k,
-                layer.wv_fmt,
-            )?;
+            if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q4K {
+                self.batched_gemm.gemm_fused_qkv_q4k(
+                    &self.stream,
+                    &layer.wq_dev,
+                    &layer.wk_dev,
+                    &layer.wv_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_q_dev,
+                    &self.spec_k_dev,
+                    &self.spec_v_dev,
+                    self.h,
+                    self._qdim,
+                    self._kvd,
+                    k,
+                    qb_opt,
+                    kb_opt,
+                    vb_opt,
+                )?;
+            } else if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q6K {
+                self.batched_gemm.gemm_fused_qkv(
+                    &self.stream,
+                    &layer.wq_dev,
+                    &layer.wk_dev,
+                    &layer.wv_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_q_dev,
+                    &self.spec_k_dev,
+                    &self.spec_v_dev,
+                    self.h,
+                    self._qdim,
+                    self._kvd,
+                    k,
+                    qb_opt,
+                    kb_opt,
+                    vb_opt,
+                )?;
+            } else {
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wq_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_q_dev,
+                    layer.wq_ne0,
+                    layer.wq_ne1,
+                    k,
+                    layer.wq_fmt,
+                    None,
+                )?;
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wk_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_k_dev,
+                    layer.wk_ne0,
+                    layer.wk_ne1,
+                    k,
+                    layer.wk_fmt,
+                    None,
+                )?;
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wv_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_v_dev,
+                    layer.wv_ne0,
+                    layer.wv_ne1,
+                    k,
+                    layer.wv_fmt,
+                    None,
+                )?;
+            }
 
             // c. Q/K RMSNorm + RoPE (+ optional attention biases)
             let qk_mode = if self.has_qk_norm {
@@ -1168,11 +1291,24 @@ impl<'a> ForwardDriver<'a> {
                 current_pos,
             )?;
 
-            // f. Output projection with Fused In-Place Residual 1 (spec_attn_dev -> spec_op_dev with + spec_x_dev)
-            self.batched_gemm.gemm_with_residual(
+            // f. Output projection: quantize spec_attn_dev (no norm) -> gemm_q8_act_with_residual with residual spec_x_dev -> spec_op_dev
+            self.batched_gemm.quantize_q8_1_batched(
+                &self.stream,
+                &self.spec_attn_dev,
+                None,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                self._qdim,
+                k,
+                self.eps,
+            )?;
+            self.batched_gemm.gemm_q8_act_with_residual(
                 &self.stream,
                 &layer.wo_dev,
-                &self.spec_attn_dev,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
                 &self.spec_op_dev,
                 self._qdim,
                 self.h,
@@ -1181,67 +1317,97 @@ impl<'a> ForwardDriver<'a> {
                 Some(&self.spec_x_dev),
             )?;
 
-            // g. FFN gate & up projections with fused SwiGLU & FFN RMSNorm
-            self.nr.launch_batched_with_pos_ptr(
+            // g. FFN: quantize spec_op_dev with FFN RMSNorm (layer.fn_dev) -> (spec_qx_dev, spec_qd_dev, spec_qs_dev)
+            self.batched_gemm.quantize_q8_1_batched(
                 &self.stream,
                 &self.spec_op_dev,
-                &self.spec_zh,
-                &layer.fn_dev,
-                &self.spec_zh,
-                &self.spec_ffin_dev,
+                Some(&layer.fn_dev),
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                self.h,
+                k,
                 self.eps,
-                self.h,
-                0,
-                0.0,
-                0,
-                MODE_NORM | MODE_BROADCAST_RESIDUAL,
-                None,
-                k,
-                1,
-            )?;
-            self.batched_gemm.gemm(
-                &self.stream,
-                &layer.wgate_dev,
-                &self.spec_ffin_dev,
-                &self.spec_gate_dev,
-                self.h,
-                self.hff,
-                k,
-                layer.wgate_fmt,
-            )?;
-            self.batched_gemm.gemm(
-                &self.stream,
-                &layer.wup_dev,
-                &self.spec_ffin_dev,
-                &self.spec_up_dev,
-                self.h,
-                self.hff,
-                k,
-                layer.wup_fmt,
-            )?;
-            self.nr.launch_batched_with_pos_ptr(
-                &self.stream,
-                &self.spec_gate_dev,
-                &self.spec_zff,
-                &self.spec_zff,
-                &self.spec_up_dev,
-                &self.spec_proj_dev,
-                self.eps,
-                self.hff,
-                0,
-                0.0,
-                0,
-                MODE_SWIGLU,
-                None,
-                k,
-                1,
             )?;
 
-            // i. Down projection with Fused In-Place Residual 2 (spec_proj_dev -> spec_x_dev with + spec_op_dev)
-            self.batched_gemm.gemm_with_residual(
+            // h. Fused Gate + Up SwiGLU: gemm_q4k_fused_gate_up_swiglu_mma -> spec_proj_dev
+            if layer.wgate_fmt == GemvFormat::Q4K && layer.wup_fmt == GemvFormat::Q4K {
+                self.batched_gemm.gemm_q4k_fused_gate_up_swiglu_mma(
+                    &self.stream,
+                    &layer.wgate_dev,
+                    &layer.wup_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_proj_dev,
+                    self.h,
+                    self.hff,
+                    k,
+                )?;
+            } else {
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wgate_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_gate_dev,
+                    layer.wgate_ne0,
+                    layer.wgate_ne1,
+                    k,
+                    layer.wgate_fmt,
+                    None,
+                )?;
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wup_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_up_dev,
+                    layer.wgate_ne0,
+                    layer.wgate_ne1,
+                    k,
+                    layer.wup_fmt,
+                    None,
+                )?;
+                self.nr.launch_batched_with_pos_ptr(
+                    &self.stream,
+                    &self.spec_gate_dev,
+                    &self.spec_zff,
+                    &self.spec_zff,
+                    &self.spec_up_dev,
+                    &self.spec_proj_dev,
+                    self.eps,
+                    self.hff,
+                    0,
+                    self.base,
+                    0,
+                    MODE_SWIGLU,
+                    None,
+                    k,
+                    1,
+                )?;
+            }
+
+            // i. Down projection: quantize spec_proj_dev (no norm) -> gemm_q8_act_with_residual with residual spec_op_dev -> spec_x_dev
+            self.batched_gemm.quantize_q8_1_batched(
+                &self.stream,
+                &self.spec_proj_dev,
+                None,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                self.hff,
+                k,
+                self.eps,
+            )?;
+            self.batched_gemm.gemm_q8_act_with_residual(
                 &self.stream,
                 &layer.wdown_dev,
-                &self.spec_proj_dev,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
                 &self.spec_x_dev,
                 layer.wdown_ne0,
                 layer.wdown_ne1,
@@ -1252,34 +1418,79 @@ impl<'a> ForwardDriver<'a> {
         }
 
         // 2. GPU batched final RMSNorm + lm_head projection for all K candidate positions
-        self.nr.launch_batched_with_pos_ptr(
+        self.batched_gemm.quantize_q8_1_batched(
             &self.stream,
             &self.spec_x_dev,
-            &self.spec_zh,
-            &self.head_norm_dev,
-            &self.spec_zh,
-            &self.spec_head_normed_dev,
-            self.eps,
+            Some(&self.head_norm_dev),
+            &self.spec_qx_dev,
+            &self.spec_qd_dev,
+            &self.spec_qs_dev,
             self.h,
-            0,
-            0.0,
-            0,
-            MODE_NORM,
-            None,
             k,
-            1,
+            self.eps,
         )?;
 
-        self.batched_gemm.gemm(
+        self.batched_gemm.gemm_q8_act_with_residual(
             &self.stream,
             &self.lm_head_dev,
-            &self.spec_head_normed_dev,
+            &self.spec_qx_dev,
+            &self.spec_qd_dev,
+            &self.spec_qs_dev,
             &self.spec_logits_dev,
             self.h,
             self.vocab_size,
             k,
             self.lm_head_fmt,
+            None,
         )?;
+
+        if params.temperature <= 1e-6 {
+            self.batched_gemm.sample_greedy_batched(
+                &self.stream,
+                &self.spec_logits_dev,
+                &self.selected_token_dev,
+                self.vocab_size,
+                k,
+            )?;
+            let mut sampled_bytes = vec![0u8; k * 4];
+            self.selected_token_dev.copy_to_host(&self.stream, &mut sampled_bytes)?;
+            self.stream.sync()?;
+
+            let mut target_preds = Vec::with_capacity(k);
+            for chunk in sampled_bytes.chunks_exact(4) {
+                target_preds.push(u32::from_le_bytes(chunk.try_into().unwrap()));
+            }
+
+            let mut n_accepted = 0;
+            let mut emitted_tokens = Vec::with_capacity(k);
+            for i in 0..candidates.len() {
+                if candidates[i] == target_preds[i] {
+                    n_accepted += 1;
+                    emitted_tokens.push(candidates[i]);
+                } else {
+                    emitted_tokens.push(target_preds[i]);
+                    break;
+                }
+            }
+
+            let bonus_token = if n_accepted == candidates.len() {
+                let bonus = target_preds[candidates.len()];
+                emitted_tokens.push(bonus);
+                bonus
+            } else {
+                target_preds[n_accepted]
+            };
+
+            let total_emitted = emitted_tokens.len();
+            self.pos = current_pos + 1 + n_accepted;
+
+            return Ok(crate::speculative::SpeculativeVerificationResult {
+                emitted_tokens,
+                n_accepted,
+                bonus_token,
+                total_emitted,
+            });
+        }
 
         let raw_logits = download_f32(&self.stream, &self.spec_logits_dev, k * self.vocab_size)?;
         let mut target_logits_refs: Vec<&[f32]> = Vec::with_capacity(k);
@@ -1479,19 +1690,34 @@ impl<'a> ForwardDriver<'a> {
                 layer.wo_ne0,
                 0.0,
             )?;
-            self.batched_gemm.gemm_q8_act_with_residual(
-                &self.stream,
-                &layer.wo_dev,
-                &self.qx_dev,
-                &self.qd_dev,
-                &self.qs_dev,
-                &self.h1_dev,
-                layer.wo_ne0,
-                layer.wo_ne1,
-                1,
-                layer.wo_fmt,
-                Some(&self.x_dev),
-            )?;
+            if layer.wo_fmt == GemvFormat::Q4K {
+                self.batched_gemm.gemm_q4k_mma(
+                    &self.stream,
+                    &layer.wo_dev,
+                    &self.qx_dev,
+                    &self.qd_dev,
+                    &self.qs_dev,
+                    &self.h1_dev,
+                    layer.wo_ne0,
+                    layer.wo_ne1,
+                    1,
+                    Some(&self.x_dev),
+                )?;
+            } else {
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wo_dev,
+                    &self.qx_dev,
+                    &self.qd_dev,
+                    &self.qs_dev,
+                    &self.h1_dev,
+                    layer.wo_ne0,
+                    layer.wo_ne1,
+                    1,
+                    layer.wo_fmt,
+                    Some(&self.x_dev),
+                )?;
+            }
 
             // Stage 7: FFN Gate & Up (+ Fused SwiGLU & FFN RMSNorm)
             self.batched_gemm.quantize_q8_1(
@@ -1506,7 +1732,7 @@ impl<'a> ForwardDriver<'a> {
             )?;
 
             if layer.wgate_fmt == GemvFormat::Q4K && layer.wup_fmt == GemvFormat::Q4K {
-                self.batched_gemm.gemm_fused_gate_up_swiglu(
+                self.batched_gemm.gemm_q4k_fused_gate_up_swiglu_mma(
                     &self.stream,
                     &layer.wgate_dev,
                     &layer.wup_dev,
@@ -1572,19 +1798,34 @@ impl<'a> ForwardDriver<'a> {
                 layer.wdown_ne0,
                 0.0,
             )?;
-            self.batched_gemm.gemm_q8_act_with_residual(
-                &self.stream,
-                &layer.wdown_dev,
-                &self.qx_dev,
-                &self.qd_dev,
-                &self.qs_dev,
-                &self.x_dev,
-                layer.wdown_ne0,
-                layer.wdown_ne1,
-                1,
-                layer.wdown_fmt,
-                Some(&self.h1_dev),
-            )?;
+            if layer.wdown_fmt == GemvFormat::Q4K {
+                self.batched_gemm.gemm_q4k_mma(
+                    &self.stream,
+                    &layer.wdown_dev,
+                    &self.qx_dev,
+                    &self.qd_dev,
+                    &self.qs_dev,
+                    &self.x_dev,
+                    layer.wdown_ne0,
+                    layer.wdown_ne1,
+                    1,
+                    Some(&self.h1_dev),
+                )?;
+            } else {
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wdown_dev,
+                    &self.qx_dev,
+                    &self.qd_dev,
+                    &self.qs_dev,
+                    &self.x_dev,
+                    layer.wdown_ne0,
+                    layer.wdown_ne1,
+                    1,
+                    layer.wdown_fmt,
+                    Some(&self.h1_dev),
+                )?;
+            }
         }
         Ok(())
     }
@@ -1601,19 +1842,34 @@ impl<'a> ForwardDriver<'a> {
             self.h,
             self.eps,
         )?;
-        self.batched_gemm.gemm_q8_act_with_residual(
-            &self.stream,
-            &self.lm_head_dev,
-            &self.qx_dev,
-            &self.qd_dev,
-            &self.qs_dev,
-            &self.logits_dev,
-            self.h,
-            self.vocab_size,
-            1,
-            self.lm_head_fmt,
-            None,
-        )?;
+        if self.lm_head_fmt == GemvFormat::Q4K {
+            self.batched_gemm.gemm_q4k_mma(
+                &self.stream,
+                &self.lm_head_dev,
+                &self.qx_dev,
+                &self.qd_dev,
+                &self.qs_dev,
+                &self.logits_dev,
+                self.h,
+                self.vocab_size,
+                1,
+                None,
+            )?;
+        } else {
+            self.batched_gemm.gemm_q8_act_with_residual(
+                &self.stream,
+                &self.lm_head_dev,
+                &self.qx_dev,
+                &self.qd_dev,
+                &self.qs_dev,
+                &self.logits_dev,
+                self.h,
+                self.vocab_size,
+                1,
+                self.lm_head_fmt,
+                None,
+            )?;
+        }
         Ok(())
     }
 
@@ -1706,13 +1962,14 @@ impl<'a> ForwardDriver<'a> {
     /// into a single autonomous GPU CUDA Graph.
     pub fn capture_autonomous_decode_graph(&mut self) -> Result<(), EngineError> {
         self.stream.begin_capture()?;
-        self.batched_gemm.get_rows_q4k(
+        self.batched_gemm.get_rows(
             &self.stream,
             &self.emb_dev,
             &self.token_id_dev,
             &self.x_dev,
             self.h,
             1,
+            self.emb_fmt,
         )?;
         self.record_decode_pass()?;
         self.record_lm_head_pass(&self.x_dev)?;
@@ -1733,6 +1990,355 @@ impl<'a> ForwardDriver<'a> {
         let graph = self.stream.end_capture()?;
         let exec = graph.instantiate()?;
         self.autonomous_graph = Some(exec);
+        Ok(())
+    }
+
+    /// Captures the complete speculative verification pipeline for $K$ tokens into a pre-allocated CUDA Graph.
+    pub fn capture_speculative_verification_graph(&mut self, k: usize) -> Result<(), EngineError> {
+        self.stream.begin_capture()?;
+        self.batched_gemm.get_rows(
+            &self.stream,
+            &self.emb_dev,
+            &self.spec_tokens_dev,
+            &self.spec_x_dev,
+            self.h,
+            k,
+            self.emb_fmt,
+        )?;
+        for layer in &self.layers {
+            // a. Quantize spec_x_dev with input RMSNorm
+            self.batched_gemm.quantize_q8_1_batched(
+                &self.stream,
+                &self.spec_x_dev,
+                Some(&layer.an_dev),
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                self.h,
+                k,
+                self.eps,
+            )?;
+
+            // b. Fused QKV
+            let (qb_opt, kb_opt, vb_opt) = if self.has_attn_bias {
+                (Some(&layer.qb_dev), Some(&layer.kb_dev), Some(&layer.vb_dev))
+            } else {
+                (None, None, None)
+            };
+            if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q4K {
+                self.batched_gemm.gemm_fused_qkv_q4k(
+                    &self.stream,
+                    &layer.wq_dev,
+                    &layer.wk_dev,
+                    &layer.wv_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_q_dev,
+                    &self.spec_k_dev,
+                    &self.spec_v_dev,
+                    self.h,
+                    self._qdim,
+                    self._kvd,
+                    k,
+                    qb_opt,
+                    kb_opt,
+                    vb_opt,
+                )?;
+            } else if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q6K {
+                self.batched_gemm.gemm_fused_qkv(
+                    &self.stream,
+                    &layer.wq_dev,
+                    &layer.wk_dev,
+                    &layer.wv_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_q_dev,
+                    &self.spec_k_dev,
+                    &self.spec_v_dev,
+                    self.h,
+                    self._qdim,
+                    self._kvd,
+                    k,
+                    qb_opt,
+                    kb_opt,
+                    vb_opt,
+                )?;
+            } else {
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wq_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_q_dev,
+                    layer.wq_ne0,
+                    layer.wq_ne1,
+                    k,
+                    layer.wq_fmt,
+                    qb_opt,
+                )?;
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wk_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_k_dev,
+                    layer.wk_ne0,
+                    layer.wk_ne1,
+                    k,
+                    layer.wk_fmt,
+                    kb_opt,
+                )?;
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wv_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_v_dev,
+                    layer.wv_ne0,
+                    layer.wv_ne1,
+                    k,
+                    layer.wv_fmt,
+                    vb_opt,
+                )?;
+            }
+
+            // c. Q/K RMSNorm + RoPE
+            let qk_mode = if self.has_qk_norm {
+                MODE_NORM | MODE_ROPE
+            } else {
+                MODE_ROPE
+            };
+            self.nr.launch_batched_with_pos_ptr(
+                &self.stream,
+                &self.spec_q_dev,
+                &self.spec_zq,
+                &layer.qn_dev,
+                &self.spec_zq,
+                &self.spec_q_dev,
+                self.eps,
+                self.hd,
+                self.n_rot,
+                self.base,
+                0,
+                qk_mode,
+                Some(&self.pos_dev),
+                self.nh * k,
+                self.nh,
+            )?;
+            self.nr.launch_batched_with_pos_ptr(
+                &self.stream,
+                &self.spec_k_dev,
+                &self.spec_zk,
+                &layer.kn_dev,
+                &self.spec_zk,
+                &self.spec_k_dev,
+                self.eps,
+                self.hd,
+                self.n_rot,
+                self.base,
+                0,
+                qk_mode,
+                Some(&self.pos_dev),
+                self.nkv * k,
+                self.nkv,
+            )?;
+
+            // d. Append KV
+            self.pkv.append_kv_with_pos_ptr(
+                &self.stream,
+                &self.layout,
+                &layer.pool_dev,
+                &self.spec_k_dev,
+                &self.spec_v_dev,
+                &self.bt_dev,
+                0,
+                k,
+                Some(&self.pos_dev),
+            )?;
+
+            // e. FlashAttention-2
+            self.flash_attn.launch_with_pos_ptr(
+                &self.stream,
+                &self.spec_q_dev,
+                &layer.pool_dev,
+                &self.bt_dev,
+                &self.spec_attn_dev,
+                self.nh,
+                self.nkv,
+                self.hd,
+                self.layout.block_tokens,
+                k,
+                0,
+                Some(&self.pos_dev),
+            )?;
+
+            // f. Output projection
+            self.batched_gemm.quantize_q8_1_batched(
+                &self.stream,
+                &self.spec_attn_dev,
+                None,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                self._qdim,
+                k,
+                self.eps,
+            )?;
+            self.batched_gemm.gemm_q8_act_with_residual(
+                &self.stream,
+                &layer.wo_dev,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                &self.spec_op_dev,
+                self._qdim,
+                self.h,
+                k,
+                layer.wo_fmt,
+                Some(&self.spec_x_dev),
+            )?;
+
+            // g. FFN RMSNorm
+            self.batched_gemm.quantize_q8_1_batched(
+                &self.stream,
+                &self.spec_op_dev,
+                Some(&layer.fn_dev),
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                self.h,
+                k,
+                self.eps,
+            )?;
+
+            // h. SwiGLU FFN
+            if layer.wgate_fmt == GemvFormat::Q4K && layer.wup_fmt == GemvFormat::Q4K {
+                self.batched_gemm.gemm_q4k_fused_gate_up_swiglu_mma(
+                    &self.stream,
+                    &layer.wgate_dev,
+                    &layer.wup_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_proj_dev,
+                    self.h,
+                    self.hff,
+                    k,
+                )?;
+            } else {
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wgate_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_gate_dev,
+                    layer.wgate_ne0,
+                    layer.wgate_ne1,
+                    k,
+                    layer.wgate_fmt,
+                    None,
+                )?;
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wup_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_up_dev,
+                    layer.wgate_ne0,
+                    layer.wgate_ne1,
+                    k,
+                    layer.wup_fmt,
+                    None,
+                )?;
+                self.nr.launch_batched_with_pos_ptr(
+                    &self.stream,
+                    &self.spec_gate_dev,
+                    &self.spec_zff,
+                    &self.spec_zff,
+                    &self.spec_up_dev,
+                    &self.spec_proj_dev,
+                    self.eps,
+                    self.hff,
+                    0,
+                    self.base,
+                    0,
+                    MODE_SWIGLU,
+                    None,
+                    k,
+                    1,
+                )?;
+            }
+
+            // i. Down projection
+            self.batched_gemm.quantize_q8_1_batched(
+                &self.stream,
+                &self.spec_proj_dev,
+                None,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                self.hff,
+                k,
+                self.eps,
+            )?;
+            self.batched_gemm.gemm_q8_act_with_residual(
+                &self.stream,
+                &layer.wdown_dev,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                &self.spec_x_dev,
+                layer.wdown_ne0,
+                layer.wdown_ne1,
+                k,
+                layer.wdown_fmt,
+                Some(&self.spec_op_dev),
+            )?;
+        }
+
+        // LM Head
+        self.batched_gemm.quantize_q8_1_batched(
+            &self.stream,
+            &self.spec_x_dev,
+            Some(&self.head_norm_dev),
+            &self.spec_qx_dev,
+            &self.spec_qd_dev,
+            &self.spec_qs_dev,
+            self.h,
+            k,
+            self.eps,
+        )?;
+        self.batched_gemm.gemm_q8_act_with_residual(
+            &self.stream,
+            &self.lm_head_dev,
+            &self.spec_qx_dev,
+            &self.spec_qd_dev,
+            &self.spec_qs_dev,
+            &self.spec_logits_dev,
+            self.h,
+            self.vocab_size,
+            k,
+            self.lm_head_fmt,
+            None,
+        )?;
+        self.batched_gemm.sample_greedy_batched(
+            &self.stream,
+            &self.spec_logits_dev,
+            &self.selected_token_dev,
+            self.vocab_size,
+            k,
+        )?;
+
+        let graph = self.stream.end_capture()?;
+        let exec = graph.instantiate()?;
+        self.speculative_graph = Some(exec);
         Ok(())
     }
 
@@ -1873,6 +2479,7 @@ impl<'a> ForwardDriver<'a> {
     /// Resets the current sequence position and KV pools.
     pub fn reset_pos(&mut self) {
         self.pos = 0;
+        self.radix_tree = engine_kvcache::RadixTree::new(self.layout.block_tokens);
         let zero_bytes = 0u32.to_le_bytes();
         let _ = self.pos_dev.copy_from_host(&self.stream, &zero_bytes);
         for layer in &self.layers {

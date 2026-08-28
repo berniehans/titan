@@ -37,6 +37,7 @@ fn fixture_path() -> Option<PathBuf> {
 #[test]
 #[ignore]
 fn test_subgate_vram_real_audit_working_set() -> Result<(), DynError> {
+    engine_cuda::ensure_cuda_dll_paths();
     let fix = fixture_path().ok_or("fixture missing (GPU test)")?;
     let reader = GgufReader::open(&fix)?;
     let pinned = load_to_pinned(&reader, &fix)?;

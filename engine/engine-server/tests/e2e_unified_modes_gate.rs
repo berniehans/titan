@@ -80,6 +80,7 @@ async fn spawn_server(
 #[tokio::test]
 #[ignore]
 async fn test_unified_modes_resident_and_streaming() {
+    engine_cuda::ensure_cuda_dll_paths();
     let Some(fixture_path) = resolve_fixture_path() else {
         eprintln!("Skipping test_unified_modes_resident_and_streaming: fixture not found");
         return;

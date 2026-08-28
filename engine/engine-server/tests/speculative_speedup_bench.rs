@@ -1,4 +1,4 @@
-﻿use engine_core::forward_driver::ForwardDriver;
+use engine_core::forward_driver::ForwardDriver;
 use engine_core::sampler::{Sampler, SamplerParams};
 use engine_core::tokenizer::BpeTokenizer;
 use engine_io::config::ModelConfig;
@@ -61,7 +61,7 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
     let mut target_driver = ForwardDriver::new(&target_reader, &target_pinned, &target_cfg, 512)?;
     let _ = target_driver.capture_autonomous_decode_graph();
 
-    let raw_prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\nGive me a list of 5 historical dates.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n";
+    let raw_prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nWrite a short list of 5 counting numbers in order from 1 to 5.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n1, 2,";
     let prompt_tokens = tokenizer.encode(raw_prompt)?;
 
     let mut sampler = Sampler::new(42);
@@ -84,6 +84,7 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
         }
         best_i as u32
     };
+    println!("  Target 3B cur_token in [1/2]: {} ({:?})", cur_token, tokenizer.decode(&[cur_token]));
 
     let n_steps = 30;
     let t_start_base = Instant::now();
@@ -93,6 +94,7 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
     let base_ms_per_tok = (elapsed_base * 1000.0) / gen_tokens.len() as f64;
     println!("  Target 3B Baseline: {:.1} tok/s ({:.2} ms/tok) | {} tokens generated in {:.2} ms",
         base_tok_per_sec, base_ms_per_tok, gen_tokens.len(), elapsed_base * 1000.0);
+    println!("  Baseline text: {:?}", tokenizer.decode(&gen_tokens));
 
     // -------------------------------------------------------------------------
     // SPECULATIVE DECODING: 1B Draft -> 3B Target (K = 3)
@@ -100,20 +102,16 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
     println!("\n[2/2] Running Multi-Model Speculative Decoding (1B Draft -> 3B Target, K=3)...");
     draft_driver.reset_pos();
     target_driver.reset_pos();
-    let _ = draft_driver.prefill(&prompt_tokens)?;
+    let draft_init_logits = draft_driver.prefill(&prompt_tokens)?;
     let target_init_logits = target_driver.prefill(&prompt_tokens)?;
-    let mut current_token = {
-        let mut best_i = 0;
-        let mut best_val = f32::NEG_INFINITY;
-        for (idx, &v) in target_init_logits.iter().enumerate() {
-            if v > best_val {
-                best_val = v;
-                best_i = idx;
-            }
-        }
-        best_i as u32
-    };
 
+    let draft_init_token = Sampler::argmax(&draft_init_logits) as u32;
+    let target_init_token = Sampler::argmax(&target_init_logits) as u32;
+
+    println!("  Draft initial token from prefill: {} ({:?})", draft_init_token, tokenizer.decode(&[draft_init_token]));
+    println!("  Target initial token from prefill: {} ({:?})", target_init_token, tokenizer.decode(&[target_init_token]));
+
+    let mut current_token = target_init_token;
     let mut spec_emitted_tokens = vec![current_token];
     let mut total_accepted = 0;
     let mut total_proposed = 0;
@@ -122,18 +120,14 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
 
     let t_start_spec = Instant::now();
     while spec_emitted_tokens.len() < spec_target_tokens {
-        // Step A: Draft model emits K candidates
-        let mut candidates = Vec::with_capacity(k);
-        let mut draft_token = current_token;
-        for _ in 0..k {
-            let draft_logits = draft_driver.decode(draft_token)?;
-            let cand = sampler.sample(&draft_logits, &spec_emitted_tokens, &params);
-            candidates.push(cand);
-            draft_token = cand;
-        }
+        // Step A: Draft model emits K candidates autonomously on GPU
+        let t_draft_start = Instant::now();
+        let candidates = draft_driver.generate_autonomous_gpu(current_token, k)?;
+        let t_draft = t_draft_start.elapsed();
         total_proposed += k;
 
         // Step B: Target model verifies candidates in 1 parallel GPU pass
+        let t_verif_start = Instant::now();
         let verif = target_driver.verify_speculative(
             current_token,
             &candidates,
@@ -141,6 +135,16 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
             &params,
             &spec_emitted_tokens,
         )?;
+        let t_verif = t_verif_start.elapsed();
+
+        if spec_emitted_tokens.len() < 15 {
+            let cand_str: Vec<(u32, String)> = candidates.iter().map(|&c| (c, tokenizer.decode(&[c]).unwrap_or_default())).collect();
+            let emit_str: Vec<(u32, String)> = verif.emitted_tokens.iter().map(|&c| (c, tokenizer.decode(&[c]).unwrap_or_default())).collect();
+            println!("  [DEBUG] cur: {} ({:?}) | Draft cand: {:?} | Target emitted: {:?} | Acc: {} | Draft: {:.2}ms, Verif: {:.2}ms",
+                current_token, tokenizer.decode(&[current_token]).unwrap_or_default(),
+                cand_str, emit_str, verif.n_accepted,
+                t_draft.as_secs_f64() * 1000.0, t_verif.as_secs_f64() * 1000.0);
+        }
 
         total_accepted += verif.n_accepted;
         for &tok in &verif.emitted_tokens {

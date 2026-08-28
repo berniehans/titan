@@ -39,6 +39,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[test]
 #[ignore]
 fn test_chunked_prefill_parity() -> Result<(), DynError> {
+    engine_cuda::ensure_cuda_dll_paths();
     let fix = fixture_path();
     let reader = GgufReader::open(&fix)?;
     let pinned = engine_io::load_to_pinned(&reader, &fix)?;
