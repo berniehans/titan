@@ -63,7 +63,7 @@ fn test_grammar_constrained_json_generation() -> Result<(), DynError> {
     let params = SamplerParams::greedy();
 
     let mut generated_tokens = Vec::new();
-    let mut grammar = JsonGrammar::inside_object();
+    let mut grammar = JsonGrammar::inside_object().with_keys(&["city", "weather", "temperature"]);
 
     print!("  [Generated Stream]: {{");
     for step in 0..30 {

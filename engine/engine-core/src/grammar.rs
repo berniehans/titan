@@ -28,6 +28,8 @@ pub struct JsonGrammar {
     pub buffer: String,
     pub depth: usize,
     pub in_escape: bool,
+    pub allowed_keys: Option<Vec<String>>,
+    pub current_key: String,
 }
 
 impl Default for JsonGrammar {
@@ -45,7 +47,15 @@ impl JsonGrammar {
             buffer: String::with_capacity(256),
             depth: 0,
             in_escape: false,
+            allowed_keys: None,
+            current_key: String::new(),
         }
+    }
+
+    /// Sets explicit allowed JSON keys for schema-guided tool calling.
+    pub fn with_keys(mut self, keys: &[&str]) -> Self {
+        self.allowed_keys = Some(keys.iter().map(|s| s.to_string()).collect());
+        self
     }
 
     /// Creates a JSON grammar validator starting from an already-opened root object `{`.
@@ -156,6 +166,7 @@ impl JsonGrammar {
                 if ch.is_whitespace() {
                     true
                 } else if ch == '"' {
+                    self.current_key.clear();
                     self.state = JsonParserState::InKeyString;
                     true
                 } else if ch == '}' && self.stack.last() == Some(&'}') {
@@ -172,7 +183,19 @@ impl JsonGrammar {
                     return false;
                 }
                 if ch == '"' {
+                    if let Some(ref allowed) = self.allowed_keys {
+                        if !allowed.iter().any(|k| k == &self.current_key) {
+                            return false;
+                        }
+                    }
                     self.state = JsonParserState::ExpectColon;
+                } else {
+                    self.current_key.push(ch);
+                    if let Some(ref allowed) = self.allowed_keys {
+                        if !allowed.iter().any(|k| k.starts_with(&self.current_key)) {
+                            return false;
+                        }
+                    }
                 }
                 true
             }
@@ -327,5 +350,12 @@ mod tests {
         grammar.advance("{\"name\":");
         assert!(!grammar.is_token_valid(":"));
         assert!(!grammar.is_token_valid(","));
+    }
+
+    #[test]
+    fn test_schema_guided_allowed_keys() {
+        let mut grammar = JsonGrammar::inside_object().with_keys(&["city", "weather"]);
+        assert!(grammar.is_token_valid("\"city\":"));
+        assert!(!grammar.is_token_valid("\"invalid_key\":"));
     }
 }

@@ -1,4 +1,4 @@
-use engine_core::grammar::{GrammarParser, JsonObjectGrammar};
+﻿use engine_core::grammar::JsonGrammar;
 use engine_kvcache::RadixTree;
 use std::time::Instant;
 
@@ -33,7 +33,7 @@ fn test_agent_tool_loop_prefix_cache_and_json_validity() {
         total_prefilled_tokens += turn_user_tokens.len();
 
         // Model generates a structured JSON tool invocation
-        let mut grammar = JsonObjectGrammar::new();
+        let mut grammar = JsonGrammar::new();
         let tool_response_tokens = [
             "{\n",
             "  \"tool\": \"fetch_weather\",\n",
@@ -41,11 +41,12 @@ fn test_agent_tool_loop_prefix_cache_and_json_validity() {
             "}"
         ];
 
-        for (idx, tok_str) in tool_response_tokens.iter().enumerate() {
-            grammar.advance((idx + 1) as u32, tok_str).expect("Valid JSON tool call token");
+        for tok_str in &tool_response_tokens {
+            assert!(grammar.is_token_valid(tok_str), "Valid JSON tool call token: {}", tok_str);
+            grammar.advance(tok_str);
         }
 
-        assert!(grammar.is_accepted(), "Tool call must be fully accepted as valid JSON object");
+        assert!(grammar.is_complete(), "Tool call must be fully accepted as valid JSON object");
     }
 
     println!("\n=== AGENT MULTI-TURN PREFIX CACHE SUMMARY ===");
