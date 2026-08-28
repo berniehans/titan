@@ -38,14 +38,56 @@ impl ChatMessage {
 
 /// Formats a sequence of chat messages into Qwen ChatML prompt format.
 pub fn format_chatml(messages: &[ChatMessage]) -> String {
+    format_chatml_with_tools(messages, None)
+}
+
+/// Formats a sequence of chat messages into Qwen / Hermes ChatML prompt format with optional tool definitions.
+pub fn format_chatml_with_tools(
+    messages: &[ChatMessage],
+    tools: Option<&[serde_json::Value]>,
+) -> String {
     let mut prompt = String::new();
-    for msg in messages {
+    let mut has_system = false;
+
+    // If tools are provided, inject tool schema into the system prompt
+    if let Some(t_list) = tools {
+        if !t_list.is_empty() {
+            let tools_json = serde_json::to_string_pretty(t_list).unwrap_or_default();
+            let tools_system_prompt = format!(
+                "# Tools\n\nYou have access to the following functions:\n\n<tools>\n{}\n</tools>\n\nTo call a function, respond with a JSON object inside <tool_call></tool_call> tags containing 'name' and 'arguments'.",
+                tools_json
+            );
+
+            if let Some(first) = messages.first() {
+                if first.role == "system" {
+                    has_system = true;
+                    prompt.push_str("<|im_start|>system\n");
+                    prompt.push_str(&first.content);
+                    prompt.push_str("\n\n");
+                    prompt.push_str(&tools_system_prompt);
+                    prompt.push_str("<|im_end|>\n");
+                } else {
+                    prompt.push_str("<|im_start|>system\n");
+                    prompt.push_str(&tools_system_prompt);
+                    prompt.push_str("<|im_end|>\n");
+                }
+            } else {
+                prompt.push_str("<|im_start|>system\n");
+                prompt.push_str(&tools_system_prompt);
+                prompt.push_str("<|im_end|>\n");
+            }
+        }
+    }
+
+    let start_idx = if has_system { 1 } else { 0 };
+    for msg in &messages[start_idx..] {
         prompt.push_str("<|im_start|>");
         prompt.push_str(&msg.role);
         prompt.push('\n');
         prompt.push_str(&msg.content);
         prompt.push_str("<|im_end|>\n");
     }
+
     // Append assistant prompt header to trigger response generation
     prompt.push_str("<|im_start|>assistant\n");
     prompt
@@ -56,7 +98,7 @@ fn default_max_tokens() -> u32 {
 }
 
 /// Body of a `POST /v1/chat/completions` request.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
     /// Model identifier.
     #[serde(default)]
@@ -91,7 +133,7 @@ pub struct ChatCompletionRequest {
 }
 
 /// One non-streaming chat choice.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatChoice {
     pub index: u32,
     pub message: ChatMessage,
@@ -99,7 +141,7 @@ pub struct ChatChoice {
 }
 
 /// Non-streaming `POST /v1/chat/completions` response.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionResponse {
     pub id: String,
     pub object: String,
@@ -110,7 +152,7 @@ pub struct ChatCompletionResponse {
 }
 
 /// Delta token payload inside streaming SSE chunks.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeltaMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
@@ -119,7 +161,7 @@ pub struct DeltaMessage {
 }
 
 /// One streaming chat chunk choice.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatChunkChoice {
     pub index: u32,
     pub delta: DeltaMessage,
@@ -127,7 +169,7 @@ pub struct ChatChunkChoice {
 }
 
 /// One SSE payload for a streaming chat completion chunk.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionChunk {
     pub id: String,
     pub object: String,
@@ -153,7 +195,7 @@ pub struct CompletionRequest {
 }
 
 /// One non-streaming completion choice.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionChoice {
     pub text: String,
     pub index: u32,
@@ -161,7 +203,7 @@ pub struct CompletionChoice {
 }
 
 /// Token accounting for a completion response.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -169,7 +211,7 @@ pub struct CompletionUsage {
 }
 
 /// Non-streaming `POST /v1/completions` response.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionResponse {
     pub id: String,
     pub object: String,
@@ -180,7 +222,7 @@ pub struct CompletionResponse {
 }
 
 /// One streaming chunk choice.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkChoice {
     pub index: u32,
     pub text: String,
@@ -188,7 +230,7 @@ pub struct ChunkChoice {
 }
 
 /// One SSE payload for a generated text token.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionChunk {
     pub id: String,
     pub object: String,

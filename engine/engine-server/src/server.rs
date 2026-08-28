@@ -527,7 +527,7 @@ async fn handle_real_chat_completion(
     State(cfg): State<Arc<RealServerCfg>>,
     Json(body): Json<ChatCompletionRequest>,
 ) -> Response {
-    let prompt = format_chatml(&body.messages);
+    let prompt = crate::models::format_chatml_with_tools(&body.messages, body.tools.as_deref());
     let max_tokens = if body.max_tokens == 0 {
         cfg.default_max_tokens
     } else {
