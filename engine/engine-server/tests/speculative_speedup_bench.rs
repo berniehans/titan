@@ -61,7 +61,7 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
     let mut target_driver = ForwardDriver::new(&target_reader, &target_pinned, &target_cfg, 512)?;
     let _ = target_driver.capture_autonomous_decode_graph();
 
-    let raw_prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nWrite a short list of 5 counting numbers in order from 1 to 5.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n1, 2,";
+    let raw_prompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday Date: 28 Aug 2026\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWrite a short explanation of how photosynthesizing plants convert sunlight into energy.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n";
     let prompt_tokens = tokenizer.encode(raw_prompt)?;
 
     let mut sampler = Sampler::new(42);

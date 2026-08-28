@@ -28,14 +28,20 @@ const FUNC_NAME_Q6K_BATCHED: &str = "gemm_q6k_batched_kernel";
 const FUNC_NAME_Q6K_SPLITK: &str = "gemm_q6k_splitk_kernel";
 const FUNC_NAME_Q4K_SPLITK: &str = "gemm_q4k_splitk_kernel";
 const FUNC_NAME_FUSED_QKV: &str = "gemm_fused_qkv_kernel";
+const FUNC_NAME_FUSED_QKV_MULTI_ROW: &str = "gemm_fused_qkv_multi_row_kernel";
 const FUNC_NAME_FUSED_QKV_Q4K: &str = "gemm_fused_qkv_q4k_kernel";
 const FUNC_NAME_FUSED_QKV_BATCHED: &str = "gemm_fused_qkv_batched_kernel";
 const FUNC_NAME_GET_ROWS_Q4K: &str = "get_rows_q4k_kernel";
 const FUNC_NAME_GET_ROWS_Q6K: &str = "get_rows_q6k_kernel";
+const FUNC_NAME_GET_ROWS_Q8_0: &str = "get_rows_q8_0_kernel";
+const FUNC_NAME_GET_ROWS_F16: &str = "get_rows_f16_kernel";
 const FUNC_NAME_SAMPLE_GREEDY: &str = "gpu_sample_greedy_kernel";
 const FUNC_NAME_ADVANCE_TOKEN: &str = "gpu_advance_token_step_kernel";
 const FUNC_NAME_Q4K_MMA: &str = "gemm_q4k_mma_kernel";
 const FUNC_NAME_Q4K_MULTI_ROW: &str = "gemm_q4k_multi_row_kernel";
+const FUNC_NAME_Q6K_MULTI_ROW: &str = "gemm_q6k_multi_row_kernel";
+const FUNC_NAME_FUSED_QKV_Q4K_MULTI_ROW: &str = "gemm_fused_qkv_q4k_multi_row_kernel";
+const FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MULTI_ROW: &str = "gemm_q4k_fused_gate_up_swiglu_multi_row_kernel";
 const FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA: &str = "gemm_q4k_fused_gate_up_swiglu_mma_kernel";
 const FUNC_NAME_REDUCE_SPLITK: &str = "reduce_splitk_kernel";
 
@@ -51,19 +57,25 @@ pub struct BatchedGEMM {
     fn_q4k_batched: CUfunction,
     fn_q4k_multi_row: CUfunction,
     fn_q6k: CUfunction,
+    fn_q6k_multi_row: CUfunction,
     fn_q8: CUfunction,
     fn_f16: CUfunction,
     _fn_f32: CUfunction,
     fn_q4k_fused_gate_up_swiglu: CUfunction,
     fn_q4k_batched_gate_up_swiglu: CUfunction,
+    fn_q4k_fused_gate_up_swiglu_multi_row: CUfunction,
     fn_q6k_batched: CUfunction,
     fn_q6k_splitk: CUfunction,
     fn_q4k_splitk: CUfunction,
     fn_fused_qkv: CUfunction,
+    fn_fused_qkv_multi_row: CUfunction,
     fn_fused_qkv_q4k: CUfunction,
+    fn_fused_qkv_q4k_multi_row: CUfunction,
     fn_fused_qkv_batched: CUfunction,
     fn_get_rows_q4k: CUfunction,
     fn_get_rows_q6k: CUfunction,
+    fn_get_rows_q8_0: CUfunction,
+    fn_get_rows_f16: CUfunction,
     fn_sample_greedy: CUfunction,
     fn_advance_token: CUfunction,
     fn_q4k_mma: CUfunction,
@@ -120,15 +132,21 @@ impl BatchedGEMM {
         let mut fn_q6k_splitk: CUfunction = std::ptr::null_mut();
         let mut fn_q4k_splitk: CUfunction = std::ptr::null_mut();
         let mut fn_fused_qkv: CUfunction = std::ptr::null_mut();
+        let mut fn_fused_qkv_multi_row: CUfunction = std::ptr::null_mut();
         let mut fn_fused_qkv_q4k: CUfunction = std::ptr::null_mut();
         let mut fn_fused_qkv_batched: CUfunction = std::ptr::null_mut();
         let mut fn_get_rows_q4k: CUfunction = std::ptr::null_mut();
         let mut fn_get_rows_q6k: CUfunction = std::ptr::null_mut();
+        let mut fn_get_rows_q8_0: CUfunction = std::ptr::null_mut();
+        let mut fn_get_rows_f16: CUfunction = std::ptr::null_mut();
         let mut fn_sample_greedy: CUfunction = std::ptr::null_mut();
         let mut fn_advance_token: CUfunction = std::ptr::null_mut();
 
         let mut fn_q4k_mma: CUfunction = std::ptr::null_mut();
         let mut fn_q4k_multi_row: CUfunction = std::ptr::null_mut();
+        let mut fn_q6k_multi_row: CUfunction = std::ptr::null_mut();
+        let mut fn_fused_qkv_q4k_multi_row: CUfunction = std::ptr::null_mut();
+        let mut fn_q4k_fused_gate_up_swiglu_multi_row: CUfunction = std::ptr::null_mut();
         let mut fn_q4k_fused_gate_up_swiglu_mma: CUfunction = std::ptr::null_mut();
         let mut fn_reduce_splitk: CUfunction = std::ptr::null_mut();
 
@@ -152,20 +170,30 @@ impl BatchedGEMM {
             let c_splitk = CString::new(FUNC_NAME_Q6K_SPLITK).unwrap();
             let c_splitk_q4 = CString::new(FUNC_NAME_Q4K_SPLITK).unwrap();
             let c_fused_qkv = CString::new(FUNC_NAME_FUSED_QKV).unwrap();
+            let c_fused_qkv_mr = CString::new(FUNC_NAME_FUSED_QKV_MULTI_ROW).unwrap();
             let c_fused_qkv_q4k = CString::new(FUNC_NAME_FUSED_QKV_Q4K).unwrap();
             let c_fused_qkv_b = CString::new(FUNC_NAME_FUSED_QKV_BATCHED).unwrap();
             let c_get_rows = CString::new(FUNC_NAME_GET_ROWS_Q4K).unwrap();
             let c_get_rows_q6k = CString::new(FUNC_NAME_GET_ROWS_Q6K).unwrap();
+            let c_get_rows_q8 = CString::new(FUNC_NAME_GET_ROWS_Q8_0).unwrap();
+            let c_get_rows_f16 = CString::new(FUNC_NAME_GET_ROWS_F16).unwrap();
             let c_sample = CString::new(FUNC_NAME_SAMPLE_GREEDY).unwrap();
             let c_advance = CString::new(FUNC_NAME_ADVANCE_TOKEN).unwrap();
             let c_q4k_mma = CString::new(FUNC_NAME_Q4K_MMA).unwrap();
             let c_q4k_mr = CString::new(FUNC_NAME_Q4K_MULTI_ROW).unwrap();
+            let c_q6k_mr = CString::new(FUNC_NAME_Q6K_MULTI_ROW).unwrap();
+            let c_qkv_mr = CString::new(FUNC_NAME_FUSED_QKV_Q4K_MULTI_ROW).unwrap();
+            let c_swiglu_mr = CString::new(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MULTI_ROW).unwrap();
             let c_fused_mma = CString::new(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA).unwrap();
 
             let r_q = lib.cuModuleGetFunction(&mut fn_quantize_q8_1, cu_module, c_quant.as_ptr());
             let r1 = lib.cuModuleGetFunction(&mut fn_q4k, cu_module, c_q4k.as_ptr());
             let r1b = lib.cuModuleGetFunction(&mut fn_q4k_batched, cu_module, c_q4k_b.as_ptr());
             let _ = lib.cuModuleGetFunction(&mut fn_q4k_multi_row, cu_module, c_q4k_mr.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_q6k_multi_row, cu_module, c_q6k_mr.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_fused_qkv_q4k_multi_row, cu_module, c_qkv_mr.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_fused_qkv_multi_row, cu_module, c_fused_qkv_mr.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_q4k_fused_gate_up_swiglu_multi_row, cu_module, c_swiglu_mr.as_ptr());
             let r2 = lib.cuModuleGetFunction(&mut fn_q6k, cu_module, c_q6k.as_ptr());
             let r3 = lib.cuModuleGetFunction(&mut fn_q8,  cu_module, c_q8.as_ptr());
             let r4 = lib.cuModuleGetFunction(&mut fn_f16, cu_module, c_f16.as_ptr());
@@ -180,6 +208,8 @@ impl BatchedGEMM {
             let r9b = lib.cuModuleGetFunction(&mut fn_fused_qkv_batched, cu_module, c_fused_qkv_b.as_ptr());
             let r10 = lib.cuModuleGetFunction(&mut fn_get_rows_q4k, cu_module, c_get_rows.as_ptr());
             let _ = lib.cuModuleGetFunction(&mut fn_get_rows_q6k, cu_module, c_get_rows_q6k.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_get_rows_q8_0, cu_module, c_get_rows_q8.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_get_rows_f16, cu_module, c_get_rows_f16.as_ptr());
             let r11 = lib.cuModuleGetFunction(&mut fn_sample_greedy, cu_module, c_sample.as_ptr());
             let r12 = lib.cuModuleGetFunction(&mut fn_advance_token, cu_module, c_advance.as_ptr());
             let _ = lib.cuModuleGetFunction(&mut fn_q4k_mma, cu_module, c_q4k_mma.as_ptr());
@@ -220,19 +250,25 @@ impl BatchedGEMM {
             fn_q4k_batched,
             fn_q4k_multi_row,
             fn_q6k,
+            fn_q6k_multi_row,
             fn_q8,
             fn_f16,
             _fn_f32: fn_f32,
             fn_q4k_fused_gate_up_swiglu,
             fn_q4k_batched_gate_up_swiglu,
+            fn_q4k_fused_gate_up_swiglu_multi_row,
             fn_q6k_batched,
             fn_q6k_splitk,
             fn_q4k_splitk,
             fn_fused_qkv,
+            fn_fused_qkv_multi_row,
             fn_fused_qkv_q4k,
+            fn_fused_qkv_q4k_multi_row,
             fn_fused_qkv_batched,
             fn_get_rows_q4k,
             fn_get_rows_q6k,
+            fn_get_rows_q8_0,
+            fn_get_rows_f16,
             fn_sample_greedy,
             fn_advance_token,
             fn_q4k_mma,
@@ -502,6 +538,32 @@ impl BatchedGEMM {
 
         self.device.bind_to_thread()?;
 
+        if batch_size > 1 && batch_size <= 4 && !self.fn_q4k_multi_row.is_null() {
+            let cols_mr = 8u32;
+            let grid_x_mr = (ne1 as u32).div_ceil(cols_mr);
+            let shared_bytes_mr = (((ne0 * 5) / 4) * batch_size + 256) as u32;
+            unsafe {
+                let lib = sys::lib();
+                let res = lib.cuLaunchKernel(
+                    self.fn_q4k_multi_row,
+                    grid_x_mr,
+                    1,
+                    1,
+                    256,
+                    1,
+                    1,
+                    shared_bytes_mr,
+                    stream.raw(),
+                    args.as_ptr() as *mut *mut std::ffi::c_void,
+                    std::ptr::null_mut(),
+                );
+                if res != CUresult::CUDA_SUCCESS {
+                    return Err(CudaError::KernelLaunch("cuLaunchKernel (GEMM Q4_K Multi-Row)", res));
+                }
+            }
+            return Ok(());
+        }
+
         unsafe {
             let lib = sys::lib();
             let res = lib.cuLaunchKernel(
@@ -692,10 +754,38 @@ impl BatchedGEMM {
 
         let cols_per_block = 4u32;
         let grid_x = (ne1 as u32).div_ceil(cols_per_block);
-        let grid_y = batch_size as u32;
-        let shared_bytes = (((ne0 * 5) / 4) + 256) as u32;
 
         self.device.bind_to_thread()?;
+
+        if batch_size > 1 && batch_size <= 4 && !self.fn_q4k_fused_gate_up_swiglu_multi_row.is_null() {
+            let shared_bytes = (((ne0 * 5) / 4) * batch_size + 256) as u32;
+            let cols_mr = 8u32;
+            let grid_x_mr = (ne1 as u32).div_ceil(cols_mr);
+            let grid_y_mr = 1u32;
+            unsafe {
+                let lib = sys::lib();
+                let res = lib.cuLaunchKernel(
+                    self.fn_q4k_fused_gate_up_swiglu_multi_row,
+                    grid_x_mr,
+                    grid_y_mr,
+                    1,
+                    256,
+                    1,
+                    1,
+                    shared_bytes,
+                    stream.raw(),
+                    args.as_ptr() as *mut *mut std::ffi::c_void,
+                    std::ptr::null_mut(),
+                );
+                if res != CUresult::CUDA_SUCCESS {
+                    return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedGateUpSwiGLU Multi-Row)", res));
+                }
+            }
+            return Ok(());
+        }
+
+        let grid_y = batch_size as u32;
+        let shared_bytes = (((ne0 * 5) / 4) + 256) as u32;
 
         unsafe {
             let lib = sys::lib();
@@ -890,9 +980,35 @@ impl BatchedGEMM {
         let cols_per_block = 8u32;
         let shared_bytes = (((ne0 * 5) / 4) + 128) as u32;
         let grid_x = (ne1 as u32).div_ceil(cols_per_block);
-        let grid_y = batch_size as u32;
 
         self.device.bind_to_thread()?;
+
+        if batch_size > 1 && batch_size <= 4 && !self.fn_q6k_multi_row.is_null() {
+            let shared_bytes_mr = (((ne0 * 5) / 4) * batch_size + 256) as u32;
+            let grid_y_mr = 1u32;
+            unsafe {
+                let lib = sys::lib();
+                let res = lib.cuLaunchKernel(
+                    self.fn_q6k_multi_row,
+                    grid_x,
+                    grid_y_mr,
+                    1,
+                    256,
+                    1,
+                    1,
+                    shared_bytes_mr,
+                    stream.raw(),
+                    args.as_ptr() as *mut *mut std::ffi::c_void,
+                    std::ptr::null_mut(),
+                );
+                if res != CUresult::CUDA_SUCCESS {
+                    return Err(CudaError::KernelLaunch("cuLaunchKernel (GEMM Q6_K Multi-Row)", res));
+                }
+            }
+            return Ok(());
+        }
+
+        let grid_y = batch_size as u32;
 
         unsafe {
             let lib = sys::lib();
@@ -1128,10 +1244,36 @@ impl BatchedGEMM {
         let cols_per_block = 8u32;
         let total_cols = (qdim + kvd + kvd) as u32;
         let grid_x = total_cols.div_ceil(cols_per_block);
-        let grid_y = batch_size as u32;
-        let shared_bytes = (((ne0 * 5) / 4) + 128) as u32;
 
         self.device.bind_to_thread()?;
+
+        if batch_size > 1 && batch_size <= 4 && !self.fn_fused_qkv_multi_row.is_null() {
+            let shared_bytes_mr = (((ne0 * 5) / 4) * batch_size + 256) as u32;
+            let grid_y_mr = 1u32;
+            unsafe {
+                let lib = sys::lib();
+                let res = lib.cuLaunchKernel(
+                    self.fn_fused_qkv_multi_row,
+                    grid_x,
+                    grid_y_mr,
+                    1,
+                    256,
+                    1,
+                    1,
+                    shared_bytes_mr,
+                    stream.raw(),
+                    args.as_ptr() as *mut *mut std::ffi::c_void,
+                    std::ptr::null_mut(),
+                );
+                if res != CUresult::CUDA_SUCCESS {
+                    return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedQKV Multi-Row)", res));
+                }
+            }
+            return Ok(());
+        }
+
+        let grid_y = batch_size as u32;
+        let shared_bytes = (((ne0 * 5) / 4) + 128) as u32;
 
         unsafe {
             let lib = sys::lib();
@@ -1222,10 +1364,38 @@ impl BatchedGEMM {
         let cols_per_block = 4u32;
         let total_cols = (qdim + kvd + kvd) as u32;
         let grid_x = total_cols.div_ceil(cols_per_block);
-        let grid_y = batch_size as u32;
-        let shared_bytes = (((ne0 * 5) / 4) + 256) as u32;
 
         self.device.bind_to_thread()?;
+
+        if batch_size > 1 && batch_size <= 4 && !self.fn_fused_qkv_q4k_multi_row.is_null() {
+            let shared_bytes_mr = (((ne0 * 5) / 4) * batch_size + 256) as u32;
+            let cols_mr = 8u32;
+            let grid_x_mr = total_cols.div_ceil(cols_mr);
+            let grid_y_mr = 1u32;
+            unsafe {
+                let lib = sys::lib();
+                let res = lib.cuLaunchKernel(
+                    self.fn_fused_qkv_q4k_multi_row,
+                    grid_x_mr,
+                    grid_y_mr,
+                    1,
+                    256,
+                    1,
+                    1,
+                    shared_bytes_mr,
+                    stream.raw(),
+                    args.as_ptr() as *mut *mut std::ffi::c_void,
+                    std::ptr::null_mut(),
+                );
+                if res != CUresult::CUDA_SUCCESS {
+                    return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedQKV_Q4K Multi-Row)", res));
+                }
+            }
+            return Ok(());
+        }
+
+        let grid_y = batch_size as u32;
+        let shared_bytes = (((ne0 * 5) / 4) + 256) as u32;
 
         unsafe {
             let lib = sys::lib();
@@ -1350,6 +1520,104 @@ impl BatchedGEMM {
         Ok(())
     }
 
+    /// Fast GPU dequantized token embedding lookup for Q8_0 formatted weights.
+    pub fn get_rows_q8_0(
+        &self,
+        stream: &CudaStream,
+        emb_weights: &DeviceBuffer,
+        token_ids_dev: &DeviceBuffer,
+        x_out: &DeviceBuffer,
+        hidden_dim: usize,
+        n_tokens: usize,
+    ) -> Result<(), CudaError> {
+        let hidden_dim_i: i32 = hidden_dim as i32;
+        let n_tokens_i: i32 = n_tokens as i32;
+        let w_addr: u64 = emb_weights.device_ptr();
+        let tok_addr: u64 = token_ids_dev.device_ptr();
+        let out_addr: u64 = x_out.device_ptr();
+
+        let args: [*mut std::ffi::c_void; 5] = [
+            &w_addr as *const u64 as *mut std::ffi::c_void,
+            &tok_addr as *const u64 as *mut std::ffi::c_void,
+            &out_addr as *const u64 as *mut std::ffi::c_void,
+            &hidden_dim_i as *const i32 as *mut std::ffi::c_void,
+            &n_tokens_i as *const i32 as *mut std::ffi::c_void,
+        ];
+
+        self.device.bind_to_thread()?;
+
+        unsafe {
+            let lib = sys::lib();
+            let res = lib.cuLaunchKernel(
+                self.fn_get_rows_q8_0,
+                n_tokens as u32,
+                1,
+                1,
+                BLOCK_X,
+                1,
+                1,
+                0,
+                stream.raw(),
+                args.as_ptr() as *mut *mut std::ffi::c_void,
+                std::ptr::null_mut(),
+            );
+            if res != CUresult::CUDA_SUCCESS {
+                return Err(CudaError::KernelLaunch("cuLaunchKernel (GetRowsQ8_0)", res));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Fast GPU dequantized token embedding lookup for F16 formatted weights.
+    pub fn get_rows_f16(
+        &self,
+        stream: &CudaStream,
+        emb_weights: &DeviceBuffer,
+        token_ids_dev: &DeviceBuffer,
+        x_out: &DeviceBuffer,
+        hidden_dim: usize,
+        n_tokens: usize,
+    ) -> Result<(), CudaError> {
+        let hidden_dim_i: i32 = hidden_dim as i32;
+        let n_tokens_i: i32 = n_tokens as i32;
+        let w_addr: u64 = emb_weights.device_ptr();
+        let tok_addr: u64 = token_ids_dev.device_ptr();
+        let out_addr: u64 = x_out.device_ptr();
+
+        let args: [*mut std::ffi::c_void; 5] = [
+            &w_addr as *const u64 as *mut std::ffi::c_void,
+            &tok_addr as *const u64 as *mut std::ffi::c_void,
+            &out_addr as *const u64 as *mut std::ffi::c_void,
+            &hidden_dim_i as *const i32 as *mut std::ffi::c_void,
+            &n_tokens_i as *const i32 as *mut std::ffi::c_void,
+        ];
+
+        self.device.bind_to_thread()?;
+
+        unsafe {
+            let lib = sys::lib();
+            let res = lib.cuLaunchKernel(
+                self.fn_get_rows_f16,
+                n_tokens as u32,
+                1,
+                1,
+                BLOCK_X,
+                1,
+                1,
+                0,
+                stream.raw(),
+                args.as_ptr() as *mut *mut std::ffi::c_void,
+                std::ptr::null_mut(),
+            );
+            if res != CUresult::CUDA_SUCCESS {
+                return Err(CudaError::KernelLaunch("cuLaunchKernel (GetRowsF16)", res));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Unified GPU embedding row lookup dispatching to format-specific kernels.
     pub fn get_rows(
         &self,
@@ -1363,6 +1631,8 @@ impl BatchedGEMM {
     ) -> Result<(), CudaError> {
         match format {
             GemvFormat::Q6K => self.get_rows_q6k(stream, emb_weights, token_ids_dev, x_out, hidden_dim, n_tokens),
+            GemvFormat::Q8  => self.get_rows_q8_0(stream, emb_weights, token_ids_dev, x_out, hidden_dim, n_tokens),
+            GemvFormat::F16 => self.get_rows_f16(stream, emb_weights, token_ids_dev, x_out, hidden_dim, n_tokens),
             _ => self.get_rows_q4k(stream, emb_weights, token_ids_dev, x_out, hidden_dim, n_tokens),
         }
     }

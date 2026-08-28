@@ -38,6 +38,28 @@ impl CudaStream {
         Ok(Self { stream, device })
     }
 
+    /// Creates a new CUDA stream on the specified CUDA device with explicit execution priority.
+    /// Lower numerical values indicate higher execution priority (e.g. -1 is high priority, 0 is default).
+    pub fn new_with_priority(device: Arc<CudaDevice>, priority: i32) -> Result<Self, CudaError> {
+        device.bind_to_thread()?;
+
+        let mut stream: CUstream = std::ptr::null_mut();
+
+        // SAFETY:
+        // `device.bind_to_thread()` ensured that a valid CUDA context is bound to this thread.
+        // `cuStreamCreateWithPriority` creates stream with flags = 0 and specified priority.
+        let res = unsafe {
+            let lib = cudarc::driver::sys::lib();
+            lib.cuStreamCreateWithPriority(&mut stream, 0, priority)
+        };
+
+        if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS || stream.is_null() {
+            return Err(CudaError::StreamFailed("cuStreamCreateWithPriority", res));
+        }
+
+        Ok(Self { stream, device })
+    }
+
     /// Returns the raw `CUstream` handle.
     pub fn raw(&self) -> CUstream {
         self.stream

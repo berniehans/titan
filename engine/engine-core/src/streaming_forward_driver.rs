@@ -146,8 +146,8 @@ impl<'a> StreamingForwardDriver<'a> {
     ) -> Result<Self, EngineError> {
         let capacity = capacity_tokens.max(1);
         let device = CudaDevice::new(0)?;
-        let compute_stream = CudaStream::new(Arc::clone(&device))?;
-        let transfer_stream = CudaStream::new(Arc::clone(&device))?;
+        let compute_stream = CudaStream::new_with_priority(Arc::clone(&device), -1)?;
+        let transfer_stream = CudaStream::new_with_priority(Arc::clone(&device), 0)?;
         let events_transfer_done = [
             CudaEvent::new(Arc::clone(&device))?,
             CudaEvent::new(Arc::clone(&device))?,
