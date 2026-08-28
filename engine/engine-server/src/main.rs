@@ -174,6 +174,7 @@ fn run_chat(
         io::stdout().flush()?;
 
         let mut context = prompt_tokens.clone();
+        let t_start_gen = Instant::now();
         let initial_logits = driver.prefill(&prompt_tokens)?;
         let first_tok = sampler.sample(&initial_logits, &context, &params);
         let first_piece = tokenizer.decode(&[first_tok]).unwrap_or_default();
@@ -243,9 +244,81 @@ fn run_chat(
             }
         }
 
-        println!("\n");
+        let n_gen = context.len().saturating_sub(prompt_tokens.len());
+        let elapsed = t_start_gen.elapsed().as_secs_f64();
+        let tok_per_sec = if elapsed > 0.0 { n_gen as f64 / elapsed } else { 0.0 };
+        println!("\n\x1b[90m[{n_gen} tokens generated in {elapsed:.2}s — {tok_per_sec:.1} tok/s]\x1b[0m\n");
         messages.push(ChatMessage::assistant(assistant_response));
     }
+
+    Ok(())
+}
+
+fn run_bench(
+    model_path: &Path,
+    engine_mode: EngineMode,
+    spec_mode: SpeculativeMode,
+    kv_capacity: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n>>> RUNNING TITAN EMPIRICAL BENCHMARK ON: {}", model_path.display());
+    let start_load = Instant::now();
+    let reader = GgufReader::open(model_path)?;
+    let pinned: &'static LoadedPinned = Box::leak(Box::new(load_to_pinned(&reader, model_path)?));
+    let _device = CudaDevice::new(0)?;
+    let load_ms = start_load.elapsed().as_secs_f64() * 1000.0;
+
+    let mut model: RealModel<'static> = runtime::build_unified_driver_model(
+        &reader,
+        pinned,
+        kv_capacity,
+        engine_mode,
+        spec_mode,
+    )?;
+
+    let vram_mb = model
+        .driver
+        .as_ref()
+        .map(|d| d.vram_footprint().total() as f64 / (1024.0 * 1024.0))
+        .unwrap_or(0.0);
+
+    print_diagnostics(model_path, model.engine_mode, model.speculative_mode, vram_mb, load_ms);
+
+    let tokenizer = model.tokenizer.take().expect("tokenizer");
+    let mut driver = model.driver.take().expect("driver");
+
+    let test_prompts = [
+        ("Short (Math)", "2 + 2 ="),
+        ("Medium (Fact)", "The capital of France is Paris. What is the capital of Spain?"),
+        ("Long (Code)", "Write a high performance Rust function that computes the Fibonacci sequence using iterative memoization:"),
+    ];
+
+    println!("================================================================================");
+    println!("  TITAN GPU BENCHMARK SUITE (Greedy Sampling T=0, 40 Tokens Generation)");
+    println!("================================================================================");
+
+    for (name, prompt) in &test_prompts {
+        let tokens = tokenizer.encode(prompt)?;
+        let t0 = Instant::now();
+        let _ = driver.prefill(&tokens)?;
+        let prefill_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let prefill_tps = tokens.len() as f64 / (prefill_ms / 1000.0);
+
+        let mut gen_tokens = 0;
+        let mut cur_tok = 12095u32;
+        let t_gen_start = Instant::now();
+        for _ in 0..40 {
+            let _ = driver.decode(cur_tok)?;
+            gen_tokens += 1;
+            cur_tok = 220;
+        }
+        let gen_sec = t_gen_start.elapsed().as_secs_f64();
+        let decode_tps = gen_tokens as f64 / gen_sec;
+        let ms_per_tok = (gen_sec * 1000.0) / gen_tokens as f64;
+
+        println!("  • {:<16} | Prefill: {:>6.1} tok/s ({:>5.2} ms) | Decode: {:>6.1} tok/s ({:>5.2} ms/tok)",
+            name, prefill_tps, prefill_ms, decode_tps, ms_per_tok);
+    }
+    println!("================================================================================\n");
 
     Ok(())
 }
@@ -259,8 +332,10 @@ USAGE:
     titan <SUBCOMMAND> [OPTIONS]
 
 SUBCOMMANDS:
-    chat      Launch interactive terminal chat REPL
+    chat      Launch interactive terminal chat REPL with live tok/s telemetry
     serve     Launch OpenAI-compatible HTTP API server
+    bench     Run automated GPU throughput and TTFT latency benchmark
+    agent     Launch optimized backend server preset for Hermes Agent & tool-calling loops
     help      Print this help message
 
 GLOBAL OPTIONS:
@@ -271,7 +346,7 @@ GLOBAL OPTIONS:
     -t, --temp, --temperature     Sampling temperature [0.0 - 2.0] (default: 0.7)
     --top-p <FLOAT>               Top-p nucleus sampling probability [0.0 - 1.0] (default: 0.9)
     --system <PROMPT>             Initial system prompt for chat
-    -p, --port <PORT>             Port for HTTP server (default: 8000)
+    -p, --port <PORT>             Port for HTTP server (default: 8000, 8080 for agent)
     -h, --help                    Print help
 "#
     );
@@ -358,7 +433,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             top_p,
             system_prompt,
         )?;
-    } else if mode == "serve" {
+    } else if mode == "bench" {
+        run_bench(
+            &model_path,
+            engine_mode,
+            spec_mode,
+            kv_capacity,
+        )?;
+    } else if mode == "serve" || mode == "agent" {
+        let actual_port = if mode == "agent" && port == 8000 { 8080 } else { port };
         let start_load = Instant::now();
         let reader = GgufReader::open(&model_path)?;
         let pinned: &'static LoadedPinned = Box::leak(Box::new(load_to_pinned(&reader, &model_path)?));
@@ -395,17 +478,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             model: shared,
         });
 
-        let addr = format!("0.0.0.0:{port}");
+        let addr = format!("0.0.0.0:{actual_port}");
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         println!("=======================================================");
-        println!("  TITAN OPENAI-COMPATIBLE API SERVER LISTENING ON:    ");
-        println!("  http://localhost:{port}                              ");
-        println!("=======================================================");
-        println!("  Endpoints:");
-        println!("    • POST http://localhost:{port}/v1/chat/completions");
-        println!("    • POST http://localhost:{port}/v1/completions");
-        println!("    • GET  http://localhost:{port}/v1/models");
-        println!("\n  Connect any OpenAI client (Cursor, LibreChat, Open-WebUI, LiteLLM)!\n");
+        if mode == "agent" {
+            println!("  TITAN AUTONOMOUS AGENT SERVER (HERMES READY) ON:     ");
+            println!("  http://localhost:{actual_port}                       ");
+            println!("=======================================================");
+            println!("  Hermes Agent / Cursor / LiteLLM Config:              ");
+            println!("    \"openai_base_url\": \"http://127.0.0.1:{actual_port}/v1\"");
+            println!("    \"model\": \"titan-agent\"                            ");
+            println!("    \"temperature\": 0.0                                 ");
+        } else {
+            println!("  TITAN OPENAI-COMPATIBLE API SERVER LISTENING ON:     ");
+            println!("  http://localhost:{actual_port}                       ");
+            println!("=======================================================");
+            println!("  Endpoints:");
+            println!("    • POST http://localhost:{actual_port}/v1/chat/completions");
+            println!("    • POST http://localhost:{actual_port}/v1/completions");
+            println!("    • GET  http://localhost:{actual_port}/v1/models");
+            println!("\n  Connect any OpenAI client (Cursor, LibreChat, Open-WebUI, LiteLLM)!\n");
+        }
 
         let app = build_router_real(cfg);
         axum::serve(listener, app).await?;

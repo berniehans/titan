@@ -69,6 +69,7 @@ async fn spawn_real_server(fixture: PathBuf) -> Result<(Client, String), DynErro
 #[tokio::test]
 #[ignore]
 async fn test_real_chat_completions_http_e2e() -> Result<(), DynError> {
+    engine_cuda::ensure_cuda_dll_paths();
     let fix = fixture_path().ok_or("fixture missing (GPU test)")?;
     println!("Spawning real HTTP server with fixture {:?}", fix);
     let (client, base) = spawn_real_server(fix).await?;
