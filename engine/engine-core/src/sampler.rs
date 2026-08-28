@@ -116,9 +116,7 @@ impl Sampler {
             return 0;
         }
 
-        if let Some(seed) = params.seed {
-            self.set_seed(seed);
-        }
+
 
         // 1. Clone logits into candidate working buffer
         let mut filtered: Vec<(usize, f32)> = logits

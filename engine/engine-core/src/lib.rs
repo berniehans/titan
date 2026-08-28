@@ -2,6 +2,7 @@ pub mod dequant;
 pub mod error;
 pub mod forward_cpu;
 pub mod forward_driver;
+pub mod grammar;
 pub mod layer_double_buffer;
 pub mod moe;
 pub mod ngram_draft;
@@ -15,6 +16,7 @@ pub mod vram_accounting;
 pub use dequant::{dequant_q4k_cpu, dequant_q6k_cpu};
 pub use error::EngineError;
 pub use forward_driver::{ForwardDriver, VramFootprint};
+pub use grammar::{BitmaskBuffer, GrammarParser, JsonObjectGrammar};
 pub use layer_double_buffer::{HostLayerWeights, LayerDoubleBuffer, LayerSlotGpu, LayerTensorSizes};
 pub use streaming_forward_driver::StreamingForwardDriver;
 pub use moe::{

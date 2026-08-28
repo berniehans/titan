@@ -79,6 +79,15 @@ pub struct ChatCompletionRequest {
     pub repetition_penalty: Option<f32>,
     /// Custom stop token strings.
     pub stop: Option<Vec<String>>,
+    /// OpenAI tool definitions for function calling.
+    #[serde(default)]
+    pub tools: Option<Vec<serde_json::Value>>,
+    /// Controls which (if any) tool is called by the model.
+    #[serde(default)]
+    pub tool_choice: Option<serde_json::Value>,
+    /// Specifies the format that the model must output (e.g. { "type": "json_object" }).
+    #[serde(default)]
+    pub response_format: Option<serde_json::Value>,
 }
 
 /// One non-streaming chat choice.

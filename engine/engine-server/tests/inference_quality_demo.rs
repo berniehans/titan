@@ -36,6 +36,7 @@ fn fixture_path() -> Option<PathBuf> {
 #[test]
 #[ignore]
 fn test_local_inference_quality_samples() -> Result<(), DynError> {
+    engine_cuda::ensure_cuda_dll_paths();
     let fixture = fixture_path().ok_or("fixture not present (GPU test)")?;
     println!("\nLoading model fixture: {:?}", fixture);
     let start_load = Instant::now();
