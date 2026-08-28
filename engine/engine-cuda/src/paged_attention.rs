@@ -349,7 +349,7 @@ impl PagedAttention {
         let max_splits = MAX_FLASH_DECODING_SPLITS;
         let num_splits = ((seq_tokens + tokens_per_split - 1) / tokens_per_split).min(max_splits).max(1);
 
-        if num_splits == 1 && pos_ptr.is_none() {
+        if num_splits == 1 {
             return self.launch_with_pos_ptr(
                 stream,
                 q,
@@ -363,7 +363,7 @@ impl PagedAttention {
                 seq_tokens,
                 query_pos,
                 causal,
-                None,
+                pos_ptr,
             );
         }
 

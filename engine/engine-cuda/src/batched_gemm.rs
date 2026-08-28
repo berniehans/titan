@@ -289,9 +289,9 @@ impl BatchedGEMM {
         residual: Option<&DeviceBuffer>,
     ) -> Result<(), CudaError> {
         match format {
-            GemvFormat::Q4K => self.gemm_q4k_mma(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
+            GemvFormat::Q4K => self.gemm_q4k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
             GemvFormat::Q6K => self.gemm_q6k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
-            _ => self.gemm_q4k_mma(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
+            _ => self.gemm_q4k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
         }
     }
 

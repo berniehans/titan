@@ -1471,7 +1471,7 @@ impl<'a> ForwardDriver<'a> {
             )?;
 
             if layer.wgate_fmt == GemvFormat::Q4K && layer.wup_fmt == GemvFormat::Q4K {
-                self.batched_gemm.gemm_q4k_fused_gate_up_swiglu_mma(
+                self.batched_gemm.gemm_fused_gate_up_swiglu(
                     &self.stream,
                     &layer.wgate_dev,
                     &layer.wup_dev,

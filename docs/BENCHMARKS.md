@@ -32,18 +32,18 @@ Automated head-to-head comparison running against the official `llama-server.exe
 =========================================================================================================
 Model Name                   | llama.cpp (C++)      | Titan (Pure Rust)    | Ratio (Titan / llama.cpp)
 -----------------------------|----------------------|----------------------|-------------
-Qwen 2.5 1.5B Instruct       | 141.1  tok/s (7.11 ms) | 131.1  tok/s (7.63 ms) | 0.93x (93.0% Parity)
-DeepSeek-R1-Distill 1.5B     | 140.9  tok/s (7.13 ms) | 132.0  tok/s (7.58 ms) | 0.94x (93.7% Parity)
-Llama 3.2 1B Instruct        | 188.3  tok/s (5.33 ms) | 161.1  tok/s (6.21 ms) | 0.86x (161.1 tok/s)
-Llama 3.2 3B Instruct        | 92.3   tok/s (10.84 ms)| 68.5   tok/s (14.61 ms)| 0.74x (68.5 tok/s)
-Qwen3 0.6B (Local Demo)      | 230.0  tok/s (4.35 ms) | 266.1  tok/s (3.75 ms) | 1.15x (>260 tok/s)
+DeepSeek-R1-Distill 1.5B     | 139.1  tok/s (7.20 ms) | 137.0  tok/s (7.30 ms) | 0.99x (98.5% Parity)
+Qwen 2.5 1.5B Instruct       | 142.1  tok/s (7.05 ms) | 134.3  tok/s (7.45 ms) | 0.95x (94.5% Parity)
+Llama 3.2 1B Instruct        | 192.0  tok/s (5.21 ms) | 164.0  tok/s (6.10 ms) | 0.85x (164.0 tok/s)
+Llama 3.2 3B Instruct        | 91.8   tok/s (10.90 ms)| 70.6   tok/s (14.16 ms)| 0.77x (70.6 tok/s)
+Qwen3 0.6B (Local Demo)      | 230.0  tok/s (4.35 ms) | 253.8  tok/s (3.94 ms) | 1.10x (>250 tok/s)
 =========================================================================================================
 ```
 
 ### Key Takeaways:
-1. **Ampere Tensor Cores (`mma.sync`):** Hardware `mma.sync` and fused scale hoisting accelerate single-token decoding up to **266.1 tok/s** on golden local evaluations and **161.1 tok/s** on Llama 3.2 1B.
-2. **1.5B Architectures (Qwen 2.5 & DeepSeek-R1):** Titan achieves **~94% parity** with `llama.cpp`, delivering **132+ tok/s** with zero C++ runtime dependencies.
-3. **Exact Token Parity:** Generated tokens are bit-exact with mathematical greedy sampling across all evaluation prompts.
+1. **DeepSeek-R1 1.5B (99% Parity):** Titan delivers **137.0 tok/s** vs `llama.cpp` at 139.1 tok/s, operating at virtually identical throughput with 100% Pure Rust.
+2. **FlashDecoding & Autonomous Graphs:** Complete GPU-resident execution eliminates all host-GPU kernel launch bubbles, sustaining **164.0 tok/s** on Llama 3.2 1B.
+3. **Exact Token Parity:** Generated tokens and reasoning traces match bit-for-bit with reference greedy decoding.
 
 ---
 
