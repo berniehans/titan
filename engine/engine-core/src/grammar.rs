@@ -1,4 +1,4 @@
-﻿//! Grammar-Guided Constrained Decoding and JSON Schema Validation.
+//! Grammar-Guided Constrained Decoding and JSON Schema Validation.
 //!
 //! Provides deterministic state machine parsers for enforcing 100% syntactically
 //! valid JSON generation, OpenAI tool call schemas, and structured outputs.
@@ -30,6 +30,7 @@ pub struct JsonGrammar {
     pub in_escape: bool,
     pub allowed_keys: Option<Vec<String>>,
     pub current_key: String,
+    pub current_literal: String,
 }
 
 impl Default for JsonGrammar {
@@ -49,6 +50,7 @@ impl JsonGrammar {
             in_escape: false,
             allowed_keys: None,
             current_key: String::new(),
+            current_literal: String::new(),
         }
     }
 
@@ -83,19 +85,39 @@ impl JsonGrammar {
         match self.state {
             JsonParserState::ExpectKey => {
                 let trimmed = token_str.trim_start();
-                if !trimmed.starts_with('"') && !trimmed.starts_with('}') {
+                if trimmed.is_empty() {
+                    if self.buffer.ends_with(' ') || self.buffer.ends_with('\n') || self.buffer.ends_with('\t') {
+                        return false;
+                    }
+                } else if !trimmed.starts_with('"') && !trimmed.starts_with('}') {
                     return false;
                 }
             }
             JsonParserState::ExpectColon => {
                 let trimmed = token_str.trim_start();
-                if !trimmed.starts_with(':') {
+                if trimmed.is_empty() {
+                    if self.buffer.ends_with(' ') || self.buffer.ends_with('\n') || self.buffer.ends_with('\t') {
+                        return false;
+                    }
+                } else if !trimmed.starts_with(':') {
                     return false;
+                }
+            }
+            JsonParserState::ExpectValue => {
+                let trimmed = token_str.trim_start();
+                if trimmed.is_empty() {
+                    if self.buffer.ends_with(' ') || self.buffer.ends_with('\n') || self.buffer.ends_with('\t') {
+                        return false;
+                    }
                 }
             }
             JsonParserState::ExpectCommaOrClose => {
                 let trimmed = token_str.trim_start();
-                if !trimmed.starts_with(',') && !trimmed.starts_with('}') && !trimmed.starts_with(']') {
+                if trimmed.is_empty() {
+                    if self.buffer.ends_with(' ') || self.buffer.ends_with('\n') || self.buffer.ends_with('\t') {
+                        return false;
+                    }
+                } else if !trimmed.starts_with(',') && !trimmed.starts_with('}') && !trimmed.starts_with(']') {
                     return false;
                 }
             }
@@ -127,10 +149,10 @@ impl JsonGrammar {
 
         if self.in_escape {
             self.in_escape = false;
-            return true;
+            return matches!(ch, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u' | '0'..='9' | 'a'..='f' | 'A'..='F');
         }
 
-        if ch == '\\' && (self.state == JsonParserState::InKeyString || self.state == JsonParserState::InValueString) {
+        if ch == '\\' && self.state == JsonParserState::InValueString {
             self.in_escape = true;
             return true;
         }
@@ -229,6 +251,8 @@ impl JsonGrammar {
                     self.state = JsonParserState::InNumber;
                     true
                 } else if ch == 't' || ch == 'f' || ch == 'n' {
+                    self.current_literal.clear();
+                    self.current_literal.push(ch);
                     self.state = JsonParserState::InBooleanOrNull;
                     true
                 } else {
@@ -269,20 +293,35 @@ impl JsonGrammar {
             }
             JsonParserState::InBooleanOrNull => {
                 if ch.is_alphabetic() {
-                    true
-                } else if ch == ',' {
-                    self.state = if self.stack.last() == Some(&'}') { JsonParserState::ExpectKey } else { JsonParserState::ExpectValue };
-                    true
-                } else if (ch == '}' && self.stack.last() == Some(&'}')) || (ch == ']' && self.stack.last() == Some(&']')) {
-                    self.stack.pop();
-                    self.depth -= 1;
-                    self.state = if self.depth == 0 { JsonParserState::Complete } else { JsonParserState::ExpectCommaOrClose };
-                    true
-                } else if ch.is_whitespace() {
-                    self.state = JsonParserState::ExpectCommaOrClose;
+                    self.current_literal.push(ch);
+                    let valid_prefix = "true".starts_with(&self.current_literal)
+                        || "false".starts_with(&self.current_literal)
+                        || "null".starts_with(&self.current_literal);
+                    if !valid_prefix {
+                        return false;
+                    }
                     true
                 } else {
-                    false
+                    let is_exact = self.current_literal == "true"
+                        || self.current_literal == "false"
+                        || self.current_literal == "null";
+                    if !is_exact {
+                        return false;
+                    }
+                    if ch == ',' {
+                        self.state = if self.stack.last() == Some(&'}') { JsonParserState::ExpectKey } else { JsonParserState::ExpectValue };
+                        true
+                    } else if (ch == '}' && self.stack.last() == Some(&'}')) || (ch == ']' && self.stack.last() == Some(&']')) {
+                        self.stack.pop();
+                        self.depth -= 1;
+                        self.state = if self.depth == 0 { JsonParserState::Complete } else { JsonParserState::ExpectCommaOrClose };
+                        true
+                    } else if ch.is_whitespace() {
+                        self.state = JsonParserState::ExpectCommaOrClose;
+                        true
+                    } else {
+                        false
+                    }
                 }
             }
             JsonParserState::ExpectCommaOrClose => {
@@ -318,12 +357,52 @@ impl JsonGrammar {
                     self.consume_char(ch)
                 }
             }
-            JsonParserState::Complete => ch.is_whitespace(),
-            JsonParserState::Error => false,
             JsonParserState::InObject => {
                 self.state = JsonParserState::ExpectKey;
                 self.consume_char(ch)
             }
+            JsonParserState::Complete => ch.is_whitespace(),
+            JsonParserState::Error => false,
+        }
+    }
+}
+
+/// Abstract grammar parser interface for token-by-token validation.
+pub trait GrammarParser {
+    fn is_accepted(&self) -> bool;
+    fn advance(&mut self, token_id: u32, piece: &str) -> Result<(), String>;
+}
+
+/// JSON object-specific grammar parser compatible with `GrammarParser`.
+#[derive(Debug, Clone, Default)]
+pub struct JsonObjectGrammar {
+    inner: JsonGrammar,
+}
+
+impl JsonObjectGrammar {
+    pub fn new() -> Self {
+        Self {
+            inner: JsonGrammar::new(),
+        }
+    }
+}
+
+impl GrammarParser for JsonObjectGrammar {
+    fn is_accepted(&self) -> bool {
+        self.inner.is_complete()
+    }
+
+    fn advance(&mut self, _token_id: u32, piece: &str) -> Result<(), String> {
+        if self.inner.is_complete() {
+            if piece.trim().is_empty() {
+                return Ok(());
+            }
+            return Err("Cannot append tokens after JSON completion".to_string());
+        }
+        if self.inner.advance(piece) && self.inner.state != JsonParserState::Error {
+            Ok(())
+        } else {
+            Err(format!("Syntax error advancing grammar with piece {:?}", piece))
         }
     }
 }

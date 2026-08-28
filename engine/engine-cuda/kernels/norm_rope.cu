@@ -159,78 +159,140 @@ extern "C" __global__ void fused_qk_norm_rope_kernel(
 
     const int lane = threadIdx.x & 31;
 
-    // RMSNorm Phase (bit0 of mode)
-    if (mode & 1) {
-        float4 val = ((const float4*)row_out)[lane];
-        float psum = __fmaf_rn(val.x, val.x, __fmaf_rn(val.y, val.y, __fmaf_rn(val.z, val.z, val.w * val.w)));
+    if (head_dim == 64) {
+        // --- Specialized Path for head_dim = 64 (e.g. Llama 3.2 1B) ---
+        // RMSNorm Phase (bit0 of mode)
+        if (mode & 1) {
+            float4 val = (lane < 16) ? ((const float4*)row_out)[lane] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            float psum = __fmaf_rn(val.x, val.x, __fmaf_rn(val.y, val.y, __fmaf_rn(val.z, val.z, val.w * val.w)));
 
-        #pragma unroll
-        for (int mask = 16; mask > 0; mask >>= 1) {
-            psum += __shfl_down_sync(0xffffffff, psum, mask);
+            #pragma unroll
+            for (int mask = 8; mask > 0; mask >>= 1) {
+                psum += __shfl_down_sync(0x0000ffff, psum, mask);
+            }
+
+            const float total_sum = __shfl_sync(0xffffffff, psum, 0);
+            const float scale = rsqrtf(total_sum / 64.0f + eps);
+            if (lane < 16) {
+                const float4 nw = ((const float4*)row_norm_w)[lane];
+                val.x = val.x * scale * nw.x;
+                val.y = val.y * scale * nw.y;
+                val.z = val.z * scale * nw.z;
+                val.w = val.w * scale * nw.w;
+                ((float4*)row_out)[lane] = val;
+            }
         }
 
-        const float total_sum = __shfl_sync(0xffffffff, psum, 0);
-        const float scale = rsqrtf(total_sum / (float)head_dim + eps);
-        const float4 nw = ((const float4*)row_norm_w)[lane];
+        // RoPE Phase (bit1 of mode): 32 lanes rotate 32 (x0, x1) pairs in 1 parallel step
+        if (mode & 2) {
+            const float inv_dims = 1.0f / (float)n_rot;
+            const float log_base = logf(freq_base);
 
-        val.x = val.x * scale * nw.x;
-        val.y = val.y * scale * nw.y;
-        val.z = val.z * scale * nw.z;
-        val.w = val.w * scale * nw.w;
-
-        ((float4*)row_out)[lane] = val;
-    }
-
-    // RoPE Phase (bit1 of mode)
-    if (mode & 2) {
-        const float inv_dims = 1.0f / (float)n_rot;
-        const float log_base = logf(freq_base);
-
-        // First half (lanes 0..31 -> indices 0..31)
-        {
             float exp_val = -2.0f * (float)lane * inv_dims;
             float freq = __expf(exp_val * log_base);
             float theta = (float)cur_pos * freq;
             float s, c;
             __sincosf(theta, &s, &c);
             float x0 = row_out[lane];
-            float x1 = row_out[lane + 64];
+            float x1 = row_out[lane + 32];
             row_out[lane]      = __fmaf_rn(x0, c, -x1 * s);
-            row_out[lane + 64] = __fmaf_rn(x0, s,  x1 * c);
+            row_out[lane + 32] = __fmaf_rn(x0, s,  x1 * c);
         }
 
-        // Second half (lanes 0..31 -> indices 32..63)
-        {
-            const int j = lane + 32;
-            float exp_val = -2.0f * (float)j * inv_dims;
-            float freq = __expf(exp_val * log_base);
-            float theta = (float)cur_pos * freq;
-            float s, c;
-            __sincosf(theta, &s, &c);
-            float x0 = row_out[j];
-            float x1 = row_out[j + 64];
-            row_out[j]      = __fmaf_rn(x0, c, -x1 * s);
-            row_out[j + 64] = __fmaf_rn(x0, s,  x1 * c);
+        // Phase 3: Fused Paged KV Append (only for K heads if pool is provided)
+        if (!is_q && pool != nullptr && block_table != nullptr && lane < 16) {
+            const int g = (int)cur_pos;
+            const int blk_idx = g / block_tokens;
+            const int slot = g % block_tokens;
+            const unsigned phys = block_table[blk_idx];
+
+            const int row_len = n_head_k * 64;
+            const int floats_per_token = 2 * row_len;
+            const int floats_per_block = block_tokens * floats_per_token;
+
+            const size_t pool_base = (size_t)phys * (size_t)floats_per_block + (size_t)slot * (size_t)floats_per_token;
+            const size_t head_offset = (size_t)head_idx * 64u;
+
+            ((float4*)(pool + pool_base + head_offset))[lane] = ((const float4*)row_out)[lane];
+            if (v != nullptr) {
+                ((float4*)(pool + pool_base + (size_t)row_len + head_offset))[lane] = ((const float4*)(v + head_offset))[lane];
+            }
         }
-    }
+    } else {
+        // --- Standard Path for head_dim = 128 (e.g. Qwen 2.5, DeepSeek-R1, Llama 3.2 3B) ---
+        // RMSNorm Phase (bit0 of mode)
+        if (mode & 1) {
+            float4 val = ((const float4*)row_out)[lane];
+            float psum = __fmaf_rn(val.x, val.x, __fmaf_rn(val.y, val.y, __fmaf_rn(val.z, val.z, val.w * val.w)));
 
-    // Phase 3: Fused Paged KV Append (only for K heads if pool is provided)
-    if (!is_q && pool != nullptr && block_table != nullptr) {
-        const int g = (int)cur_pos;
-        const int blk_idx = g / block_tokens;
-        const int slot = g % block_tokens;
-        const unsigned phys = block_table[blk_idx];
+            #pragma unroll
+            for (int mask = 16; mask > 0; mask >>= 1) {
+                psum += __shfl_down_sync(0xffffffff, psum, mask);
+            }
 
-        const int row_len = n_head_k * head_dim;
-        const int floats_per_token = 2 * row_len;
-        const int floats_per_block = block_tokens * floats_per_token;
+            const float total_sum = __shfl_sync(0xffffffff, psum, 0);
+            const float scale = rsqrtf(total_sum / (float)head_dim + eps);
+            const float4 nw = ((const float4*)row_norm_w)[lane];
 
-        const size_t pool_base = (size_t)phys * (size_t)floats_per_block + (size_t)slot * (size_t)floats_per_token;
-        const size_t head_offset = (size_t)head_idx * (size_t)head_dim;
+            val.x = val.x * scale * nw.x;
+            val.y = val.y * scale * nw.y;
+            val.z = val.z * scale * nw.z;
+            val.w = val.w * scale * nw.w;
 
-        ((float4*)(pool + pool_base + head_offset))[lane] = ((const float4*)row_out)[lane];
-        if (v != nullptr) {
-            ((float4*)(pool + pool_base + (size_t)row_len + head_offset))[lane] = ((const float4*)(v + head_offset))[lane];
+            ((float4*)row_out)[lane] = val;
+        }
+
+        // RoPE Phase (bit1 of mode)
+        if (mode & 2) {
+            const float inv_dims = 1.0f / (float)n_rot;
+            const float log_base = logf(freq_base);
+
+            // First half (lanes 0..31 -> indices 0..31)
+            {
+                float exp_val = -2.0f * (float)lane * inv_dims;
+                float freq = __expf(exp_val * log_base);
+                float theta = (float)cur_pos * freq;
+                float s, c;
+                __sincosf(theta, &s, &c);
+                float x0 = row_out[lane];
+                float x1 = row_out[lane + 64];
+                row_out[lane]      = __fmaf_rn(x0, c, -x1 * s);
+                row_out[lane + 64] = __fmaf_rn(x0, s,  x1 * c);
+            }
+
+            // Second half (lanes 0..31 -> indices 32..63)
+            {
+                const int j = lane + 32;
+                float exp_val = -2.0f * (float)j * inv_dims;
+                float freq = __expf(exp_val * log_base);
+                float theta = (float)cur_pos * freq;
+                float s, c;
+                __sincosf(theta, &s, &c);
+                float x0 = row_out[j];
+                float x1 = row_out[j + 64];
+                row_out[j]      = __fmaf_rn(x0, c, -x1 * s);
+                row_out[j + 64] = __fmaf_rn(x0, s,  x1 * c);
+            }
+        }
+
+        // Phase 3: Fused Paged KV Append (only for K heads if pool is provided)
+        if (!is_q && pool != nullptr && block_table != nullptr) {
+            const int g = (int)cur_pos;
+            const int blk_idx = g / block_tokens;
+            const int slot = g % block_tokens;
+            const unsigned phys = block_table[blk_idx];
+
+            const int row_len = n_head_k * head_dim;
+            const int floats_per_token = 2 * row_len;
+            const int floats_per_block = block_tokens * floats_per_token;
+
+            const size_t pool_base = (size_t)phys * (size_t)floats_per_block + (size_t)slot * (size_t)floats_per_token;
+            const size_t head_offset = (size_t)head_idx * (size_t)head_dim;
+
+            ((float4*)(pool + pool_base + head_offset))[lane] = ((const float4*)row_out)[lane];
+            if (v != nullptr) {
+                ((float4*)(pool + pool_base + (size_t)row_len + head_offset))[lane] = ((const float4*)(v + head_offset))[lane];
+            }
         }
     }
 }

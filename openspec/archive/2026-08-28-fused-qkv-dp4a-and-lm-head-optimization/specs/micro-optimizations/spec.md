@@ -1,0 +1,1 @@
+﻿# micro-optimizations Delta Specification

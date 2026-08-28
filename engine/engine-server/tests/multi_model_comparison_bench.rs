@@ -1,4 +1,4 @@
-﻿use engine_core::{BpeTokenizer, ForwardDriver};
+use engine_core::{BpeTokenizer, ForwardDriver};
 use engine_io::{load_to_pinned, GgufReader, ModelConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -60,21 +60,35 @@ async fn start_llama_server(
 ) -> Result<Option<LlamaServerProcess>, Box<dyn std::error::Error>> {
     let ollama_dir = PathBuf::from(r"C:\Users\niber\AppData\Local\Programs\Ollama\lib\ollama");
     let cuda_dir = ollama_dir.join("cuda_v12");
-    let server_exe = ollama_dir.join("llama-server.exe");
+    let mut server_exe = ollama_dir.join("llama-server.exe");
+    let mut work_dir = cuda_dir.clone();
 
-    if !server_exe.exists() || !cuda_dir.exists() {
-        return Ok(None);
+    if !server_exe.exists() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let bench_exe = manifest_dir.join("../../benchmarks/llama_cpp/llama-server.exe");
+        if bench_exe.exists() {
+            server_exe = bench_exe;
+            work_dir = manifest_dir.join("../../benchmarks/llama_cpp");
+        } else {
+            let bench_exe2 = manifest_dir.join("../benchmarks/llama_cpp/llama-server.exe");
+            if bench_exe2.exists() {
+                server_exe = bench_exe2;
+                work_dir = manifest_dir.join("../benchmarks/llama_cpp");
+            } else {
+                return Ok(None);
+            }
+        }
     }
 
     let path_env = format!(
         "{};{};{}",
-        cuda_dir.display(),
+        work_dir.display(),
         ollama_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
 
     let child = Command::new(&server_exe)
-        .current_dir(&cuda_dir)
+        .current_dir(&work_dir)
         .env("PATH", &path_env)
         .arg("-m")
         .arg(model_p)
@@ -287,6 +301,14 @@ async fn test_multi_model_head_to_head_bench() -> Result<(), Box<dyn std::error:
         (
             "DeepSeek-R1-Distill 1.5B",
             "models/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
+            [
+                "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nGive me a numbered list of 5 historical dates.<|im_end|>\n<|im_start|>assistant\n",
+                "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nExplain quantum computing in three concise bullet points.<|im_end|>\n<|im_start|>assistant\n",
+            ],
+        ),
+        (
+            "Qwen3 0.6B Base/Chat",
+            "testdata/Qwen3-0.6B-Q4_K_M.gguf",
             [
                 "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nGive me a numbered list of 5 historical dates.<|im_end|>\n<|im_start|>assistant\n",
                 "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nExplain quantum computing in three concise bullet points.<|im_end|>\n<|im_start|>assistant\n",

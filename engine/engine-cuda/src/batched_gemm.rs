@@ -28,6 +28,7 @@ const FUNC_NAME_Q6K_BATCHED: &str = "gemm_q6k_batched_kernel";
 const FUNC_NAME_Q6K_SPLITK: &str = "gemm_q6k_splitk_kernel";
 const FUNC_NAME_Q4K_SPLITK: &str = "gemm_q4k_splitk_kernel";
 const FUNC_NAME_FUSED_QKV: &str = "gemm_fused_qkv_kernel";
+const FUNC_NAME_FUSED_QKV_Q4K: &str = "gemm_fused_qkv_q4k_kernel";
 const FUNC_NAME_FUSED_QKV_BATCHED: &str = "gemm_fused_qkv_batched_kernel";
 const FUNC_NAME_GET_ROWS_Q4K: &str = "get_rows_q4k_kernel";
 const FUNC_NAME_SAMPLE_GREEDY: &str = "gpu_sample_greedy_kernel";
@@ -55,6 +56,7 @@ pub struct BatchedGEMM {
     fn_q6k_splitk: CUfunction,
     fn_q4k_splitk: CUfunction,
     fn_fused_qkv: CUfunction,
+    fn_fused_qkv_q4k: CUfunction,
     fn_fused_qkv_batched: CUfunction,
     fn_get_rows_q4k: CUfunction,
     fn_sample_greedy: CUfunction,
@@ -112,6 +114,7 @@ impl BatchedGEMM {
         let mut fn_q6k_splitk: CUfunction = std::ptr::null_mut();
         let mut fn_q4k_splitk: CUfunction = std::ptr::null_mut();
         let mut fn_fused_qkv: CUfunction = std::ptr::null_mut();
+        let mut fn_fused_qkv_q4k: CUfunction = std::ptr::null_mut();
         let mut fn_fused_qkv_batched: CUfunction = std::ptr::null_mut();
         let mut fn_get_rows_q4k: CUfunction = std::ptr::null_mut();
         let mut fn_sample_greedy: CUfunction = std::ptr::null_mut();
@@ -140,6 +143,7 @@ impl BatchedGEMM {
             let c_splitk = CString::new(FUNC_NAME_Q6K_SPLITK).unwrap();
             let c_splitk_q4 = CString::new(FUNC_NAME_Q4K_SPLITK).unwrap();
             let c_fused_qkv = CString::new(FUNC_NAME_FUSED_QKV).unwrap();
+            let c_fused_qkv_q4k = CString::new(FUNC_NAME_FUSED_QKV_Q4K).unwrap();
             let c_fused_qkv_b = CString::new(FUNC_NAME_FUSED_QKV_BATCHED).unwrap();
             let c_get_rows = CString::new(FUNC_NAME_GET_ROWS_Q4K).unwrap();
             let c_sample = CString::new(FUNC_NAME_SAMPLE_GREEDY).unwrap();
@@ -160,6 +164,7 @@ impl BatchedGEMM {
             let r7 = lib.cuModuleGetFunction(&mut fn_q6k_splitk, cu_module, c_splitk.as_ptr());
             let r8 = lib.cuModuleGetFunction(&mut fn_q4k_splitk, cu_module, c_splitk_q4.as_ptr());
             let r9 = lib.cuModuleGetFunction(&mut fn_fused_qkv, cu_module, c_fused_qkv.as_ptr());
+            let r9_q4 = lib.cuModuleGetFunction(&mut fn_fused_qkv_q4k, cu_module, c_fused_qkv_q4k.as_ptr());
             let r9b = lib.cuModuleGetFunction(&mut fn_fused_qkv_batched, cu_module, c_fused_qkv_b.as_ptr());
             let r10 = lib.cuModuleGetFunction(&mut fn_get_rows_q4k, cu_module, c_get_rows.as_ptr());
             let r11 = lib.cuModuleGetFunction(&mut fn_sample_greedy, cu_module, c_sample.as_ptr());
@@ -180,6 +185,7 @@ impl BatchedGEMM {
                 || r7 != CUresult::CUDA_SUCCESS
                 || r8 != CUresult::CUDA_SUCCESS
                 || r9 != CUresult::CUDA_SUCCESS
+                || r9_q4 != CUresult::CUDA_SUCCESS
                 || r9b != CUresult::CUDA_SUCCESS
                 || r10 != CUresult::CUDA_SUCCESS
                 || r11 != CUresult::CUDA_SUCCESS
@@ -206,6 +212,7 @@ impl BatchedGEMM {
             fn_q6k_splitk,
             fn_q4k_splitk,
             fn_fused_qkv,
+            fn_fused_qkv_q4k,
             fn_fused_qkv_batched,
             fn_get_rows_q4k,
             fn_sample_greedy,
@@ -950,6 +957,100 @@ impl BatchedGEMM {
             );
             if res != CUresult::CUDA_SUCCESS {
                 return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedQKV)", res));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Launches fused QKV projection where Wq, Wk, Wv are all Q4_K.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_fused_qkv_q4k(
+        &self,
+        stream: &CudaStream,
+        wq: &DeviceBuffer,
+        wk: &DeviceBuffer,
+        wv: &DeviceBuffer,
+        qx: &DeviceBuffer,
+        qd: &DeviceBuffer,
+        qs: &DeviceBuffer,
+        q_out: &DeviceBuffer,
+        k_out: &DeviceBuffer,
+        v_out: &DeviceBuffer,
+        ne0: usize,
+        qdim: usize,
+        kvd: usize,
+        batch_size: usize,
+        qb: Option<&DeviceBuffer>,
+        kb: Option<&DeviceBuffer>,
+        vb: Option<&DeviceBuffer>,
+    ) -> Result<(), CudaError> {
+        if batch_size == 0 || ne0 == 0 || qdim == 0 || kvd == 0 {
+            return Ok(());
+        }
+
+        let ne0_i: i32 = ne0 as i32;
+        let qdim_i: i32 = qdim as i32;
+        let kvd_i: i32 = kvd as i32;
+        let batch_i: i32 = batch_size as i32;
+
+        let wq_addr: u64 = wq.device_ptr();
+        let wk_addr: u64 = wk.device_ptr();
+        let wv_addr: u64 = wv.device_ptr();
+        let qx_addr: u64 = qx.device_ptr();
+        let qd_addr: u64 = qd.device_ptr();
+        let qs_addr: u64 = qs.device_ptr();
+        let q_addr: u64 = q_out.device_ptr();
+        let k_addr: u64 = k_out.device_ptr();
+        let v_addr: u64 = v_out.device_ptr();
+        let qb_addr: u64 = qb.map(|b| b.device_ptr()).unwrap_or(0);
+        let kb_addr: u64 = kb.map(|b| b.device_ptr()).unwrap_or(0);
+        let vb_addr: u64 = vb.map(|b| b.device_ptr()).unwrap_or(0);
+
+        let args: [*mut std::ffi::c_void; 16] = [
+            &wq_addr as *const u64 as *mut std::ffi::c_void,
+            &wk_addr as *const u64 as *mut std::ffi::c_void,
+            &wv_addr as *const u64 as *mut std::ffi::c_void,
+            &qx_addr as *const u64 as *mut std::ffi::c_void,
+            &qd_addr as *const u64 as *mut std::ffi::c_void,
+            &qs_addr as *const u64 as *mut std::ffi::c_void,
+            &q_addr as *const u64 as *mut std::ffi::c_void,
+            &k_addr as *const u64 as *mut std::ffi::c_void,
+            &v_addr as *const u64 as *mut std::ffi::c_void,
+            &ne0_i as *const i32 as *mut std::ffi::c_void,
+            &qdim_i as *const i32 as *mut std::ffi::c_void,
+            &kvd_i as *const i32 as *mut std::ffi::c_void,
+            &batch_i as *const i32 as *mut std::ffi::c_void,
+            &qb_addr as *const u64 as *mut std::ffi::c_void,
+            &kb_addr as *const u64 as *mut std::ffi::c_void,
+            &vb_addr as *const u64 as *mut std::ffi::c_void,
+        ];
+
+        let cols_per_block = 8u32;
+        let total_cols = (qdim + kvd + kvd) as u32;
+        let grid_x = total_cols.div_ceil(cols_per_block);
+        let grid_y = batch_size as u32;
+        let shared_bytes = (((ne0 * 5) / 4) + 128) as u32;
+
+        self.device.bind_to_thread()?;
+
+        unsafe {
+            let lib = sys::lib();
+            let res = lib.cuLaunchKernel(
+                self.fn_fused_qkv_q4k,
+                grid_x,
+                grid_y,
+                1,
+                256,
+                1,
+                1,
+                shared_bytes,
+                stream.raw(),
+                args.as_ptr() as *mut *mut std::ffi::c_void,
+                std::ptr::null_mut(),
+            );
+            if res != CUresult::CUDA_SUCCESS {
+                return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedQKV_Q4K)", res));
             }
         }
 

@@ -663,24 +663,24 @@ extern "C" __global__ void gemm_fused_qkv_kernel(
             const unsigned char q2 = qs_ptr[2 * 32 + lane];
             const unsigned char q3 = qs_ptr[3 * 32 + lane];
 
-            const float s_qd0 = s_qd[q8_b + 0];
-            const float s_qd1 = s_qd[q8_b + 1];
-            const float s_qd2 = s_qd[q8_b + 2];
-            const float s_qd3 = s_qd[q8_b + 3];
-            const float s_qd4 = s_qd[q8_b + 4];
-            const float s_qd5 = s_qd[q8_b + 5];
-            const float s_qd6 = s_qd[q8_b + 6];
-            const float s_qd7 = s_qd[q8_b + 7];
+            const float d_sc0 = s.d_sc[0] * s_qd[q8_b + 0];
+            const float d_sc1 = s.d_sc[1] * s_qd[q8_b + 1];
+            const float d_sc2 = s.d_sc[2] * s_qd[q8_b + 2];
+            const float d_sc3 = s.d_sc[3] * s_qd[q8_b + 3];
+            const float d_sc4 = s.d_sc[4] * s_qd[q8_b + 4];
+            const float d_sc5 = s.d_sc[5] * s_qd[q8_b + 5];
+            const float d_sc6 = s.d_sc[6] * s_qd[q8_b + 6];
+            const float d_sc7 = s.d_sc[7] * s_qd[q8_b + 7];
 
             float dot = 0.0f;
-            dot = __fmaf_rn(s.d_sc[0] * s_qd0, (float)((int)(q0 & 0x0Fu) * (int)qx0), dot);
-            dot = __fmaf_rn(s.d_sc[1] * s_qd1, (float)((int)(q0 >> 4)    * (int)qx1), dot);
-            dot = __fmaf_rn(s.d_sc[2] * s_qd2, (float)((int)(q1 & 0x0Fu) * (int)qx2), dot);
-            dot = __fmaf_rn(s.d_sc[3] * s_qd3, (float)((int)(q1 >> 4)    * (int)qx3), dot);
-            dot = __fmaf_rn(s.d_sc[4] * s_qd4, (float)((int)(q2 & 0x0Fu) * (int)qx4), dot);
-            dot = __fmaf_rn(s.d_sc[5] * s_qd5, (float)((int)(q2 >> 4)    * (int)qx5), dot);
-            dot = __fmaf_rn(s.d_sc[6] * s_qd6, (float)((int)(q3 & 0x0Fu) * (int)qx6), dot);
-            dot = __fmaf_rn(s.d_sc[7] * s_qd7, (float)((int)(q3 >> 4)    * (int)qx7), dot);
+            dot = __fmaf_rn(d_sc0, (float)((int)(q0 & 0x0Fu) * (int)qx0), dot);
+            dot = __fmaf_rn(d_sc1, (float)((int)(q0 >> 4)    * (int)qx1), dot);
+            dot = __fmaf_rn(d_sc2, (float)((int)(q1 & 0x0Fu) * (int)qx2), dot);
+            dot = __fmaf_rn(d_sc3, (float)((int)(q1 >> 4)    * (int)qx3), dot);
+            dot = __fmaf_rn(d_sc4, (float)((int)(q2 & 0x0Fu) * (int)qx4), dot);
+            dot = __fmaf_rn(d_sc5, (float)((int)(q2 >> 4)    * (int)qx5), dot);
+            dot = __fmaf_rn(d_sc6, (float)((int)(q3 & 0x0Fu) * (int)qx6), dot);
+            dot = __fmaf_rn(d_sc7, (float)((int)(q3 >> 4)    * (int)qx7), dot);
             local_acc += dot;
 
             if (lane == 0) {
@@ -737,24 +737,24 @@ extern "C" __global__ void gemm_fused_qkv_kernel(
             const unsigned char q2 = qs_ptr[2 * 32 + lane];
             const unsigned char q3 = qs_ptr[3 * 32 + lane];
 
-            const float s_qd0 = s_qd[q8_b + 0];
-            const float s_qd1 = s_qd[q8_b + 1];
-            const float s_qd2 = s_qd[q8_b + 2];
-            const float s_qd3 = s_qd[q8_b + 3];
-            const float s_qd4 = s_qd[q8_b + 4];
-            const float s_qd5 = s_qd[q8_b + 5];
-            const float s_qd6 = s_qd[q8_b + 6];
-            const float s_qd7 = s_qd[q8_b + 7];
+            const float d_sc0 = s.d_sc[0] * s_qd[q8_b + 0];
+            const float d_sc1 = s.d_sc[1] * s_qd[q8_b + 1];
+            const float d_sc2 = s.d_sc[2] * s_qd[q8_b + 2];
+            const float d_sc3 = s.d_sc[3] * s_qd[q8_b + 3];
+            const float d_sc4 = s.d_sc[4] * s_qd[q8_b + 4];
+            const float d_sc5 = s.d_sc[5] * s_qd[q8_b + 5];
+            const float d_sc6 = s.d_sc[6] * s_qd[q8_b + 6];
+            const float d_sc7 = s.d_sc[7] * s_qd[q8_b + 7];
 
             float dot = 0.0f;
-            dot = __fmaf_rn(s.d_sc[0] * s_qd0, (float)((int)(q0 & 0x0Fu) * (int)qx0), dot);
-            dot = __fmaf_rn(s.d_sc[1] * s_qd1, (float)((int)(q0 >> 4)    * (int)qx1), dot);
-            dot = __fmaf_rn(s.d_sc[2] * s_qd2, (float)((int)(q1 & 0x0Fu) * (int)qx2), dot);
-            dot = __fmaf_rn(s.d_sc[3] * s_qd3, (float)((int)(q1 >> 4)    * (int)qx3), dot);
-            dot = __fmaf_rn(s.d_sc[4] * s_qd4, (float)((int)(q2 & 0x0Fu) * (int)qx4), dot);
-            dot = __fmaf_rn(s.d_sc[5] * s_qd5, (float)((int)(q2 >> 4)    * (int)qx5), dot);
-            dot = __fmaf_rn(s.d_sc[6] * s_qd6, (float)((int)(q3 & 0x0Fu) * (int)qx6), dot);
-            dot = __fmaf_rn(s.d_sc[7] * s_qd7, (float)((int)(q3 >> 4)    * (int)qx7), dot);
+            dot = __fmaf_rn(d_sc0, (float)((int)(q0 & 0x0Fu) * (int)qx0), dot);
+            dot = __fmaf_rn(d_sc1, (float)((int)(q0 >> 4)    * (int)qx1), dot);
+            dot = __fmaf_rn(d_sc2, (float)((int)(q1 & 0x0Fu) * (int)qx2), dot);
+            dot = __fmaf_rn(d_sc3, (float)((int)(q1 >> 4)    * (int)qx3), dot);
+            dot = __fmaf_rn(d_sc4, (float)((int)(q2 & 0x0Fu) * (int)qx4), dot);
+            dot = __fmaf_rn(d_sc5, (float)((int)(q2 >> 4)    * (int)qx5), dot);
+            dot = __fmaf_rn(d_sc6, (float)((int)(q3 & 0x0Fu) * (int)qx6), dot);
+            dot = __fmaf_rn(d_sc7, (float)((int)(q3 >> 4)    * (int)qx7), dot);
             local_acc += dot;
 
             if (lane == 0) {
@@ -823,15 +823,24 @@ extern "C" __global__ void gemm_fused_qkv_kernel(
             const int q6 = (int)(ql2 >> 4)    | (((int)(qh1 >> 4) & 3) << 4);
             const int q7 = (int)(ql3 >> 4)    | (((int)(qh1 >> 6) & 3) << 4);
 
+            const float d_qd0 = d * s_qd[q8_b + 0];
+            const float d_qd1 = d * s_qd[q8_b + 1];
+            const float d_qd2 = d * s_qd[q8_b + 2];
+            const float d_qd3 = d * s_qd[q8_b + 3];
+            const float d_qd4 = d * s_qd[q8_b + 4];
+            const float d_qd5 = d * s_qd[q8_b + 5];
+            const float d_qd6 = d * s_qd[q8_b + 6];
+            const float d_qd7 = d * s_qd[q8_b + 7];
+
             float dot = 0.0f;
-            dot = __fmaf_rn(d * s_qd[q8_b + 0], (float)((q0 - 32) * (int)qx0 * (int)sc[0  + is]), dot);
-            dot = __fmaf_rn(d * s_qd[q8_b + 1], (float)((q1 - 32) * (int)qx1 * (int)sc[2  + is]), dot);
-            dot = __fmaf_rn(d * s_qd[q8_b + 2], (float)((q2 - 32) * (int)qx2 * (int)sc[4  + is]), dot);
-            dot = __fmaf_rn(d * s_qd[q8_b + 3], (float)((q3 - 32) * (int)qx3 * (int)sc[6  + is]), dot);
-            dot = __fmaf_rn(d * s_qd[q8_b + 4], (float)((q4 - 32) * (int)qx4 * (int)sc[8  + is]), dot);
-            dot = __fmaf_rn(d * s_qd[q8_b + 5], (float)((q5 - 32) * (int)qx5 * (int)sc[10 + is]), dot);
-            dot = __fmaf_rn(d * s_qd[q8_b + 6], (float)((q6 - 32) * (int)qx6 * (int)sc[12 + is]), dot);
-            dot = __fmaf_rn(d * s_qd[q8_b + 7], (float)((q7 - 32) * (int)qx7 * (int)sc[14 + is]), dot);
+            dot = __fmaf_rn(d_qd0, (float)((q0 - 32) * (int)qx0 * (int)sc[0  + is]), dot);
+            dot = __fmaf_rn(d_qd1, (float)((q1 - 32) * (int)qx1 * (int)sc[2  + is]), dot);
+            dot = __fmaf_rn(d_qd2, (float)((q2 - 32) * (int)qx2 * (int)sc[4  + is]), dot);
+            dot = __fmaf_rn(d_qd3, (float)((q3 - 32) * (int)qx3 * (int)sc[6  + is]), dot);
+            dot = __fmaf_rn(d_qd4, (float)((q4 - 32) * (int)qx4 * (int)sc[8  + is]), dot);
+            dot = __fmaf_rn(d_qd5, (float)((q5 - 32) * (int)qx5 * (int)sc[10 + is]), dot);
+            dot = __fmaf_rn(d_qd6, (float)((q6 - 32) * (int)qx6 * (int)sc[12 + is]), dot);
+            dot = __fmaf_rn(d_qd7, (float)((q7 - 32) * (int)qx7 * (int)sc[14 + is]), dot);
             local_acc += dot;
         }
 
@@ -846,6 +855,126 @@ extern "C" __global__ void gemm_fused_qkv_kernel(
                 acc += vb[v_col];
             }
             out_row[v_col] = acc;
+        }
+    }
+}
+
+extern "C" __global__ void gemm_fused_qkv_q4k_kernel(
+    const unsigned char* __restrict__ wq,
+    const unsigned char* __restrict__ wk,
+    const unsigned char* __restrict__ wv,
+    const signed char* __restrict__ qx,
+    const float* __restrict__ qd,
+    const float* __restrict__ qs,
+    float* __restrict__ q_out,
+    float* __restrict__ k_out,
+    float* __restrict__ v_out,
+    int ne0,
+    int qdim,
+    int kvd,
+    int batch_size,
+    const float* __restrict__ qb,
+    const float* __restrict__ kb,
+    const float* __restrict__ vb)
+{
+    extern __shared__ char smem[];
+    signed char* s_qx = (signed char*)smem;
+    float* s_qd = (float*)(s_qx + ne0);
+    float* s_qs = s_qd + (ne0 / 32);
+
+    load_activation_smem(qx, qd, qs, s_qx, s_qd, s_qs, ne0);
+
+    const int warp_id = threadIdx.x / 32;
+    const int lane = threadIdx.x % 32;
+    const int col = blockIdx.x * (blockDim.x / 32) + warp_id;
+    const int batch_idx = blockIdx.y;
+    if (batch_idx >= batch_size) return;
+
+    const int total_cols = qdim + kvd + kvd;
+    if (col >= total_cols) return;
+
+    const int n_blocks = ne0 / 256;
+
+    const unsigned char* col_w = (col < qdim)
+        ? (wq + (size_t)col * (size_t)n_blocks * 144u)
+        : ((col < qdim + kvd)
+            ? (wk + (size_t)(col - qdim) * (size_t)n_blocks * 144u)
+            : (wv + (size_t)(col - qdim - kvd) * (size_t)n_blocks * 144u));
+
+    float local_acc = 0.0f;
+    float min_sum = 0.0f;
+
+    for (int b = 0; b < n_blocks; ++b) {
+        const int q8_b = b * 8;
+        const signed char* qx_base = s_qx + q8_b * 32;
+        const signed char qx0 = qx_base[0 * 32 + lane];
+        const signed char qx1 = qx_base[1 * 32 + lane];
+        const signed char qx2 = qx_base[2 * 32 + lane];
+        const signed char qx3 = qx_base[3 * 32 + lane];
+        const signed char qx4 = qx_base[4 * 32 + lane];
+        const signed char qx5 = qx_base[5 * 32 + lane];
+        const signed char qx6 = qx_base[6 * 32 + lane];
+        const signed char qx7 = qx_base[7 * 32 + lane];
+
+        const unsigned char* blk = col_w + (size_t)b * 144u;
+        const uint4 raw = *(const uint4*)blk;
+        const unsigned char* qs_ptr = blk + 16;
+        Q4K_BlockScales s;
+        unpack_q4k_scales(raw, &s);
+
+        const unsigned char q0 = qs_ptr[0 * 32 + lane];
+        const unsigned char q1 = qs_ptr[1 * 32 + lane];
+        const unsigned char q2 = qs_ptr[2 * 32 + lane];
+        const unsigned char q3 = qs_ptr[3 * 32 + lane];
+
+        const float d_sc0 = s.d_sc[0] * s_qd[q8_b + 0];
+        const float d_sc1 = s.d_sc[1] * s_qd[q8_b + 1];
+        const float d_sc2 = s.d_sc[2] * s_qd[q8_b + 2];
+        const float d_sc3 = s.d_sc[3] * s_qd[q8_b + 3];
+        const float d_sc4 = s.d_sc[4] * s_qd[q8_b + 4];
+        const float d_sc5 = s.d_sc[5] * s_qd[q8_b + 5];
+        const float d_sc6 = s.d_sc[6] * s_qd[q8_b + 6];
+        const float d_sc7 = s.d_sc[7] * s_qd[q8_b + 7];
+
+        float dot = 0.0f;
+        dot = __fmaf_rn(d_sc0, (float)((int)(q0 & 0x0Fu) * (int)qx0), dot);
+        dot = __fmaf_rn(d_sc1, (float)((int)(q0 >> 4)    * (int)qx1), dot);
+        dot = __fmaf_rn(d_sc2, (float)((int)(q1 & 0x0Fu) * (int)qx2), dot);
+        dot = __fmaf_rn(d_sc3, (float)((int)(q1 >> 4)    * (int)qx3), dot);
+        dot = __fmaf_rn(d_sc4, (float)((int)(q2 & 0x0Fu) * (int)qx4), dot);
+        dot = __fmaf_rn(d_sc5, (float)((int)(q2 >> 4)    * (int)qx5), dot);
+        dot = __fmaf_rn(d_sc6, (float)((int)(q3 & 0x0Fu) * (int)qx6), dot);
+        dot = __fmaf_rn(d_sc7, (float)((int)(q3 >> 4)    * (int)qx7), dot);
+        local_acc += dot;
+
+        if (lane == 0) {
+            float ms = 0.0f;
+            #pragma unroll
+            for (int sb = 0; sb < 8; ++sb) {
+                ms = __fmaf_rn(s.m[sb], s_qs[q8_b + sb], ms);
+            }
+            min_sum += ms;
+        }
+    }
+
+    #pragma unroll
+    for (int mask = 16; mask > 0; mask >>= 1) {
+        local_acc += __shfl_down_sync(0xffffffff, local_acc, mask);
+    }
+
+    if (lane == 0) {
+        float acc = local_acc + min_sum;
+        if (col < qdim) {
+            if (qb != nullptr) acc += qb[col];
+            q_out[(size_t)batch_idx * (size_t)qdim + (size_t)col] = acc;
+        } else if (col < qdim + kvd) {
+            const int k_col = col - qdim;
+            if (kb != nullptr) acc += kb[k_col];
+            k_out[(size_t)batch_idx * (size_t)kvd + (size_t)k_col] = acc;
+        } else {
+            const int v_col = col - qdim - kvd;
+            if (vb != nullptr) acc += vb[v_col];
+            v_out[(size_t)batch_idx * (size_t)kvd + (size_t)v_col] = acc;
         }
     }
 }

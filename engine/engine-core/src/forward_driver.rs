@@ -1342,7 +1342,27 @@ impl<'a> ForwardDriver<'a> {
                 self.eps,
             )?;
 
-            if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q6K {
+            if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q4K {
+                self.batched_gemm.gemm_fused_qkv_q4k(
+                    &self.stream,
+                    &layer.wq_dev,
+                    &layer.wk_dev,
+                    &layer.wv_dev,
+                    &self.qx_dev,
+                    &self.qd_dev,
+                    &self.qs_dev,
+                    &self.q_dev,
+                    &self.k_dev,
+                    &self.v_dev,
+                    self.h,
+                    self._qdim,
+                    self._kvd,
+                    1,
+                    qb_opt,
+                    kb_opt,
+                    vb_opt,
+                )?;
+            } else if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q6K {
                 self.batched_gemm.gemm_fused_qkv(
                     &self.stream,
                     &layer.wq_dev,
