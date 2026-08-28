@@ -32,6 +32,8 @@ const FUNC_NAME_FUSED_QKV_BATCHED: &str = "gemm_fused_qkv_batched_kernel";
 const FUNC_NAME_GET_ROWS_Q4K: &str = "get_rows_q4k_kernel";
 const FUNC_NAME_SAMPLE_GREEDY: &str = "gpu_sample_greedy_kernel";
 const FUNC_NAME_ADVANCE_TOKEN: &str = "gpu_advance_token_step_kernel";
+const FUNC_NAME_Q4K_MMA: &str = "gemm_q4k_mma_kernel";
+const FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA: &str = "gemm_q4k_fused_gate_up_swiglu_mma_kernel";
 
 const KERNEL_SRC: &str = include_str!("../kernels/gemm_quant.cu");
 const BLOCK_X: u32 = 128;
@@ -57,6 +59,8 @@ pub struct BatchedGEMM {
     fn_get_rows_q4k: CUfunction,
     fn_sample_greedy: CUfunction,
     fn_advance_token: CUfunction,
+    fn_q4k_mma: CUfunction,
+    fn_q4k_fused_gate_up_swiglu_mma: CUfunction,
 }
 
 unsafe impl Send for BatchedGEMM {}
@@ -113,6 +117,9 @@ impl BatchedGEMM {
         let mut fn_sample_greedy: CUfunction = std::ptr::null_mut();
         let mut fn_advance_token: CUfunction = std::ptr::null_mut();
 
+        let mut fn_q4k_mma: CUfunction = std::ptr::null_mut();
+        let mut fn_q4k_fused_gate_up_swiglu_mma: CUfunction = std::ptr::null_mut();
+
         unsafe {
             let lib = sys::lib();
             let res = lib.cuModuleLoadData(&mut cu_module, ptx_c.as_ptr() as *const std::ffi::c_void);
@@ -137,6 +144,8 @@ impl BatchedGEMM {
             let c_get_rows = CString::new(FUNC_NAME_GET_ROWS_Q4K).unwrap();
             let c_sample = CString::new(FUNC_NAME_SAMPLE_GREEDY).unwrap();
             let c_advance = CString::new(FUNC_NAME_ADVANCE_TOKEN).unwrap();
+            let c_q4k_mma = CString::new(FUNC_NAME_Q4K_MMA).unwrap();
+            let c_fused_mma = CString::new(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA).unwrap();
 
             let r_q = lib.cuModuleGetFunction(&mut fn_quantize_q8_1, cu_module, c_quant.as_ptr());
             let r1 = lib.cuModuleGetFunction(&mut fn_q4k, cu_module, c_q4k.as_ptr());
@@ -155,6 +164,8 @@ impl BatchedGEMM {
             let r10 = lib.cuModuleGetFunction(&mut fn_get_rows_q4k, cu_module, c_get_rows.as_ptr());
             let r11 = lib.cuModuleGetFunction(&mut fn_sample_greedy, cu_module, c_sample.as_ptr());
             let r12 = lib.cuModuleGetFunction(&mut fn_advance_token, cu_module, c_advance.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_q4k_mma, cu_module, c_q4k_mma.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_q4k_fused_gate_up_swiglu_mma, cu_module, c_fused_mma.as_ptr());
 
             if r_q != CUresult::CUDA_SUCCESS
                 || r1 != CUresult::CUDA_SUCCESS
@@ -199,6 +210,8 @@ impl BatchedGEMM {
             fn_get_rows_q4k,
             fn_sample_greedy,
             fn_advance_token,
+            fn_q4k_mma,
+            fn_q4k_fused_gate_up_swiglu_mma,
         })
     }
 
@@ -276,9 +289,9 @@ impl BatchedGEMM {
         residual: Option<&DeviceBuffer>,
     ) -> Result<(), CudaError> {
         match format {
-            GemvFormat::Q4K => self.gemm_q4k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
+            GemvFormat::Q4K => self.gemm_q4k_mma(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
             GemvFormat::Q6K => self.gemm_q6k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
-            _ => self.gemm_q4k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
+            _ => self.gemm_q4k_mma(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
         }
     }
 
@@ -349,6 +362,159 @@ impl BatchedGEMM {
             );
             if res != CUresult::CUDA_SUCCESS {
                 return Err(CudaError::KernelLaunch("cuLaunchKernel (GEMM Q4_K)", res));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Evaluates Q4_K matrix multiplication using Tensor Cores (PTX mma.sync):
+    /// `Out[M, ne1] = Q8(X)[M, ne0] * W[ne1, ne0]^T + Residual[M, ne1]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_q4k_mma(
+        &self,
+        stream: &CudaStream,
+        weights: &DeviceBuffer,
+        qx: &DeviceBuffer,
+        qd: &DeviceBuffer,
+        qs: &DeviceBuffer,
+        out: &DeviceBuffer,
+        ne0: usize,
+        ne1: usize,
+        batch_size: usize,
+        residual: Option<&DeviceBuffer>,
+    ) -> Result<(), CudaError> {
+        if batch_size == 0 || ne0 == 0 || ne1 == 0 {
+            return Ok(());
+        }
+
+        if self.fn_q4k_mma.is_null() {
+            return self.gemm_q4k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual);
+        }
+
+        let shared_bytes = (((ne0 * 5) / 4) + 128) as u32;
+        let ne0_i: i32 = ne0 as i32;
+        let ne1_i: i32 = ne1 as i32;
+        let batch_i: i32 = batch_size as i32;
+
+        let w_addr: u64 = weights.device_ptr();
+        let qx_addr: u64 = qx.device_ptr();
+        let qd_addr: u64 = qd.device_ptr();
+        let qs_addr: u64 = qs.device_ptr();
+        let out_addr: u64 = out.device_ptr();
+        let res_addr: u64 = residual.map(|r| r.device_ptr()).unwrap_or(0);
+
+        let args: [*mut std::ffi::c_void; 9] = [
+            &w_addr as *const u64 as *mut std::ffi::c_void,
+            &qx_addr as *const u64 as *mut std::ffi::c_void,
+            &qd_addr as *const u64 as *mut std::ffi::c_void,
+            &qs_addr as *const u64 as *mut std::ffi::c_void,
+            &out_addr as *const u64 as *mut std::ffi::c_void,
+            &ne0_i as *const i32 as *mut std::ffi::c_void,
+            &ne1_i as *const i32 as *mut std::ffi::c_void,
+            &batch_i as *const i32 as *mut std::ffi::c_void,
+            &res_addr as *const u64 as *mut std::ffi::c_void,
+        ];
+
+        let cols_per_block = 8u32;
+        let grid_x = (ne1 as u32).div_ceil(cols_per_block);
+        let grid_y = batch_size as u32;
+
+        self.device.bind_to_thread()?;
+
+        unsafe {
+            let lib = sys::lib();
+            let res = lib.cuLaunchKernel(
+                self.fn_q4k_mma,
+                grid_x,
+                grid_y,
+                1,
+                256,
+                1,
+                1,
+                shared_bytes,
+                stream.raw(),
+                args.as_ptr() as *mut *mut std::ffi::c_void,
+                std::ptr::null_mut(),
+            );
+            if res != CUresult::CUDA_SUCCESS {
+                return Err(CudaError::KernelLaunch("cuLaunchKernel (GEMM Q4_K MMA)", res));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Evaluates Fused Gate + Up SwiGLU projection using Tensor Cores (PTX mma.sync):
+    /// `Out[M, ne1] = silu(Q8(X) * Wgate^T) * (Q8(X) * Wup^T)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_q4k_fused_gate_up_swiglu_mma(
+        &self,
+        stream: &CudaStream,
+        wgate: &DeviceBuffer,
+        wup: &DeviceBuffer,
+        qx: &DeviceBuffer,
+        qd: &DeviceBuffer,
+        qs: &DeviceBuffer,
+        out: &DeviceBuffer,
+        ne0: usize,
+        ne1: usize,
+        batch_size: usize,
+    ) -> Result<(), CudaError> {
+        if batch_size == 0 || ne0 == 0 || ne1 == 0 {
+            return Ok(());
+        }
+
+        if self.fn_q4k_fused_gate_up_swiglu_mma.is_null() {
+            return self.gemm_fused_gate_up_swiglu(stream, wgate, wup, qx, qd, qs, out, ne0, ne1, batch_size);
+        }
+
+        let ne0_i: i32 = ne0 as i32;
+        let ne1_i: i32 = ne1 as i32;
+        let batch_i: i32 = batch_size as i32;
+
+        let wgate_addr: u64 = wgate.device_ptr();
+        let wup_addr: u64 = wup.device_ptr();
+        let qx_addr: u64 = qx.device_ptr();
+        let qd_addr: u64 = qd.device_ptr();
+        let qs_addr: u64 = qs.device_ptr();
+        let out_addr: u64 = out.device_ptr();
+
+        let args: [*mut std::ffi::c_void; 8] = [
+            &wgate_addr as *const u64 as *mut std::ffi::c_void,
+            &wup_addr as *const u64 as *mut std::ffi::c_void,
+            &qx_addr as *const u64 as *mut std::ffi::c_void,
+            &qd_addr as *const u64 as *mut std::ffi::c_void,
+            &qs_addr as *const u64 as *mut std::ffi::c_void,
+            &out_addr as *const u64 as *mut std::ffi::c_void,
+            &ne0_i as *const i32 as *mut std::ffi::c_void,
+            &ne1_i as *const i32 as *mut std::ffi::c_void,
+        ];
+
+        let cols_per_block = 8u32;
+        let grid_x = (ne1 as u32).div_ceil(cols_per_block);
+        let grid_y = batch_size as u32;
+        let shared_bytes = (((ne0 * 5) / 4) + 128) as u32;
+
+        self.device.bind_to_thread()?;
+
+        unsafe {
+            let lib = sys::lib();
+            let res = lib.cuLaunchKernel(
+                self.fn_q4k_fused_gate_up_swiglu_mma,
+                grid_x,
+                grid_y,
+                1,
+                256,
+                1,
+                1,
+                shared_bytes,
+                stream.raw(),
+                args.as_ptr() as *mut *mut std::ffi::c_void,
+                std::ptr::null_mut(),
+            );
+            if res != CUresult::CUDA_SUCCESS {
+                return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedGateUpSwiGLU MMA)", res));
             }
         }
 
