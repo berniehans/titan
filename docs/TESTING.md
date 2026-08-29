@@ -71,7 +71,7 @@ on GPU).
 | Lint | `cargo clippy --workspace -- -D warnings` |
 | CPU tests | `cargo test --workspace` (runs everywhere incl. CI; fixture tests skip when absent) |
 | GPU tests (local) | `cargo test --workspace -- --ignored` (requires CUDA device) |
-| Benchmark comparison | run `engine-core/tests/pipeline_bench.rs` on reference hardware and update [`BENCHMARKS.md`](./BENCHMARKS.md) (see the "Rule" there) |
+| Benchmark comparison | `cargo test --release -p engine-server --test multi_model_comparison_bench -- --ignored --nocapture`; update [`BENCHMARKS.md`](./BENCHMARKS.md) only with captured output |
 | Numerical parity (Phase 3) | GPU dequant vs CPU reference, < 0.01/elem, block-by-block |
 
 ## Exact reproduction (same as README usage)
@@ -91,6 +91,18 @@ cargo test --workspace
 # 4. GPU tests (require a local CUDA device; marked #[ignore])
 cargo test --workspace -- --ignored
 ```
+
+## Reproduced Titan vs. llama.cpp benchmark
+
+The current comparison harness is:
+
+```bash
+cargo test --release -p engine-server --test multi_model_comparison_bench -- --ignored --nocapture
+```
+
+It runs two prompts and 41 generated tokens per available model, starts the local CUDA-enabled `llama-server.exe`, then runs Titan on the same GGUF. Missing model files are reported as `SKIP`; a benchmark report must never fill those rows with historical values. On Windows, Titan's NVRTC DLL directory must be visible to the test process.
+
+The latest recorded run completed with `1 passed, 0 failed` in 34.41 seconds. It measured all five configured models. Performance results remain separate from numerical correctness: the current SwiGLU parity gate is still failing and must be resolved before treating the release as fully validated.
 
 ## Related
 

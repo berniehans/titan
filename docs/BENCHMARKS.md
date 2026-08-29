@@ -1,6 +1,6 @@
 # 📊 Titan — Performance Benchmarks & Empirical Evaluation
 
-This document contains official, empirical benchmark results measured directly on real GPU hardware across standard LLM architectures, comparing **Titan (100% Pure Rust)** against industry-standard inference engines including **llama.cpp (C++)**, **TensorRT-LLM (NVIDIA)**, **ExLlamaV2 (C++/CUDA)**, **mistral.rs (Rust/Candle)**, and **PyTorch Native SDPA (Python)**.
+This document contains reproducible benchmark results measured directly on real GPU hardware. The current head-to-head baseline compares **Titan (100% Pure Rust)** against CUDA-enabled **llama.cpp (C++)**. Older cross-engine estimates are retained only when explicitly labelled historical; they are not current measurements.
 
 ---
 
@@ -22,9 +22,9 @@ All benchmarks were executed on the following reference hardware and operating e
 
 ---
 
-## 2. Multi-Model Head-to-Head: Titan vs. llama.cpp (Official C++)
+## 2. Multi-Model Head-to-Head: Titan vs. llama.cpp (Latest Reproduction)
 
-Automated head-to-head comparison running against the official `llama-server.exe` (b10655 build with CUDA Graphs, FlashAttention, and full AVX2/FMA/BMI2 host optimisations) under identical sequence lengths, batch size = 1, and greedy sampling ($T=0$):
+Automated head-to-head comparison running against the installed CUDA-enabled `llama-server.exe` with CUDA Graphs enabled, under the same GGUF files, two prompts per model, 41 generated tokens, batch size = 1, and greedy sampling ($T=0$). The test completed with `1 passed, 0 failed` in 34.41 seconds.
 
 ```
 =========================================================================================================
@@ -32,42 +32,31 @@ Automated head-to-head comparison running against the official `llama-server.exe
 =========================================================================================================
 Model Name                   | llama.cpp (C++)      | Titan (Pure Rust)    | Ratio (Titan / llama.cpp)
 -----------------------------|----------------------|----------------------|-------------
-Qwen3 0.6B Base/Chat         | 202.2  tok/s (4.97 ms) | 220.8  tok/s (4.53 ms) | 1.09x (+9% FASTER!) 🏆
-DeepSeek-R1-Distill 1.5B     | 136.7  tok/s (7.34 ms) | 139.3  tok/s (7.18 ms) | 1.02x (+2% FASTER!) 🏆
-Qwen 2.5 1.5B Instruct       | 153.1  tok/s (6.54 ms) | 139.9  tok/s (7.15 ms) | 0.91x (91.4% Parity) ⚡
-Llama 3.2 1B Instruct        | 190.9  tok/s (5.24 ms) | 170.4  tok/s (5.87 ms) | 0.89x (170.4 tok/s) ⚡
-Llama 3.2 3B Instruct        | 93.6   tok/s (10.68 ms)| 68.9   tok/s (14.51 ms)| 0.74x (+50.1% Speedup) 🚀
+Qwen3 0.6B Base/Chat         | 225.5  tok/s (4.46 ms) | 228.2  tok/s (4.38 ms) | 1.01x (+1.2%)
+DeepSeek-R1-Distill 1.5B     | 148.9  tok/s (6.72 ms) | 121.0  tok/s (8.27 ms) | 0.81x (-18.7%)
+Qwen 2.5 1.5B Instruct       | 149.5  tok/s (6.70 ms) | 128.2  tok/s (7.80 ms) | 0.86x (-14.3%)
+Llama 3.2 1B Instruct        | 214.3  tok/s (4.67 ms) | 158.8  tok/s (6.30 ms) | 0.74x (-25.9%)
+Llama 3.2 3B Instruct        | 97.4   tok/s (10.27 ms)| 66.6   tok/s (15.01 ms)| 0.68x (-31.6%)
 =========================================================================================================
 ```
 
 ### Key Takeaways:
-1. **Qwen3 0.6B (Beats C++ by +9%):** Titan delivers **220.8 tok/s** vs `llama.cpp` at 202.2 tok/s, outperforming official C++ inference on GPU.
-2. **DeepSeek-R1-Distill 1.5B (Beats C++ by +2%):** Titan sustains **139.3 tok/s** vs `llama.cpp` at 136.7 tok/s with 100% memory safety.
-3. **128-bit Vectorized DP4A SIMD GEMV (`compute_q4k_block_dp4a`):** Hardware INT8 4-way vector dot product replaces byte-by-byte loops with single-step parallel sub-block evaluation.
-4. **Exact Token Parity:** Generated tokens, tool arguments, and reasoning traces match reference outputs.
+1. **Qwen3 0.6B:** Titan measured **228.2 tok/s** versus `llama.cpp` at 225.5 tok/s, a marginal **+1.2%** advantage.
+2. **Models from 1B to 3B:** `llama.cpp` was faster by **14.3% to 31.6%** in this run.
+3. **The previous published figures are superseded:** the current checkout did not reproduce the older 220.8/202.2 and 139.3/136.7 pairs.
+4. **Throughput is not numerical parity:** current numerical validation remains a separate gate, and the SwiGLU gate still fails with rel-L2 = 1.047.
 
 ---
 
 ## 3. Cross-Engine Comparative Landscape
 
-Comparison across the major inference engines in the industry evaluated on the RTX 3060:
-
-| Inference Engine | Core Language | Runtime Dependencies | Decode Speed (1.5B Q4) | Latency / Token | Architecture Type |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **TensorRT-LLM** | C++ / CUDA | Custom compilation per GPU | **~150 tok/s** | ~6.6 ms | Closed/Open hybrid CUTLASS kernels |
-| **ExLlamaV2** | C++ / CUDA ASM | Requires MSVC `cl.exe` + `CUDA_HOME` | **~145 tok/s** | ~6.9 ms | Custom handwritten GEMV for GeForce |
-| **llama.cpp** | C++ | CMake, MSVC/GCC, precompiled DLLs | **136.7 tok/s** | 7.34 ms | Vectorized C++ GEMV + CUDA Graphs |
-| **TITAN Engine** | **100% Pure Rust** | **Zero (Native NVIDIA Driver)** | **139.3 tok/s** | **7.18 ms** | **Autonomous CUDA Graphs in VRAM** |
-| **MLC-LLM** | C++ / TVM | Apache TVM compiler pipeline | **~135 tok/s** | ~7.4 ms | Auto-tuned compiled compute graphs |
-| **vLLM / SGLang** | Python / C++ | Heavy Python venv (>5 GB) | **~110 tok/s** | ~9.0 ms | Continuous batching serving engine |
-| **mistral.rs** | Rust / Candle | Requires local CUDA SDK | **15.8 tok/s** | 63.38 ms | Host-side operator dispatch |
-| **PyTorch (SDPA)** | Python | Python 3.11 + PyTorch 2.6 CUDA | **11.0 tok/s** | 90.64 ms | Python loop dispatch, FP16 bandwidth |
+Historical comparison estimates from prior work are not comparable to the latest controlled head-to-head run. They are intentionally omitted here: the only current cross-engine measurements are the five llama.cpp comparisons above.
 
 ---
 
 ## 4. Kernel-Level Profiling & Latency Breakdown
 
-Detailed per-stage timing profile during 1 token generation step on **Qwen 2.5 1.5B Instruct** ($d_{\text{model}} = 1536$, 28 layers, 152k vocab):
+The older per-stage timing profile below is historical and has not been rerun with the current checkout. It must not be used to derive the current head-to-head numbers.
 
 | Pipeline Stage | Kernel Implementation | Execution Time | % Total Time |
 | :--- | :--- | :--- | :--- |
@@ -119,6 +108,8 @@ Place the following standard GGUF files in the `models/` directory:
 cd engine
 cargo test --release -p engine-server --test multi_model_comparison_bench -- --ignored --nocapture
 ```
+
+The suite resolves the five model paths under `models/` plus the Qwen3 fixture under `testdata/`, skips missing GGUFs, starts the installed CUDA `llama-server.exe`, and prints only the models actually benchmarked. On Windows, ensure the process can load the NVRTC DLL used by Titan.
 
 ### 3. Run Speculative Decoding Speedup Suite
 ```bash

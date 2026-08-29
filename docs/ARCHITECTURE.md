@@ -88,13 +88,13 @@ Titan implements custom hand-optimized CUDA kernels that utilize NVIDIA hardware
 * **Non-Contiguous Memory Allocation:** Memory for Key and Value vectors is allocated in fixed-size blocks (e.g. 16 tokens per block) managed by `engine-kvcache`.
 * **Attention Sinks & Infinite Context:** Preserves initial sink tokens ($K=4$) while pruning intermediate evicted blocks, guaranteeing numerical stability and infinite continuous generation under strict VRAM caps.
 * **Block-Table Indirection:** A GPU device buffer `bt_dev` maps logical sequence tokens to physical memory pool pages, eliminating VRAM fragmentation and enabling instantaneous sequence rollback during speculative decoding.
-* **Chunked Prefill:** Long input sequences ($N \ge 2048$) are evaluated in discrete chunks of $C \le 512$ tokens via `prefill_chunked()`, keeping KV allocation bounded and achieving $>1000$ tok/s prompt ingestion.
+* **Chunked Prefill:** Long input sequences ($N \ge 2048$) are evaluated in discrete chunks of $C \le 512$ tokens via `prefill_chunked()`, keeping KV allocation bounded. Throughput depends on model, prompt, and current kernel path; see [`BENCHMARKS.md`](./BENCHMARKS.md) for reproduced figures.
 
 ---
 
 ### 2.4 Multi-Model GPU Speculative Decoding
 Titan supports simultaneous loading of two distinct GGUF models into GPU VRAM:
-* **Draft Model ($M_1$):** Lightweight model (e.g. *Llama 3.2 1B*, ~800 MB VRAM) running at **168 tok/s**.
+* **Draft Model ($M_1$):** Lightweight model (e.g. *Llama 3.2 1B*, ~800 MB VRAM). Throughput is benchmark-dependent and is not stated here without a current reproduced run.
 * **Target Model ($M_2$):** Higher capacity model (e.g. *Llama 3.2 3B*, ~2.0 GB VRAM).
 * **Parallel GPU Verification:**
   1. Draft model generates $K=3..5$ candidate tokens using its captured CUDA Graph.
