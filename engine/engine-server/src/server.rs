@@ -203,13 +203,14 @@ fn extract_sampler_params(
     p
 }
 
-/// Runs generation through the real model runtime with advanced sampling and stop sequence checking.
+/// Runs generation through the real model runtime with advanced sampling, grammar validation, and stop sequence checking.
 fn decode_prompt_real(
     cfg: &RealServerCfg,
     prompt: &str,
     max_tokens: u32,
     params: SamplerParams,
     stop_strings: &[String],
+    response_format: Option<&serde_json::Value>,
 ) -> (Vec<u32>, Vec<String>, String) {
     let mut model_guard = cfg.model.lock().expect("real model lock");
     let RealModel {
@@ -218,6 +219,17 @@ fn decode_prompt_real(
         ngram_proposer,
         ..
     } = &mut *model_guard;
+
+    let mut grammar = if let Some(rf) = response_format {
+        let ty = rf.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if ty == "json_object" || ty == "json_schema" {
+            Some(engine_core::grammar::JsonGrammar::new())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     if let (Some(driver), Some(tokenizer)) = (driver.as_mut(), tokenizer.as_ref()) {
         let prompt_tokens = match tokenizer.encode(prompt) {
@@ -249,6 +261,10 @@ fn decode_prompt_real(
             return (tokens, texts, "stop".to_string());
         }
 
+        if let Some(ref mut g) = grammar {
+            g.advance(&first_piece);
+        }
+
         tokens.push(first_tok);
         texts.push(first_piece);
         context.push(first_tok);
@@ -257,6 +273,13 @@ fn decode_prompt_real(
         let mut finish_reason = "length".to_string();
 
         while tokens.len() < max_tokens as usize {
+            if let Some(ref g) = grammar {
+                if g.is_complete() {
+                    finish_reason = "stop".to_string();
+                    break;
+                }
+            }
+
             if let Some(proposer) = ngram_proposer {
                 let candidates = proposer.propose(&context);
                 if !candidates.is_empty() {
@@ -280,6 +303,9 @@ fn decode_prompt_real(
                             finish_reason = "stop".to_string();
                             stopped = true;
                             break;
+                        }
+                        if let Some(ref mut g) = grammar {
+                            g.advance(&piece);
                         }
                         tokens.push(emitted_tok);
                         texts.push(piece);
@@ -308,6 +334,10 @@ fn decode_prompt_real(
             if Sampler::is_stop_sequence(next_tok, &next_piece, &stop_tokens, stop_strings) {
                 finish_reason = "stop".to_string();
                 break;
+            }
+
+            if let Some(ref mut g) = grammar {
+                g.advance(&next_piece);
             }
 
             tokens.push(next_tok);
@@ -499,7 +529,7 @@ async fn handle_real_completion(
         (mode, vram)
     };
 
-    let (tokens, texts, _) = decode_prompt_real(&cfg, &body.prompt, max_tokens, params, &stop_strings);
+    let (tokens, texts, _) = decode_prompt_real(&cfg, &body.prompt, max_tokens, params, &stop_strings, None);
     let mut resp = if body.stream {
         to_sse(tokens_and_texts_to_events(
             &body.prompt,
@@ -553,7 +583,14 @@ async fn handle_real_chat_completion(
         (mode, vram)
     };
 
-    let (tokens, texts, finish_reason) = decode_prompt_real(&cfg, &prompt, max_tokens, params, &stop_strings);
+    let (tokens, texts, finish_reason) = decode_prompt_real(
+        &cfg,
+        &prompt,
+        max_tokens,
+        params,
+        &stop_strings,
+        body.response_format.as_ref(),
+    );
     let mut resp = if body.stream {
         to_sse(chat_tokens_and_texts_to_events(
             &prompt,

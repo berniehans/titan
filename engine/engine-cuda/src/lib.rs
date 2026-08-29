@@ -27,7 +27,7 @@ pub use logit_mask::LogitMaskGpu;
 pub use multiformat_gemv::{GemvFormat, MultiFormatGEMV};
 pub use norm_rope::{MODE_BROADCAST_RESIDUAL, MODE_FUSED, MODE_NORM, MODE_ROPE, MODE_SWIGLU, NormRope};
 pub use paged_attention::PagedAttention;
-pub use paged_kv::{PagedKvGpu, PagedKvLayout};
+pub use paged_kv::{KvDataType, PagedKvGpu, PagedKvLayout};
 pub use pinned_host::PinnedHost;
 pub use streams::CudaStream;
 

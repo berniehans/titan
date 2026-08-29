@@ -351,6 +351,7 @@ fn gpu_block_wiring_matches_cpu_reference() {
         n_blocks: 1,
         block_tokens: 1,
         row_len: kvd,
+        data_type: engine_cuda::KvDataType::F32,
     };
     let pool_dev = alloc(&device, layout.floats_total());
     let bt_dev = upload_w(&stream, &device, &0u32.to_le_bytes());

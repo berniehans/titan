@@ -179,6 +179,7 @@ impl<'a> StreamingForwardDriver<'a> {
             n_blocks: 1,
             block_tokens: capacity,
             row_len: kvd,
+            data_type: engine_cuda::KvDataType::F32,
         };
 
         let emb = bank_tensor(reader, pinned, "token_embd.weight")?;

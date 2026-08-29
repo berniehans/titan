@@ -32,6 +32,25 @@ const FUNC_GATHER: &str = "paged_gather_kernel";
 /// Canonical CUDA kernel source, compiled to PTX at runtime via NVRTC.
 const KERNEL_SRC: &str = include_str!("../kernels/paged_kv.cu");
 
+/// Data type encoding for the paged KV cache physical buffers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KvDataType {
+    #[default]
+    F32,
+    F16,
+    FP8,
+}
+
+impl KvDataType {
+    pub fn element_bytes(&self) -> usize {
+        match self {
+            Self::F32 => 4,
+            Self::F16 => 2,
+            Self::FP8 => 1,
+        }
+    }
+}
+
 /// Layout specification for a paged KV cache device pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PagedKvLayout {
@@ -41,22 +60,39 @@ pub struct PagedKvLayout {
     pub block_tokens: usize,
     /// Floats per key / value row (`heads * head_dim`).
     pub row_len: usize,
+    /// Physical quantization / element encoding.
+    pub data_type: KvDataType,
 }
 
 impl PagedKvLayout {
-    /// Number of floats stored per token (key row + value row).
+    /// Creates a new layout with F32 default.
+    pub fn new(n_blocks: usize, block_tokens: usize, row_len: usize) -> Self {
+        Self {
+            n_blocks,
+            block_tokens,
+            row_len,
+            data_type: KvDataType::F32,
+        }
+    }
+
+    /// Number of elements stored per token (key row + value row).
     pub fn floats_per_token(&self) -> usize {
         2 * self.row_len
     }
 
-    /// Number of floats stored per physical block.
+    /// Number of elements stored per physical block.
     pub fn floats_per_block(&self) -> usize {
         self.block_tokens * self.floats_per_token()
     }
 
-    /// Total pool capacity in floats.
+    /// Total pool capacity in elements.
     pub fn floats_total(&self) -> usize {
         self.n_blocks * self.floats_per_block()
+    }
+
+    /// Total pool capacity in bytes.
+    pub fn bytes_total(&self) -> usize {
+        self.floats_total() * self.data_type.element_bytes()
     }
 
     /// Total capacity in logical tokens across all blocks.

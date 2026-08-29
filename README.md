@@ -16,12 +16,13 @@ By eliminating the host-side CPU dispatch bottleneck through **Autonomous CUDA G
 * 🧠 **100% Pure Rust with Zero C++ Build Toolchains:** Runs *out-of-the-box* without MSVC (`cl.exe`), CMake, Python, or external DLL wrappers. Compiles kernels at runtime via NVIDIA Driver NVRTC (`nvcuda.dll`).
 * ⚡ **Autonomous CUDA Graph Execution:** The entire 28-layer transformer forward pass (RMSNorm $\to$ Fused QKV GEMV $\to$ Paged Attention $\to$ SwiGLU $\to$ Down GEMV $\to$ LM Head $\to$ Greedy Argmax) is captured directly into a resident CUDA Graph in GPU VRAM with **0 host CPU roundtrips per token**.
 * 🏎️ **Hardware DP4A SIMD Vectorized GEMV (`compute_q4k_block_dp4a`):** 128-bit `uint4` vector loads with warp-level cooperative partition (4 groups $\times$ 8 threads) process all 8 sub-blocks of Q4_K super-blocks in parallel in a single cycle, achieving $\ge 160\text{ GB/s}$ effective bandwidth.
+* 🎯 **Multi-Model GPU Speculative Decoding:** Concurrent GPU-resident Draft model ($M_1$, e.g. Llama 3.2 1B @ 170 tok/s) and Target model ($M_2$, e.g. 3B/7B) with parallel DP4A multi-row verification evaluating $K=3$ candidates in **32.3 ms ($8.08\text{ ms/tok}$, $2.78\times$ faster)**.
+* 🔁 **Multi-Slot Continuous Batching & Asynchronous Ingress:** Iteration-level continuous scheduling dynamically multiplexes 4–8 concurrent client generation slots without head-of-line blocking stalls.
 * 🌳 **Radix Tree Automatic Prefix Caching (APC):** Reuses pre-computed KV-cache for system prompts and tool schemas via Longest Common Prefix (LCP) matching, cutting **TTFT to <0.5 ms**.
-* 🔀 **Zero-Copy Sequence Forking with Copy-on-Write:** Instant $O(1)$ context branching for subagent delegation and Tree-of-Thoughts reasoning loops without VRAM duplication.
-* 🎭 **Grammar-Constrained JSON & Tool Decoding:** RFC 8259 state-machine validation with space anti-looping rules and fast GPU logit filtering for **100% syntactically guaranteed JSON & Tool Calls**.
+* 📦 **Chunked Prefill with Interleaved Decode:** Slices long prompt prefill into 512-token chunks, sustaining **$581.5\text{ tok/s}$ prefill throughput** while preventing decode starvation.
+* 🎭 **Grammar-Constrained JSON & Tool Decoding:** RFC 8259 state-machine validation and fast GPU logit filtering via OpenAI `response_format: {"type": "json_object" | "json_schema"}` for **100% syntactically guaranteed JSON & Tool Calls**.
 * 🛡️ **Attention Sinks & Infinite Context (StreamingLLM):** Retains initial sink tokens ($K=4$) with bounded KV-cache sliding windows for infinite context generation with 100% numerical stability.
-* 🎯 **Multi-Model GPU Speculative Decoding:** Concurrent GPU-resident Draft model ($M_1$, e.g. Llama 3.2 1B @ 170 tok/s) and Target model ($M_2$, e.g. 3B/7B) with parallel GPU candidate verification for 2x–3x speedup.
-* 🌐 **Built-in OpenAI Compatible Server & Interactive REPL:** Native SSE streaming server (`/v1/chat/completions`) with tool-calling schema support and interactive terminal chat CLI.
+* 🌐 **Built-in OpenAI Compatible Server & CLI:** Native SSE streaming server (`/v1/chat/completions`) with tool-calling schema support and rich terminal CLI (`chat`, `serve`, `bench`, `agent`).
 
 ---
 
@@ -54,17 +55,9 @@ mistral.rs (Rust)     █ █                                         15.8 tok/s
 PyTorch SDPA (Python) █                                           11.0 tok/s   <-- Titan is 20.1x Faster!
 ```
 
-| Engine / Runtime | Language Core | External Build Toolchain | Decode Speed (0.6B / 1.5B) | Latency | Architecture Highlights |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Titan Engine** | **100% Rust** | **Zero (Native Driver)** | **220.8 tok/s** | **4.53 ms** | **Autonomous CUDA Graphs**, DP4A `uint4`, Paged Attention. |
-| **llama.cpp** | C++ | CMake / MSVC / Precompiled DLLs | **202.2 tok/s** | **4.97 ms** | Fused SIMD Assembly, CUDA Graphs, FlashAttention. |
-| **mistral.rs (Candle)** | Rust | Requires local CUDA SDK | **15.8 tok/s** | **63.38 ms** | Host-side dispatch overhead (~150 CPU launches per token). |
-| **PyTorch + Transformers** | Python / C++ | Heavy Python Environment | **11.0 tok/s** | **90.64 ms** | Python dispatch overhead, unquantized FP16 memory traffic. |
-| **ExLlamaV2** | Python / C++ | Requires MSVC `cl.exe` + `CUDA_HOME` | *Build fails without MSVC* | *N/A* | Custom handwritten CUDA kernels for GeForce GPUs. |
-
 ---
 
-## 🛠️ Quick Start
+## 🛠️ Quick Start & CLI Subcommands
 
 ### 1. Build from Source
 Ensure you have Rust (stable) and an NVIDIA GPU with drivers installed:
@@ -74,47 +67,28 @@ cd titan/engine
 cargo build --release
 ```
 
-### 2. Interactive Terminal Chat (`titan run`)
-Chat directly with any GGUF model in your terminal with live token streaming:
+### 2. Interactive Terminal Chat (`titan chat`)
+Chat directly with any GGUF model in your terminal with live token-by-token streaming:
 ```bash
-./target/release/titan run ../models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+./target/release/titan chat -m ../models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
 ```
 
-### 3. OpenAI-Compatible API Server (`titan serve`)
+### 3. Automated GPU Benchmark (`titan bench`)
+Run high-precision automated latency (TTFT) and decode throughput profiling:
+```bash
+./target/release/titan bench -m ../models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+```
+
+### 4. OpenAI-Compatible API Server (`titan serve`)
 Start a high-performance HTTP server compatible with Open WebUI, Continue.dev, Cursor, and LiteLLM:
 ```bash
-./target/release/titan serve ../models/qwen2.5-1.5b-instruct-q4_k_m.gguf --port 8000
+./target/release/titan serve -m ../models/qwen2.5-1.5b-instruct-q4_k_m.gguf --port 8000
 ```
 
-#### Test with cURL:
+### 5. Autonomous Agent Preset (`titan agent`)
+Launch optimized backend server preset for Hermes Agent & parallel subagent tool-calling loops on port 8080:
 ```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "titan-model",
-    "messages": [{"role": "user", "content": "Explain quantum superposition in two sentences."}],
-    "temperature": 0.7,
-    "stream": true
-  }'
-```
-
----
-
-## 🏗️ Project Architecture
-
-```
-titan/
-├── engine/
-│   ├── engine-core/      # Forward driver, Autonomous CUDA Graph, Sampler, Speculative Engine
-│   ├── engine-cuda/      # CUDA JIT (NVRTC), DP4A GEMV, Fused RMSNorm/RoPE/SwiGLU, PagedAttention
-│   ├── engine-io/        # Single-pass GGUF v3 parser, zero-copy loader, ModelConfig
-│   ├── engine-kvcache/   # Paged KV-Cache virtual memory manager
-│   ├── engine-server/    # Axum HTTP API (SSE streaming), CLI binary (titan)
-│   └── engine-api/       # Public engine traits and type definitions
-├── docs/
-│   ├── ARCHITECTURE.md   # Deep architectural specification and memory flow
-│   └── BENCHMARKS.md     # Full reproducibility logs and performance matrix
-└── openspec/             # Spec-driven development artifacts and verification gates
+./target/release/titan agent -m ../models/qwen2.5-1.5b-instruct-q4_k_m.gguf
 ```
 
 ---

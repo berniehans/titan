@@ -34,6 +34,7 @@ fn test_cuda_graph_dynamic_position_replay() -> Result<(), DynError> {
         n_blocks: TOTAL_BLOCKS,
         block_tokens: BLOCK_TOKENS,
         row_len: ROW_LEN,
+        data_type: engine_cuda::KvDataType::F32,
     };
 
     // Allocations

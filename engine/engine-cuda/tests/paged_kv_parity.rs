@@ -132,6 +132,7 @@ fn gpu_append_read_matches_cpu_block_by_block() -> Result<(), CudaError> {
         n_blocks: N_BLOCKS,
         block_tokens: BLOCK_TOKENS,
         row_len,
+        data_type: engine_cuda::KvDataType::F32,
     };
     let pool_bytes = layout.floats_total() * std::mem::size_of::<f32>();
     let pool = DeviceBuffer::alloc(Arc::clone(&device), pool_bytes)?;

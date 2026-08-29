@@ -49,6 +49,7 @@ fn append_and_gather_paged_kv_gpu_roundtrip() -> Result<(), CudaError> {
         n_blocks: 3,
         block_tokens: 4,
         row_len: 6,
+        data_type: engine_cuda::KvDataType::F32,
     };
     let kv = PagedKvGpu::new(Arc::clone(&device))?;
 

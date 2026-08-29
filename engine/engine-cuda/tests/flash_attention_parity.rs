@@ -45,6 +45,7 @@ fn test_flash_attention_2_parity() -> Result<(), DynError> {
         n_blocks: 4,
         block_tokens,
         row_len: nkv * hd,
+        data_type: engine_cuda::KvDataType::F32,
     };
 
     let test_seq_lens = [1, 4, 16, 64, 128];
