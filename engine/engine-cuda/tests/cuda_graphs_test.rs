@@ -5,6 +5,8 @@
 //! 2. `CudaGraph::instantiate()` creates an executable graph `CudaGraphExec`.
 //! 3. `CudaGraphExec::launch()` executes all captured kernels with 100% numerical parity against standard stream execution.
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_cuda::{CudaStream, DeviceBuffer, GemvFormat, MODE_NORM, MultiFormatGEMV, NormRope};
 
@@ -13,6 +15,7 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 #[test]
 #[ignore]
 fn test_cuda_graph_capture_and_launch_parity() -> Result<(), DynError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(device.clone())?;
 

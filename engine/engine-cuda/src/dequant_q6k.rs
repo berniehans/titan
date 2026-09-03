@@ -1,4 +1,4 @@
-﻿//! Q6_K GPU dequantization kernel and RAII launcher (Phase 8, task 1.2).
+//! Q6_K GPU dequantization kernel and RAII launcher (Phase 8, task 1.2).
 //!
 //! Compiles [`../kernels/dequant_q6k.cu`](kernels) to PTX at runtime with NVRTC
 //! (`cudarc::nvrtc`), loads the module through the raw CUDA driver API

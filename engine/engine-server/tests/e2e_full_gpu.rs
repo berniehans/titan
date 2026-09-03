@@ -9,9 +9,9 @@
 //!   testdata/Qwen3-0.6B-Q4_K_M.gguf
 //!     -> GgufReader::open          (engine-io: GGUF v3 parser)
 //!     -> load_to_pinned           (engine-io: single NVMe pass into pinned RAM)
-//!     -> build_real_model         (engine-server: picks aligned Q4_K tensors)
+//!     -> build_real_driver_model  (engine-server: real driver + tokenizer path)
 //!     -> Pipeline::with_dequantizer (engine-core + engine-cuda: real GPU dequant)
-//!     -> runtime::decode_run      (per-step streaming + digest -> deterministic)
+//!     -> runtime::decode_run      (per-step streaming through the real driver)
 //!     -> /v1/completions (axum)   (SSE + JSON)
 //!
 //! Requires: a local CUDA device and the NVRTC DLL discoverable on PATH
@@ -55,14 +55,14 @@ fn fixture_path() -> Option<PathBuf> {
 
 /// Builds a real model from the fixture (loader -> pinned -> GPU dequant).
 fn build_model(
-    window_bytes: usize,
+    max_seq: usize,
 ) -> Result<(SharedRealModel, GgufReader, &'static LoadedPinned), DynError> {
     engine_cuda::ensure_cuda_dll_paths();
     let fixture = fixture_path().ok_or("fixture not present (GPU E2E requires the GGUF)")?;
     let reader = GgufReader::open(&fixture)?;
     let pinned: &'static LoadedPinned = Box::leak(Box::new(load_to_pinned(&reader, &fixture)?));
     let _device = CudaDevice::new(0)?;
-    let model = runtime::build_real_model(&reader, pinned, window_bytes)?;
+    let model = runtime::build_real_driver_model(&reader, pinned, max_seq)?;
     Ok((Arc::new(Mutex::new(model)), reader, pinned))
 }
 
@@ -126,8 +126,8 @@ async fn collect_stream(client: Client, base: String, prompt: &str) -> (Vec<Stri
 #[test]
 #[ignore]
 fn e2e_real_full_stack_concurrent_sse_and_non_streaming() -> Result<(), DynError> {
-    let (model, _reader, _pinned) = build_model(/* window */ 64 * 1024 * 1024)?;
-    let vocab = 1000; // stub vocab bound; the digest depends on the real weights.
+    let (model, _reader, _pinned) = build_model(/* max sequence length */ 128)?;
+    let vocab = 151936;
     let base = spawn_real(model, vocab);
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -190,8 +190,8 @@ fn e2e_real_full_stack_concurrent_sse_and_non_streaming() -> Result<(), DynError
     assert_eq!(v["object"], "text_completion");
     let text = v["choices"][0]["text"].as_str().expect("text present");
     assert!(
-        text.starts_with(" token-"),
-        "real non-streaming text callout: {text}"
+        !text.is_empty(),
+        "real non-streaming text must be non-empty"
     );
     assert_eq!(v["usage"]["completion_tokens"].as_u64().unwrap(), 4);
 

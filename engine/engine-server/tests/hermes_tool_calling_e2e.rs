@@ -1,9 +1,9 @@
 use cudarc::driver::CudaDevice;
 use engine_cuda::ensure_cuda_dll_paths;
-use engine_io::{load_to_pinned, GgufReader, LoadedPinned};
+use engine_io::{GgufReader, LoadedPinned, load_to_pinned};
 use engine_server::models::{ChatCompletionRequest, ChatCompletionResponse, ChatMessage};
 use engine_server::runtime::{self, RealModel};
-use engine_server::server::{build_router_real, RealServerCfg};
+use engine_server::server::{RealServerCfg, build_router_real};
 use reqwest::Client;
 use serde_json::json;
 use std::path::PathBuf;
@@ -49,9 +49,7 @@ async fn spawn_real_server(fixture: PathBuf) -> Result<(Client, String), DynErro
         axum::serve(listener, app).await.expect("axum server");
     });
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
     let base_url = format!("http://127.0.0.1:{port}");
     Ok((client, base_url))
 }
@@ -99,7 +97,7 @@ async fn test_hermes_tool_calling_multi_turn_e2e() -> Result<(), DynError> {
                     "required": ["expr"]
                 }
             }
-        })
+        }),
     ];
 
     println!("\n================================================================================");
@@ -147,7 +145,9 @@ async fn test_hermes_tool_calling_multi_turn_e2e() -> Result<(), DynError> {
             ChatMessage::assistant(content_1.clone()),
             ChatMessage {
                 role: "tool".to_string(),
-                content: "{\"city\": \"Paris\", \"temperature\": \"18 C\", \"condition\": \"Sunny\"}".to_string(),
+                content:
+                    "{\"city\": \"Paris\", \"temperature\": \"18 C\", \"condition\": \"Sunny\"}"
+                        .to_string(),
             },
         ],
         max_tokens: 32,

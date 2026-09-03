@@ -1,5 +1,5 @@
 use engine_core::{BpeTokenizer, ForwardDriver};
-use engine_io::{load_to_pinned, GgufReader, ModelConfig};
+use engine_io::{GgufReader, ModelConfig, load_to_pinned};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Child, Command};
@@ -30,6 +30,7 @@ struct LlamaReq<'a> {
 
 #[derive(Deserialize, Debug)]
 struct LlamaTimings {
+    #[allow(dead_code)] // Retained for the external llama.cpp response schema.
     prompt_n: usize,
     prompt_ms: f64,
     prompt_per_second: f64,
@@ -40,6 +41,7 @@ struct LlamaTimings {
 
 #[derive(Deserialize, Debug)]
 struct LlamaResp {
+    #[allow(dead_code)] // Retained for the external llama.cpp response schema.
     content: String,
     timings: LlamaTimings,
 }
@@ -54,7 +56,10 @@ impl Drop for LlamaServerProcess {
     }
 }
 
-async fn start_llama_server(model_p: &std::path::Path, port: u16) -> Result<Option<LlamaServerProcess>, Box<dyn std::error::Error>> {
+async fn start_llama_server(
+    model_p: &std::path::Path,
+    port: u16,
+) -> Result<Option<LlamaServerProcess>, Box<dyn std::error::Error>> {
     let ollama_dir = PathBuf::from(r"C:\Users\niber\AppData\Local\Programs\Ollama\lib\ollama");
     let cuda_dir = ollama_dir.join("cuda_v12");
     let server_exe = ollama_dir.join("llama-server.exe");
@@ -93,11 +98,11 @@ async fn start_llama_server(model_p: &std::path::Path, port: u16) -> Result<Opti
     let mut ready = false;
 
     while start.elapsed() < Duration::from_secs(15) {
-        if let Ok(resp) = client.get(&health_url).send().await {
-            if resp.status().is_success() {
-                ready = true;
-                break;
-            }
+        if let Ok(resp) = client.get(&health_url).send().await
+            && resp.status().is_success()
+        {
+            ready = true;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
@@ -167,7 +172,8 @@ async fn test_titan_vs_llama_cpp_benchmark() -> Result<(), Box<dyn std::error::E
                 .await?;
             let resp: LlamaResp = serde_json::from_str(&resp_text)?;
 
-            println!("  - Prompt #{}: Prefill = {:.1} tok/s ({:.2} ms), Decode = {:.1} tok/s ({:.2} ms/tok)",
+            println!(
+                "  - Prompt #{}: Prefill = {:.1} tok/s ({:.2} ms), Decode = {:.1} tok/s ({:.2} ms/tok)",
                 i + 1,
                 resp.timings.prompt_per_second,
                 resp.timings.prompt_ms,
@@ -179,7 +185,9 @@ async fn test_titan_vs_llama_cpp_benchmark() -> Result<(), Box<dyn std::error::E
             llama_decode_lats.push(resp.timings.predicted_ms / resp.timings.predicted_n as f64);
         }
     } else {
-        println!("  [!] llama.cpp server could not be started or found, skipping live llama.cpp run.");
+        println!(
+            "  [!] llama.cpp server could not be started or found, skipping live llama.cpp run."
+        );
     }
     drop(llama_proc);
 
@@ -210,7 +218,7 @@ async fn test_titan_vs_llama_cpp_benchmark() -> Result<(), Box<dyn std::error::E
         titan_prefill_speeds.push(prefill_speed);
 
         // Decode
-        let mut cur_token = {
+        let cur_token = {
             let mut best_i = 0;
             let mut best_val = f32::NEG_INFINITY;
             for (idx, &v) in initial_logits.iter().enumerate() {
@@ -235,7 +243,8 @@ async fn test_titan_vs_llama_cpp_benchmark() -> Result<(), Box<dyn std::error::E
         titan_decode_speeds.push(decode_speed);
         titan_decode_lats.push(decode_lat_ms);
 
-        println!("  - Prompt #{}: Prefill = {:.1} tok/s ({:.2} ms), GPU Stream Decode = {:.1} tok/s ({:.2} ms/tok)",
+        println!(
+            "  - Prompt #{}: Prefill = {:.1} tok/s ({:.2} ms), GPU Stream Decode = {:.1} tok/s ({:.2} ms/tok)",
             i + 1,
             prefill_speed,
             ttft.as_secs_f64() * 1000.0,
@@ -247,24 +256,65 @@ async fn test_titan_vs_llama_cpp_benchmark() -> Result<(), Box<dyn std::error::E
     // -------------------------------------------------------------
     // 3. COMPARISON TABLE
     // -------------------------------------------------------------
-    let avg_llama_prefill: f64 = if !llama_prefill_speeds.is_empty() { llama_prefill_speeds.iter().sum::<f64>() / llama_prefill_speeds.len() as f64 } else { 0.0 };
-    let avg_llama_decode: f64 = if !llama_decode_speeds.is_empty() { llama_decode_speeds.iter().sum::<f64>() / llama_decode_speeds.len() as f64 } else { 0.0 };
-    let avg_llama_lat: f64 = if !llama_decode_lats.is_empty() { llama_decode_lats.iter().sum::<f64>() / llama_decode_lats.len() as f64 } else { 0.0 };
+    let avg_llama_prefill: f64 = if !llama_prefill_speeds.is_empty() {
+        llama_prefill_speeds.iter().sum::<f64>() / llama_prefill_speeds.len() as f64
+    } else {
+        0.0
+    };
+    let avg_llama_decode: f64 = if !llama_decode_speeds.is_empty() {
+        llama_decode_speeds.iter().sum::<f64>() / llama_decode_speeds.len() as f64
+    } else {
+        0.0
+    };
+    let avg_llama_lat: f64 = if !llama_decode_lats.is_empty() {
+        llama_decode_lats.iter().sum::<f64>() / llama_decode_lats.len() as f64
+    } else {
+        0.0
+    };
 
-    let avg_titan_prefill: f64 = titan_prefill_speeds.iter().sum::<f64>() / titan_prefill_speeds.len() as f64;
-    let avg_titan_decode: f64 = titan_decode_speeds.iter().sum::<f64>() / titan_decode_speeds.len() as f64;
+    let avg_titan_prefill: f64 =
+        titan_prefill_speeds.iter().sum::<f64>() / titan_prefill_speeds.len() as f64;
+    let avg_titan_decode: f64 =
+        titan_decode_speeds.iter().sum::<f64>() / titan_decode_speeds.len() as f64;
     let avg_titan_lat: f64 = titan_decode_lats.iter().sum::<f64>() / titan_decode_lats.len() as f64;
 
     println!("\n================================================================================");
     println!("===                         HEAD-TO-HEAD COMPARISON                          ===");
     println!("================================================================================");
-    println!("{:<30} | {:<18} | {:<18} | {:<12}", "Metric", "llama.cpp (C++)", "Titan (Pure Rust)", "Ratio");
+    println!(
+        "{:<30} | {:<18} | {:<18} | {:<12}",
+        "Metric", "llama.cpp (C++)", "Titan (Pure Rust)", "Ratio"
+    );
     println!("{:-<30}-|-{:-<18}-|-{:-<18}-|-{:-<12}", "", "", "", "");
-    println!("{:<30} | {:<15.1} tok/s | {:<15.1} tok/s | {:<10.2}x", "Decode Throughput (Higher)", avg_llama_decode, avg_titan_decode, avg_titan_decode / avg_llama_decode.max(0.001));
-    println!("{:<30} | {:<15.2} ms    | {:<15.2} ms    | {:<10.2}x", "Decode Latency (Lower)", avg_llama_lat, avg_titan_lat, avg_titan_lat / avg_llama_lat.max(0.001));
-    println!("{:<30} | {:<15.1} tok/s | {:<15.1} tok/s | {:<10.2}x", "Prefill Throughput (TTFT)", avg_llama_prefill, avg_titan_prefill, avg_titan_prefill / avg_llama_prefill.max(0.001));
-    println!("{:<30} | {:<18} | {:<18} | {:<12}", "Architecture / Toolchain", "C++ / CMake / DLLs", "100% Pure Rust", "Native");
-    println!("{:<30} | {:<18} | {:<18} | {:<12}", "Driver Interface", "C ABI Bindings", "Autonomous CUDA JIT", "Zero-Copy");
+    println!(
+        "{:<30} | {:<15.1} tok/s | {:<15.1} tok/s | {:<10.2}x",
+        "Decode Throughput (Higher)",
+        avg_llama_decode,
+        avg_titan_decode,
+        avg_titan_decode / avg_llama_decode.max(0.001)
+    );
+    println!(
+        "{:<30} | {:<15.2} ms    | {:<15.2} ms    | {:<10.2}x",
+        "Decode Latency (Lower)",
+        avg_llama_lat,
+        avg_titan_lat,
+        avg_titan_lat / avg_llama_lat.max(0.001)
+    );
+    println!(
+        "{:<30} | {:<15.1} tok/s | {:<15.1} tok/s | {:<10.2}x",
+        "Prefill Throughput (TTFT)",
+        avg_llama_prefill,
+        avg_titan_prefill,
+        avg_titan_prefill / avg_llama_prefill.max(0.001)
+    );
+    println!(
+        "{:<30} | {:<18} | {:<18} | {:<12}",
+        "Architecture / Toolchain", "C++ / CMake / DLLs", "100% Pure Rust", "Native"
+    );
+    println!(
+        "{:<30} | {:<18} | {:<18} | {:<12}",
+        "Driver Interface", "C ABI Bindings", "Autonomous CUDA JIT", "Zero-Copy"
+    );
     println!("================================================================================\n");
 
     Ok(())

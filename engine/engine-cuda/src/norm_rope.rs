@@ -38,8 +38,6 @@ const KERNEL_ARCH: &str = "compute_86";
 const FUNC_NAME: &str = "norm_rope_swiglu_kernel";
 /// Canonical CUDA kernel source, compiled to PTX at runtime via NVRTC.
 const KERNEL_SRC: &str = include_str!("../kernels/norm_rope.cu");
-const BLOCK_X: u32 = 256;
-
 const FUNC_NAME_FUSED_QK: &str = "fused_qk_norm_rope_kernel";
 
 /// RAII wrapper around compiled and loaded fused norm/rope/swiglu kernel.
@@ -67,6 +65,7 @@ impl NormRope {
             nvrtc::CompileOptions {
                 arch: Some(KERNEL_ARCH),
                 use_fast_math: Some(true),
+                options: vec!["--maxrregcount=64".to_string()],
                 ..Default::default()
             },
         )
@@ -94,10 +93,15 @@ impl NormRope {
         let (r1, r2) = unsafe {
             let lib = sys::lib();
             let r1 = lib.cuModuleGetFunction(&mut func, cu_module, name_c.as_ptr());
-            let r2 = lib.cuModuleGetFunction(&mut func_fused_qk, cu_module, name_fused_qk_c.as_ptr());
+            let r2 =
+                lib.cuModuleGetFunction(&mut func_fused_qk, cu_module, name_fused_qk_c.as_ptr());
             (r1, r2)
         };
-        if r1 != CUresult::CUDA_SUCCESS || r2 != CUresult::CUDA_SUCCESS || func.is_null() || func_fused_qk.is_null() {
+        if r1 != CUresult::CUDA_SUCCESS
+            || r2 != CUresult::CUDA_SUCCESS
+            || func.is_null()
+            || func_fused_qk.is_null()
+        {
             unsafe {
                 let lib = sys::lib();
                 let _ = lib.cuModuleUnload(cu_module);
@@ -161,7 +165,8 @@ impl NormRope {
         let expected_bytes = n * 4;
         let n_heads = (out.size() / expected_bytes).max(1);
         self.launch_batched_with_pos_ptr(
-            stream, x, residual, w, up, out, eps, n, n_dims, freq_base, pos, mode, pos_ptr, n_heads, n_heads,
+            stream, x, residual, w, up, out, eps, n, n_dims, freq_base, pos, mode, pos_ptr,
+            n_heads, n_heads,
         )
     }
 
@@ -378,7 +383,10 @@ impl NormRope {
             )
         };
         if res != CUresult::CUDA_SUCCESS {
-            return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedQKNormRoPE)", res));
+            return Err(CudaError::KernelLaunch(
+                "cuLaunchKernel (FusedQKNormRoPE)",
+                res,
+            ));
         }
 
         Ok(())

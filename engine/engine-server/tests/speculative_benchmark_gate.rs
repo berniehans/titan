@@ -25,6 +25,24 @@ fn fixture_path() -> PathBuf {
 #[test]
 #[ignore]
 fn test_speculative_speedup_benchmark() -> Result<(), DynError> {
+    let candidates_dll = [
+        r"C:\Users\niber\AppData\Local\hermes\hermes-agent\venv\Lib\site-packages\torch\lib",
+        r"C:\Users\niber\.unsloth\studio\unsloth_studio\Lib\site-packages\torch\lib",
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin",
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\bin",
+    ];
+    let mut extra_paths = Vec::new();
+    for c in &candidates_dll {
+        if std::path::Path::new(c).exists() {
+            extra_paths.push(*c);
+        }
+    }
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{};{}", extra_paths.join(";"), current_path);
+    unsafe {
+        std::env::set_var("PATH", new_path);
+    }
+
     let fix = fixture_path();
     let reader = GgufReader::open(&fix)?;
     let pinned = engine_io::load_to_pinned(&reader, &fix)?;
@@ -36,8 +54,14 @@ fn test_speculative_speedup_benchmark() -> Result<(), DynError> {
     println!("==========================================================================");
 
     let prompts = [
-        ("Repetitive Pattern", "struct Point { x: f32, y: f32, z: f32 }\nstruct Vector { x: f32, y: f32, z: f32 }\nstruct Matrix { x: f32, y: f32, z: f32 }\nstruct"),
-        ("Structured Code", "fn fibonacci(n: u64) -> u64 {\n    if n <= 1 {\n        return n;\n    }\n    fibonacci(n - 1) + fibonacci(n - 2)\n}\n\nfn fibonacci_fast("),
+        (
+            "Repetitive Pattern",
+            "struct Point { x: f32, y: f32, z: f32 }\nstruct Vector { x: f32, y: f32, z: f32 }\nstruct Matrix { x: f32, y: f32, z: f32 }\nstruct",
+        ),
+        (
+            "Structured Code",
+            "fn fibonacci(n: u64) -> u64 {\n    if n <= 1 {\n        return n;\n    }\n    fibonacci(n - 1) + fibonacci(n - 2)\n}\n\nfn fibonacci_fast(",
+        ),
     ];
 
     let gen_target = 16;
@@ -115,7 +139,13 @@ fn test_speculative_speedup_benchmark() -> Result<(), DynError> {
 
         println!(
             "| Prompt: {:<18} | Std: {:>5.1} tok/s ({:>6.1} ms) | Spec: {:>5.1} tok/s ({:>6.1} ms) | Accept: {:>4.1}% | Speedup: {:>4.2}x |",
-            name, std_tok_per_sec, std_elapsed_ms, spec_tok_per_sec, spec_elapsed_ms, acceptance_rate, speedup
+            name,
+            std_tok_per_sec,
+            std_elapsed_ms,
+            spec_tok_per_sec,
+            spec_elapsed_ms,
+            acceptance_rate,
+            speedup
         );
     }
     println!("==========================================================================\n");

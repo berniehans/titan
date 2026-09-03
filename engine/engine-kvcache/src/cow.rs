@@ -1,11 +1,11 @@
-﻿//! Copy-on-Write (CoW) Virtual Block Table for Zero-Copy Sequence Branching.
+//! Copy-on-Write (CoW) Virtual Block Table for Zero-Copy Sequence Branching.
 //!
 //! Enables atomic $O(1)$ branching for reasoning trees, subagents, and speculative rollouts
 //! without duplicating physical GPU memory. Physical page copies are deferred until a branch
 //! mutates or appends new tokens to a shared block.
 
-use std::sync::Arc;
 use crate::radix::PhysicalBlockId;
+use std::sync::Arc;
 
 /// A physical KV-cache block descriptor tracked by reference-counted pointers.
 #[derive(Debug, PartialEq, Eq)]

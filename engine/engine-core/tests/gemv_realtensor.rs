@@ -157,6 +157,7 @@ fn real_q4k_gemv(
 #[test]
 #[ignore]
 fn real_q4k_attention_weight_gpu_matches_cpu_bank() -> Result<(), CudaError> {
+    engine_cuda::ensure_cuda_dll_paths();
     let Some(fixture) = get_fixture_path() else {
         eprintln!("SKIP: fixture not present in this environment");
         return Ok(());
@@ -248,6 +249,7 @@ fn real_q6k_gemv(
 #[test]
 #[ignore]
 fn real_q6k_attn_v_and_ffn_down_gpu_matches_cpu_bank() -> Result<(), CudaError> {
+    engine_cuda::ensure_cuda_dll_paths();
     let Some(fixture) = get_fixture_path() else {
         eprintln!("SKIP: fixture not present in this environment");
         return Ok(());

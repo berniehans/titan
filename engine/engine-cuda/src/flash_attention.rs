@@ -65,10 +65,8 @@ impl FlashAttention2 {
 
         unsafe {
             let lib = sys::lib();
-            let res = lib.cuModuleLoadData(
-                &mut cu_module,
-                ptx_c.as_ptr() as *const std::ffi::c_void,
-            );
+            let res =
+                lib.cuModuleLoadData(&mut cu_module, ptx_c.as_ptr() as *const std::ffi::c_void);
             if res != CUresult::CUDA_SUCCESS || cu_module.is_null() {
                 return Err(CudaError::KernelLoad(
                     "cuModuleLoadData (flash_attention_2)",
@@ -125,6 +123,7 @@ impl FlashAttention2 {
     }
 
     /// Launches FlashAttention-2 causal kernel with an optional dynamic device pos_ptr (for CUDA Graphs).
+    #[allow(clippy::too_many_arguments)] // CUDA launch ABI requires these independent buffers/dimensions.
     pub fn launch_with_pos_ptr(
         &self,
         stream: &CudaStream,

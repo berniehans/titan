@@ -4,6 +4,8 @@
 //! lands and `engine_cuda::Q4KDequantizer` is implemented. Runs only on a
 //! CUDA-capable machine (`#[ignore]` keeps the normal suite green).
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_cuda::{CudaError, CudaStream, DeviceBuffer, Q4KDequantizer};
 use std::sync::Arc;
@@ -46,6 +48,7 @@ const N_BLOCKS: usize = 3;
 #[test]
 #[ignore]
 fn dequant_q4k_gpu_matches_cpu_reference() -> Result<(), CudaError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(Arc::clone(&device))?;
 

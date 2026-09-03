@@ -121,6 +121,11 @@ The inference pipeline SHALL support configurable sampling parameters to control
 ### Requirement: Interactive Terminal CLI
 The engine binary SHALL provide an interactive command-line interface (`titan chat`) for direct terminal conversation with live token-by-token streaming.
 
+#### Scenario: Interactive chat streaming
+- **WHEN** a user runs `titan chat --model <path>` and submits a prompt
+- **THEN** the CLI SHALL emit generated tokens incrementally
+- **AND** the session SHALL terminate cleanly when the configured stop condition is reached
+
 ### Requirement: Batched Quantized GEMM Execution
 The system SHALL provide native CUDA matrix multiplication kernels (`gemm_q4k`, `gemm_q6k`, `gemm_q80`) computing $Y = X W^T$ for batch sizes $M \ge 1$ without materializing uncompressed weights in VRAM.
 

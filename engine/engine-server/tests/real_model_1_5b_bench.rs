@@ -1,5 +1,5 @@
 use engine_core::{BpeTokenizer, ForwardDriver, NgramDraftProposer, Sampler, SamplerParams};
-use engine_io::{load_to_pinned, GgufReader, ModelConfig};
+use engine_io::{GgufReader, ModelConfig, load_to_pinned};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -59,8 +59,14 @@ fn test_real_qwen2_5_1_5b_resident_inference() -> Result<(), Box<dyn std::error:
     );
     println!("Tensors in model:");
     for t in reader.tensor_infos() {
-        if !t.name.starts_with("blk.") || t.name.starts_with("blk.0.") || t.name.starts_with("blk.6.") {
-            println!("  - {}: ty={:?}, shape={:?}, size={}", t.name, t.ggml_type, t.dims, t.size_bytes);
+        if !t.name.starts_with("blk.")
+            || t.name.starts_with("blk.0.")
+            || t.name.starts_with("blk.6.")
+        {
+            println!(
+                "  - {}: ty={:?}, shape={:?}, size={}",
+                t.name, t.ggml_type, t.dims, t.size_bytes
+            );
         }
     }
     let tokenizer = BpeTokenizer::from_reader(&reader)?;
@@ -97,7 +103,10 @@ fn test_real_qwen2_5_1_5b_resident_inference() -> Result<(), Box<dyn std::error:
         let ttft = t_prefill.elapsed();
         let ttft_ms = ttft.as_secs_f64() * 1000.0;
         let prefill_tok_s = prompt_tokens.len() as f64 / ttft.as_secs_f64();
-        println!("TTFT (Prefill): {:.2} ms ({:.1} tok/s)", ttft_ms, prefill_tok_s);
+        println!(
+            "TTFT (Prefill): {:.2} ms ({:.1} tok/s)",
+            ttft_ms, prefill_tok_s
+        );
         println!("Prompt tokens: {:?}", prompt_tokens);
         let mut indexed: Vec<(usize, f32)> = initial_logits.iter().copied().enumerate().collect();
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -127,9 +136,13 @@ fn test_real_qwen2_5_1_5b_resident_inference() -> Result<(), Box<dyn std::error:
             } else {
                 let logits = driver.decode_graph_slice(current_tok)?;
                 if step == 0 {
-                    println!("\n[Decode Step 0] logits has NaN: {}", logits.iter().any(|f| f.is_nan()));
+                    println!(
+                        "\n[Decode Step 0] logits has NaN: {}",
+                        logits.iter().any(|f| f.is_nan())
+                    );
                     let mut d_idx: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
-                    d_idx.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    d_idx
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                     for &(id, logit) in d_idx.iter().take(5) {
                         let piece = tokenizer.decode(&[id as u32]).unwrap_or_default();
                         println!("  token {} ({:?}): logit = {:.4}", id, piece, logit);
@@ -148,7 +161,11 @@ fn test_real_qwen2_5_1_5b_resident_inference() -> Result<(), Box<dyn std::error:
         }
         let gen_dur = t_gen.elapsed();
         let gen_tok_s = decode_tokens as f64 / gen_dur.as_secs_f64();
-        let mode_label = if i == 1 { "Autonomous GPU Graph" } else { "Host-Synchronized Slice" };
+        let mode_label = if i == 1 {
+            "Autonomous GPU Graph"
+        } else {
+            "Host-Synchronized Slice"
+        };
         println!(
             "\n[Metrics - {}] Generated {} tokens in {:.3}s -> Decode Throughput: {:.1} tok/s",
             mode_label,
@@ -198,7 +215,13 @@ fn test_real_qwen2_5_1_5b_resident_inference() -> Result<(), Box<dyn std::error:
                 total_generated += 1;
             } else {
                 speculative_steps += 1;
-                let res = driver.verify_speculative(current_tok, &candidates, &mut sampler, &params, &context)?;
+                let res = driver.verify_speculative(
+                    current_tok,
+                    &candidates,
+                    &mut sampler,
+                    &params,
+                    &context,
+                )?;
                 accepted_drafts += res.n_accepted;
                 for &tok in &res.emitted_tokens {
                     let piece = tokenizer.decode(&[tok]).unwrap_or_default();

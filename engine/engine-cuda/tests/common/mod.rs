@@ -2,6 +2,15 @@
 
 #![allow(dead_code)]
 
+/// Initializes and preflights the CUDA/NVRTC runtime before cudarc is touched.
+pub fn initialize_cuda() {
+    let path = engine_cuda::initialize_cuda_runtime()
+        .unwrap_or_else(|error| panic!("CUDA test initialization failed: {error}"));
+    if !path.as_os_str().is_empty() {
+        println!("CUDA test runtime: {}", path.display());
+    }
+}
+
 /// Deterministic xorshift32 PRNG for test vector generation.
 pub struct Xorshift(pub u32);
 

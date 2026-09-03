@@ -162,9 +162,15 @@ async fn handle_chat_completion(
     let texts: Vec<String> = tokens.iter().map(|&t| token_text(t)).collect();
 
     if body.stream {
-        to_sse(chat_tokens_and_texts_to_events(&prompt, model, &tokens, &texts, "length")).into_response()
+        to_sse(chat_tokens_and_texts_to_events(
+            &prompt, model, &tokens, &texts, "length",
+        ))
+        .into_response()
     } else {
-        JsonResponse::<ChatCompletionResponse>(chat_tokens_and_texts_to_response(&prompt, model, &tokens, &texts, "length")).into_response()
+        JsonResponse::<ChatCompletionResponse>(chat_tokens_and_texts_to_response(
+            &prompt, model, &tokens, &texts, "length",
+        ))
+        .into_response()
     }
 }
 
@@ -273,11 +279,11 @@ fn decode_prompt_real(
         let mut finish_reason = "length".to_string();
 
         while tokens.len() < max_tokens as usize {
-            if let Some(ref g) = grammar {
-                if g.is_complete() {
-                    finish_reason = "stop".to_string();
-                    break;
-                }
+            if let Some(ref g) = grammar
+                && g.is_complete()
+            {
+                finish_reason = "stop".to_string();
+                break;
             }
 
             if let Some(proposer) = ngram_proposer {
@@ -299,7 +305,12 @@ fn decode_prompt_real(
                         let piece = tokenizer
                             .decode(&[emitted_tok])
                             .unwrap_or_else(|_| token_text(emitted_tok));
-                        if Sampler::is_stop_sequence(emitted_tok, &piece, &stop_tokens, stop_strings) {
+                        if Sampler::is_stop_sequence(
+                            emitted_tok,
+                            &piece,
+                            &stop_tokens,
+                            stop_strings,
+                        ) {
                             finish_reason = "stop".to_string();
                             stopped = true;
                             break;
@@ -348,10 +359,13 @@ fn decode_prompt_real(
 
         (tokens, texts, finish_reason)
     } else {
-        let tokens = crate::runtime::decode_run(&mut model_guard, cfg.vocab, prompt, max_tokens)
-            .expect("real decode run");
-        let texts = tokens.iter().map(|&t| token_text(t)).collect();
-        (tokens, texts, "length".to_string())
+        match crate::runtime::decode_run(&mut model_guard, cfg.vocab, prompt, max_tokens) {
+            Ok(tokens) => {
+                let texts = tokens.iter().map(|&t| token_text(t)).collect();
+                (tokens, texts, "length".to_string())
+            }
+            Err(_) => (Vec::new(), Vec::new(), "error".to_string()),
+        }
     }
 }
 
@@ -529,7 +543,8 @@ async fn handle_real_completion(
         (mode, vram)
     };
 
-    let (tokens, texts, _) = decode_prompt_real(&cfg, &body.prompt, max_tokens, params, &stop_strings, None);
+    let (tokens, texts, _) =
+        decode_prompt_real(&cfg, &body.prompt, max_tokens, params, &stop_strings, None);
     let mut resp = if body.stream {
         to_sse(tokens_and_texts_to_events(
             &body.prompt,
@@ -548,8 +563,10 @@ async fn handle_real_completion(
         .into_response()
     };
 
-    resp.headers_mut().insert("x-titan-engine-mode", engine_mode.parse().unwrap());
-    resp.headers_mut().insert("x-titan-vram-mb", format!("{vram_mb:.1}").parse().unwrap());
+    resp.headers_mut()
+        .insert("x-titan-engine-mode", engine_mode.parse().unwrap());
+    resp.headers_mut()
+        .insert("x-titan-vram-mb", format!("{vram_mb:.1}").parse().unwrap());
     resp
 }
 
@@ -611,8 +628,10 @@ async fn handle_real_chat_completion(
         .into_response()
     };
 
-    resp.headers_mut().insert("x-titan-engine-mode", engine_mode.parse().unwrap());
-    resp.headers_mut().insert("x-titan-vram-mb", format!("{vram_mb:.1}").parse().unwrap());
+    resp.headers_mut()
+        .insert("x-titan-engine-mode", engine_mode.parse().unwrap());
+    resp.headers_mut()
+        .insert("x-titan-vram-mb", format!("{vram_mb:.1}").parse().unwrap());
     resp
 }
 
@@ -665,11 +684,7 @@ mod tests {
     #[tokio::test]
     async fn models_list_returns_json() {
         let (client, base) = spawn().await;
-        let res = client
-            .get(&(base + "/v1/models"))
-            .send()
-            .await
-            .unwrap();
+        let res = client.get(&(base + "/v1/models")).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let body = res.text().await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();

@@ -1,5 +1,5 @@
 use engine_core::{BpeTokenizer, ForwardDriver, Sampler, SamplerParams};
-use engine_io::{GgufReader, load_to_pinned, ModelConfig};
+use engine_io::{GgufReader, ModelConfig, load_to_pinned};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -12,8 +12,14 @@ fn test_live_text_inference_generation() -> Result<(), Box<dyn std::error::Error
     let models_dir = workspace_root.join("models");
 
     let models = [
-        ("Qwen 2.5 1.5B Instruct", models_dir.join("qwen2.5-1.5b-instruct-q4_k_m.gguf")),
-        ("Llama 3.2 1B Instruct", models_dir.join("Llama-3.2-1B-Instruct-Q4_K_M.gguf")),
+        (
+            "Qwen 2.5 1.5B Instruct",
+            models_dir.join("qwen2.5-1.5b-instruct-q4_k_m.gguf"),
+        ),
+        (
+            "Llama 3.2 1B Instruct",
+            models_dir.join("Llama-3.2-1B-Instruct-Q4_K_M.gguf"),
+        ),
     ];
 
     let prompts = [
@@ -33,13 +39,23 @@ fn test_live_text_inference_generation() -> Result<(), Box<dyn std::error::Error
 
     for (model_name, model_path) in &models {
         if !model_path.exists() {
-            println!("Skipping {}: model not found at {:?}", model_name, model_path);
+            println!(
+                "Skipping {}: model not found at {:?}",
+                model_name, model_path
+            );
             continue;
         }
 
-        println!("\n================================================================================");
-        println!(">>> TITAN LIVE REAL-HARDWARE INFERENCE EVALUATION: {}", model_name);
-        println!("================================================================================");
+        println!(
+            "\n================================================================================"
+        );
+        println!(
+            ">>> TITAN LIVE REAL-HARDWARE INFERENCE EVALUATION: {}",
+            model_name
+        );
+        println!(
+            "================================================================================"
+        );
 
         let t_load = Instant::now();
         let reader = GgufReader::open(model_path)?;
@@ -47,7 +63,10 @@ fn test_live_text_inference_generation() -> Result<(), Box<dyn std::error::Error
         let pinned = load_to_pinned(&reader, model_path)?;
         let tokenizer = BpeTokenizer::from_reader(&reader)?;
         let mut driver = ForwardDriver::new(&reader, &pinned, &cfg, 512)?;
-        println!("Loaded model into GPU VRAM in {:.2} ms\n", t_load.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "Loaded model into GPU VRAM in {:.2} ms\n",
+            t_load.elapsed().as_secs_f64() * 1000.0
+        );
 
         let mut sampler = Sampler::new(42);
 
@@ -70,18 +89,30 @@ fn test_live_text_inference_generation() -> Result<(), Box<dyn std::error::Error
             }
             let decode_dur = t_decode.elapsed();
 
-            let gen_text = tokenizer.decode(&generated_tokens).unwrap_or_else(|_| "<decoding error>".into());
+            let gen_text = tokenizer
+                .decode(&generated_tokens)
+                .unwrap_or_else(|_| "<decoding error>".into());
             let decode_speed = (generated_tokens.len() - 1) as f64 / decode_dur.as_secs_f64();
 
-            println!("--------------------------------------------------------------------------------");
+            println!(
+                "--------------------------------------------------------------------------------"
+            );
             println!("[Prompt #{}] \"{}\"", idx + 1, prompt);
             println!("  [Generated Output]: \"{}\"", gen_text.trim());
-            println!("  [Prefill]:  {:.2} ms ({} tokens -> {:.1} tok/s)",
-                prefill_dur.as_secs_f64() * 1000.0, prompt_tokens.len(),
-                prompt_tokens.len() as f64 / prefill_dur.as_secs_f64());
-            println!("  [Decode]:   {:.1} tok/s ({:.2} ms/tok)",
-                decode_speed, (decode_dur.as_secs_f64() * 1000.0) / (generated_tokens.len() - 1) as f64);
-            println!("--------------------------------------------------------------------------------\n");
+            println!(
+                "  [Prefill]:  {:.2} ms ({} tokens -> {:.1} tok/s)",
+                prefill_dur.as_secs_f64() * 1000.0,
+                prompt_tokens.len(),
+                prompt_tokens.len() as f64 / prefill_dur.as_secs_f64()
+            );
+            println!(
+                "  [Decode]:   {:.1} tok/s ({:.2} ms/tok)",
+                decode_speed,
+                (decode_dur.as_secs_f64() * 1000.0) / (generated_tokens.len() - 1) as f64
+            );
+            println!(
+                "--------------------------------------------------------------------------------\n"
+            );
         }
     }
 

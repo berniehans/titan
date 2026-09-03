@@ -9,6 +9,8 @@
 //! Each op must achieve cosine similarity >= 0.9999 and relative L2 error < 0.02.
 //! Runs only on CUDA-capable machines (`#[ignore]`).
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_cuda::{
     CudaError, CudaStream, DeviceBuffer, MODE_NORM, MODE_ROPE, MODE_SWIGLU, NormRope,
@@ -130,6 +132,7 @@ fn run_mode(
 #[test]
 #[ignore]
 fn norm_mode_matches_reference() -> Result<(), CudaError> {
+    common::initialize_cuda();
     let (x, residual, w, _up) = seeded_inputs();
 
     // Direct reference: t[i]=x[i]+resid[i]; sum_sq in f64; mean=(float)(sum_sq/n); scale=1/sqrt(mean+eps); y[i]=t[i]*scale*w[i]
@@ -168,6 +171,7 @@ fn norm_mode_matches_reference() -> Result<(), CudaError> {
 #[test]
 #[ignore]
 fn rope_mode_matches_reference() -> Result<(), CudaError> {
+    common::initialize_cuda();
     let (x, residual, _w, _up) = seeded_inputs();
 
     // Direct reference: out[i]=x[i]+resid[i] then rotates pairs k, k+half for k<half
@@ -206,6 +210,7 @@ fn rope_mode_matches_reference() -> Result<(), CudaError> {
 #[test]
 #[ignore]
 fn swiglu_mode_matches_reference() -> Result<(), CudaError> {
+    common::initialize_cuda();
     let (x, residual, _w, up) = seeded_inputs();
 
     // Direct reference: out[i]=x[i]+resid[i] then out[i]=silu(out[i])*up[i]
@@ -230,5 +235,68 @@ fn swiglu_mode_matches_reference() -> Result<(), CudaError> {
     );
     assert!(l2 < 0.02, "swiglu mode relative L2 error {l2} >= 0.02");
 
+    Ok(())
+}
+
+#[test]
+#[ignore]
+fn swiglu_batched_rows_match_reference() -> Result<(), CudaError> {
+    common::initialize_cuda();
+    const ROWS: usize = 2;
+    let (x_row, residual_row, _w, up_row) = seeded_inputs();
+    let mut x = Vec::with_capacity(ROWS * N);
+    let mut residual = Vec::with_capacity(ROWS * N);
+    let mut up = Vec::with_capacity(ROWS * N);
+    let mut expected = Vec::with_capacity(ROWS * N);
+    for row in 0..ROWS {
+        let row_bias = row as f32 * 0.125;
+        for i in 0..N {
+            let x_value = x_row[i] + row_bias;
+            let residual_value = residual_row[i] - row_bias;
+            let up_value = up_row[i] + row_bias;
+            x.push(x_value);
+            residual.push(residual_value);
+            up.push(up_value);
+            let t = x_value + residual_value;
+            expected.push((t / (1.0f32 + (-t).exp())) * up_value);
+        }
+    }
+
+    let device = CudaDevice::new(0)?;
+    let stream = CudaStream::new(Arc::clone(&device))?;
+    let norm_rope = NormRope::new(Arc::clone(&device))?;
+    let byte_len = x.len() * 4;
+    let d_x = DeviceBuffer::alloc(Arc::clone(&device), byte_len)?;
+    let d_res = DeviceBuffer::alloc(Arc::clone(&device), byte_len)?;
+    let d_w = DeviceBuffer::alloc(Arc::clone(&device), N * 4)?;
+    let d_up = DeviceBuffer::alloc(Arc::clone(&device), byte_len)?;
+    let d_out = DeviceBuffer::alloc(Arc::clone(&device), byte_len)?;
+    d_x.copy_from_host(&stream, &f32_bytes(&x))?;
+    d_res.copy_from_host(&stream, &f32_bytes(&residual))?;
+    d_up.copy_from_host(&stream, &f32_bytes(&up))?;
+
+    norm_rope.launch_batched_with_pos_ptr(
+        &stream,
+        &d_x,
+        &d_res,
+        &d_w,
+        &d_up,
+        &d_out,
+        EPS,
+        N,
+        N_DIMS,
+        FREQ_BASE,
+        POS,
+        MODE_SWIGLU,
+        None,
+        ROWS,
+        1,
+    )?;
+
+    let mut out_bytes = vec![0u8; byte_len];
+    d_out.copy_to_host(&stream, &mut out_bytes)?;
+    let got = bytes_f32(&out_bytes);
+    let l2 = rel_l2(&expected, &got);
+    assert!(l2 < 0.02, "batched SwiGLU relative L2 error {l2} >= 0.02");
     Ok(())
 }

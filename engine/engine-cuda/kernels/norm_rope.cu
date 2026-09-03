@@ -15,12 +15,12 @@ extern "C" __global__ void norm_rope_swiglu_kernel(
     const unsigned int* __restrict__ pos_ptr,
     int n_heads)
 {
+    const int row = blockIdx.x;
     unsigned int cur_pos = (pos_ptr != nullptr) ? *pos_ptr : pos;
     if (n_heads > 0) {
         cur_pos += (blockIdx.x / n_heads);
     }
 
-    const int row = blockIdx.x;
     const float* row_x = x + (size_t)row * (size_t)n;
     const size_t residual_offset = (mode & 8)
         ? (size_t)((n_heads > 0) ? (blockIdx.x % n_heads) : 0) * (size_t)n
@@ -94,6 +94,7 @@ extern "C" __global__ void norm_rope_swiglu_kernel(
         }
     }
 
+
     // Phase 2: Rotary Position Embedding (bit1 of mode)
     if (mode & 2) {
         const int half = n_dims / 2;
@@ -113,9 +114,10 @@ extern "C" __global__ void norm_rope_swiglu_kernel(
         }
     }
 
+
     // Phase 3: SwiGLU (bit2 of mode)
     if (mode & 4) {
-        const float4* g4 = (const float4*)row_x;
+        const float4* g4 = (const float4*)row_out;
         const float4* u4 = (const float4*)row_up;
         float4* out4 = (float4*)row_out;
         for (int j = lane; j < n4; j += 32) {

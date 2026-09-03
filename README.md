@@ -7,7 +7,7 @@
 
 **Titan** is an ultra-high-throughput, 100% Pure Rust LLM inference engine designed from scratch for consumer and datacenter NVIDIA GPUs. 
 
-By eliminating much of the host-side CPU dispatch overhead through **Autonomous CUDA Graphs in GPU VRAM** and utilizing vectorized **DP4A integer SIMD kernels with 128-bit `uint4` coalesced loads**, Titan reached **228.2 tok/s on Qwen3 0.6B** in the latest reproducible head-to-head run. On the same run, Titan matched or exceeded `llama.cpp` only on that small model; `llama.cpp` remained faster on the 1B–3B models tested.
+By eliminating much of the host-side CPU dispatch overhead through **Autonomous CUDA Graphs in GPU VRAM** and utilizing vectorized **DP4A integer SIMD kernels with 128-bit `uint4` coalesced loads**, Titan reached **228.2 tok/s on Qwen3 0.6B** in the historical 2026-09-01 head-to-head checkpoint. The current 2026-09-02 workspace checkpoint is tracked separately because the release gate remains open; see [`docs/WORKSPACE_STATE.md`](docs/WORKSPACE_STATE.md).
 
 ---
 
@@ -26,19 +26,23 @@ By eliminating much of the host-side CPU dispatch overhead through **Autonomous 
 
 ---
 
-## 📊 Latest Reproduced Benchmark Results (NVIDIA RTX 3060 Laptop GPU - 6GB VRAM)
+## 📊 Historical Reproduced Benchmark Results (2026-09-01)
 
-The table below was rerun locally from the current checkout. It used the same GGUF file, two prompts, greedy sampling (`temperature = 0.0`), 41 generated tokens, and CUDA-enabled `llama-server.exe` and Titan. `llama.cpp` had CUDA Graphs enabled. These are decode-throughput measurements, not claims of numerical equivalence.
+> **Workspace status:** the table below is a historical checkpoint, not current release evidence. The current 2026-09-02 evidence, Q8/Q6_K status, fresh llama.cpp comparison, and release blockers are documented in [`docs/WORKSPACE_STATE.md`](docs/WORKSPACE_STATE.md) and `local-artifacts/reviews/fresh-head-to-head-release-gate-20260902.json`.
+
+The table below was rerun locally from the current checkout on 2026-09-01. It used the same GGUF file, two prompts, greedy sampling (`temperature = 0.0`), 41 generated tokens, three repetitions per model, and CUDA-enabled `llama-server.exe` and Titan. `llama.cpp` had CUDA Graphs enabled. These are decode-throughput measurements, not claims of numerical equivalence.
 
 ### 1. Multi-Model Head-to-Head: Titan vs. llama.cpp (Official C++)
 
 | Model Evaluated | Format / Quantization | Architecture | **llama.cpp (C++)** | **Titan (Pure Rust)** | **Ratio / Parity** |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Qwen3 0.6B Base/Chat** | GGUF `Q4_K_M` | 28 Layers, 1024 Dim, 151k Vocab | 225.5 tok/s *(4.46 ms)* | **228.2 tok/s** *(4.38 ms)* | **1.01x (+1.2%)** |
-| **DeepSeek-R1-Distill 1.5B** | GGUF `Q4_K_M` | 28 Layers, 1536 Dim, 152k Vocab | **148.9 tok/s** *(6.72 ms)* | 121.0 tok/s *(8.27 ms)* | 0.81x (-18.7%) |
-| **Qwen 2.5 1.5B Instruct** | GGUF `Q4_K_M` | 28 Layers, 1536 Dim, 152k Vocab | **149.5 tok/s** *(6.70 ms)* | 128.2 tok/s *(7.80 ms)* | 0.86x (-14.3%) |
-| **Llama 3.2 1B Instruct** | GGUF `Q4_K_M` | 16 Layers, 2048 Dim, 128k Vocab | **214.3 tok/s** *(4.67 ms)* | 158.8 tok/s *(6.30 ms)* | 0.74x (-25.9%) |
-| **Llama 3.2 3B Instruct** | GGUF `Q4_K_M` | 28 Layers, 3072 Dim, 128k Vocab | **97.4 tok/s** *(10.27 ms)* | 66.6 tok/s *(15.01 ms)* | 0.68x (-31.6%) |
+| **Qwen3 0.6B Base/Chat** | GGUF `Q4_K_M` | 28 Layers, 1024 Dim, 151k Vocab | 240.2 tok/s cold / 278.1 warm | **274.1 tok/s** cold / 274.1 warm | **1.057x** |
+| **DeepSeek-R1-Distill 1.5B** | GGUF `Q4_K_M` | 28 Layers, 1536 Dim, 152k Vocab | 157.0 tok/s cold / 173.1 warm | 143.3 tok/s cold / 143.3 warm | **0.864x** |
+| **Qwen 2.5 1.5B Instruct** | GGUF `Q4_K_M` | 28 Layers, 1536 Dim, 152k Vocab | 138.6 tok/s cold / 135.5 warm | 124.1 tok/s cold / 128.5 warm | **1.009x** |
+| **Llama 3.2 1B Instruct** | GGUF `Q4_K_M` | 16 Layers, 2048 Dim, 128k Vocab | 178.6 tok/s cold / 189.0 warm | 170.2 tok/s cold / 179.7 warm | **0.896x** |
+| **Llama 3.2 3B Instruct** | GGUF `Q4_K_M` | 28 Layers, 3072 Dim, 128k Vocab | 104.7 tok/s cold / 105.0 warm | 77.0 tok/s cold / 76.9 warm | **0.735x** |
+
+The reported ratio is the artifact's average across prompts and cold/warm statistics. The simple mean of the five reported ratios is **0.912x**. This checkpoint does not satisfy the `>=0.95x` per-model and aggregate release gates; Llama 3.2 3B remains the principal deficit.
 
 ---
 
@@ -97,11 +101,11 @@ cd engine
 cargo test --release -p engine-server --test multi_model_comparison_bench -- --ignored --nocapture
 ```
 
-The benchmark skips models whose GGUF is absent and reports the models actually executed. On Windows, the test uses the installed `llama-server.exe`; Titan's NVRTC DLL path must be available to the process. The latest run completed with `1 passed, 0 failed` and measured all five models listed above.
+The benchmark skips models whose GGUF is absent and reports the models actually executed. On Windows, the test uses the installed `llama-server.exe`; Titan's NVRTC DLL path must be available to the process. The 2026-09-01 run completed with `1 passed, 0 failed` in 100.76 seconds and measured all five models with three repetitions. Results: `local-artifacts/benchmarks/rerun-20260901-085229.json`; raw log: `local-artifacts/benchmarks/rerun-20260901-085229.log`.
 
 ### Numerical validation status
 
-The current checkout passes the general Rust test suite and the exercised Q4/Q6 and paged-attention GPU parity tests. The SwiGLU parity gate still requires investigation (`rel-L2 = 1.047` in the latest run), so the throughput table must not be read as a final correctness sign-off.
+The current checkout passes the general Rust test suite and the benchmark test itself. GPU parity and production E2E gates are tracked separately and are not closed by this benchmark. The throughput table must not be read as a final correctness or release sign-off.
 
 To run the multi-model speculative decoding benchmark (1B Draft -> 3B Target):
 ```bash

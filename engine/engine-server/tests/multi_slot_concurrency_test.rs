@@ -1,4 +1,4 @@
-﻿//! Multi-Slot Concurrency Test (Milestone 5).
+//! Multi-Slot Concurrency Test (Milestone 5).
 //!
 //! Spawns a real ephemeral server and issues 4 concurrent client requests
 //! in parallel to verify continuous multi-slot inference.
@@ -130,12 +130,21 @@ async fn test_multi_slot_concurrent_requests() -> Result<(), DynError> {
 
     for handle in handles {
         let (idx, prompt, response) = handle.await?;
-        println!("  Slot #{idx} [Prompt: \"{prompt}\"] -> Response: \"{}\"", response.trim());
-        assert!(!response.is_empty(), "Response from slot #{idx} must not be empty");
+        println!(
+            "  Slot #{idx} [Prompt: \"{prompt}\"] -> Response: \"{}\"",
+            response.trim()
+        );
+        assert!(
+            !response.is_empty(),
+            "Response from slot #{idx} must not be empty"
+        );
     }
 
     let elapsed = t0.elapsed();
-    println!("\n>>> SUCCESS: All 4 concurrent slots completed in {:.2}s!", elapsed.as_secs_f64());
+    println!(
+        "\n>>> SUCCESS: All 4 concurrent slots completed in {:.2}s!",
+        elapsed.as_secs_f64()
+    );
     println!("================================================================================\n");
 
     Ok(())

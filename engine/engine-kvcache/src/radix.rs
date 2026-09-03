@@ -127,16 +127,15 @@ impl RadixTree {
         while !rem_tokens.is_empty() {
             let first_tok = rem_tokens[0];
 
-            if !current.children.contains_key(&first_tok) {
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                current.children.entry(first_tok)
+            {
                 // Branch does not exist, create new leaf node
-                current.children.insert(
-                    first_tok,
-                    Box::new(RadixNode::new(
-                        rem_tokens.to_vec(),
-                        rem_blocks.to_vec(),
-                        is_pinned,
-                    )),
-                );
+                entry.insert(Box::new(RadixNode::new(
+                    rem_tokens.to_vec(),
+                    rem_blocks.to_vec(),
+                    is_pinned,
+                )));
                 return;
             }
 
@@ -170,7 +169,8 @@ impl RadixTree {
                 let split_blocks = child.blocks[..split_blocks_count].to_vec();
                 let child_rem_blocks = child.blocks[split_blocks_count..].to_vec();
 
-                let mut split_node = Box::new(RadixNode::new(split_tokens, split_blocks, is_pinned));
+                let mut split_node =
+                    Box::new(RadixNode::new(split_tokens, split_blocks, is_pinned));
 
                 // Re-attach old child with remaining suffix
                 child.tokens = child_remaining_tokens;
@@ -209,7 +209,9 @@ impl RadixTree {
         let mut freed_blocks = Vec::new();
         while freed_blocks.len() < target_blocks_to_free {
             // Find the oldest unpinned leaf node in the tree
-            if let Some((_first_tok, evicted_blocks)) = Self::find_and_remove_oldest_leaf(&mut self.root) {
+            if let Some((_first_tok, evicted_blocks)) =
+                Self::find_and_remove_oldest_leaf(&mut self.root)
+            {
                 freed_blocks.extend(evicted_blocks);
             } else {
                 // No more unpinned nodes eligible for eviction
@@ -219,21 +221,19 @@ impl RadixTree {
         freed_blocks
     }
 
-    fn find_and_remove_oldest_leaf(
-        current: &mut RadixNode,
-    ) -> Option<(u32, Vec<PhysicalBlockId>)> {
+    fn find_and_remove_oldest_leaf(current: &mut RadixNode) -> Option<(u32, Vec<PhysicalBlockId>)> {
         let mut oldest_key: Option<u32> = None;
         let mut oldest_time = Instant::now();
 
         // 1. Check direct children that are unpinned leaves
         for (&key, child) in &current.children {
-            if !child.is_pinned && child.ref_count == 0 {
-                if child.is_leaf() {
-                    if oldest_key.is_none() || child.last_accessed < oldest_time {
-                        oldest_time = child.last_accessed;
-                        oldest_key = Some(key);
-                    }
-                }
+            if !child.is_pinned
+                && child.ref_count == 0
+                && child.is_leaf()
+                && (oldest_key.is_none() || child.last_accessed < oldest_time)
+            {
+                oldest_time = child.last_accessed;
+                oldest_key = Some(key);
             }
         }
 
@@ -270,7 +270,8 @@ impl RadixTree {
         if freed_blocks.is_empty() {
             return;
         }
-        let block_set: std::collections::HashSet<PhysicalBlockId> = freed_blocks.iter().copied().collect();
+        let block_set: std::collections::HashSet<PhysicalBlockId> =
+            freed_blocks.iter().copied().collect();
         Self::prune_nodes_with_blocks(&mut self.root, &block_set);
     }
 

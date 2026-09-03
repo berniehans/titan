@@ -108,7 +108,9 @@ async fn test_real_chat_completions_http_e2e() -> Result<(), DynError> {
     let chat_val: serde_json::Value = serde_json::from_str(&body)?;
     assert!(chat_val["id"].as_str().unwrap().starts_with("chatcmpl-"));
     assert_eq!(chat_val["choices"][0]["message"]["role"], "assistant");
-    let content = chat_val["choices"][0]["message"]["content"].as_str().unwrap();
+    let content = chat_val["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap();
     println!("  Generated content: {:?}", content);
     assert!(!content.is_empty(), "generated content should not be empty");
 
@@ -142,18 +144,21 @@ async fn test_real_chat_completions_http_e2e() -> Result<(), DynError> {
                 let payload = line.trim_start_matches("data: ").trim();
                 if payload == "[DONE]" {
                     saw_done = true;
-                } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(payload) {
-                    if let Some(delta) = val["choices"][0]["delta"]["content"].as_str() {
-                        stream_content.push_str(delta);
-                        print!("{}", delta);
-                    }
+                } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(payload)
+                    && let Some(delta) = val["choices"][0]["delta"]["content"].as_str()
+                {
+                    stream_content.push_str(delta);
+                    print!("{}", delta);
                 }
             }
         }
     }
     println!("\n  Full streamed content: {:?}", stream_content);
     assert!(saw_done, "stream must terminate with [DONE]");
-    assert!(!stream_content.is_empty(), "streamed content must be non-empty");
+    assert!(
+        !stream_content.is_empty(),
+        "streamed content must be non-empty"
+    );
 
     println!("\nAll E2E Chat Completions HTTP tests passed successfully!");
     Ok(())

@@ -15,10 +15,14 @@ pub mod vram_accounting;
 
 pub use dequant::{dequant_q4k_cpu, dequant_q6k_cpu};
 pub use error::EngineError;
-pub use forward_driver::{ForwardDriver, VramFootprint};
+pub use forward_driver::{
+    DecodeStageTiming, DecodeStageTimings, DecodeTelemetry, DecodeTelemetryCounters, ForwardDriver,
+    VramFootprint,
+};
 pub use grammar::{JsonGrammar, JsonParserState};
-pub use layer_double_buffer::{HostLayerWeights, LayerDoubleBuffer, LayerSlotGpu, LayerTensorSizes};
-pub use streaming_forward_driver::StreamingForwardDriver;
+pub use layer_double_buffer::{
+    HostLayerWeights, LayerDoubleBuffer, LayerSlotGpu, LayerTensorSizes,
+};
 pub use moe::{
     BandwidthMeasurement, CpuMoeConfig, ExpertSlotCache, ExpertTensorDesc, GpuProfileInfo,
     HardwareBandwidthProfile, HostExpertBank, LayerCacheStats, MoeBackend, MoeBudgetPlan,
@@ -30,6 +34,7 @@ pub use ngram_draft::NgramDraftProposer;
 pub use pipeline::{Pipeline, PipelineStats};
 pub use sampler::{Sampler, SamplerParams};
 pub use speculative::{SpeculativeVerificationResult, SpeculativeVerifier};
+pub use streaming_forward_driver::StreamingForwardDriver;
 pub use tokenizer::BpeTokenizer;
 pub use vram_accounting::{VramStageBreakdown, compute_static_vram_map};
 

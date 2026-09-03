@@ -14,7 +14,9 @@ fn test_json_object_grammar_state_transitions() {
     assert!(!grammar.is_accepted());
 
     // Token 3: "  \"tool_call\": {\"fn\": \"web_search\"}\n"
-    grammar.advance(3, "  \"tool_call\": {\"fn\": \"web_search\"}\n").unwrap();
+    grammar
+        .advance(3, "  \"tool_call\": {\"fn\": \"web_search\"}\n")
+        .unwrap();
     assert!(!grammar.is_accepted());
 
     // Token 4: "}" -> Closes root JSON object

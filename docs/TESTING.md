@@ -6,6 +6,10 @@
 This document describes how Titan is tested and how to reproduce the verification steps
 exactly. It narrates the strategy; the constitution and phase gates are the authority.
 
+## Current workspace checkpoint — 2026-09-02
+
+The current organization and verification status is maintained in [`WORKSPACE_STATE.md`](WORKSPACE_STATE.md). The fresh five-model head-to-head artifact is `../local-artifacts/benchmarks/final-head-to-head-20260902_165459.json`; its release gate remains rejected, so historical benchmark tables must not be treated as current release sign-off.
+
 ## Test strategy
 
 - **CPU suites run everywhere, including CI.** README curates this as **20 CPU suites
@@ -102,7 +106,7 @@ cargo test --release -p engine-server --test multi_model_comparison_bench -- --i
 
 It runs two prompts and 41 generated tokens per available model, starts the local CUDA-enabled `llama-server.exe`, then runs Titan on the same GGUF. Missing model files are reported as `SKIP`; a benchmark report must never fill those rows with historical values. On Windows, Titan's NVRTC DLL directory must be visible to the test process.
 
-The latest recorded run completed with `1 passed, 0 failed` in 34.41 seconds. It measured all five configured models. Performance results remain separate from numerical correctness: the current SwiGLU parity gate is still failing and must be resolved before treating the release as fully validated.
+The historical recorded run (`2026-09-01`) completed with `1 passed, 0 failed` in 100.76 seconds and measured all five configured models with three repetitions each. Its output is `../local-artifacts/benchmarks/rerun-20260901-085229.json` with raw log `../local-artifacts/benchmarks/rerun-20260901-085229.log`. The newer 2026-09-02 checkpoint is recorded separately in `../local-artifacts/benchmarks/final-head-to-head-20260902_165459.json`; performance remains separate from numerical correctness and the release gate is still open.
 
 ## Related
 

@@ -1,4 +1,4 @@
-﻿//! StreamingLLM Attention Sinks & H2O Heavy-Hitter KV Cache Compression.
+//! StreamingLLM Attention Sinks & H2O Heavy-Hitter KV Cache Compression.
 //!
 //! Enables infinite sequence generation within a fixed O(1) VRAM budget by:
 //! 1. Pinning initial Attention Sink tokens (0..4) to absorb softmax denominator mass.
@@ -50,17 +50,17 @@ impl StreamingKvConfig {
 
     /// Number of physical blocks allocated for attention sinks.
     pub fn sink_blocks(&self) -> usize {
-        (self.sink_tokens + self.block_tokens - 1) / self.block_tokens
+        self.sink_tokens.div_ceil(self.block_tokens)
     }
 
     /// Number of physical blocks in the recent rolling window.
     pub fn recent_blocks(&self) -> usize {
-        (self.recent_window_tokens + self.block_tokens - 1) / self.block_tokens
+        self.recent_window_tokens.div_ceil(self.block_tokens)
     }
 
     /// Maximum number of active physical blocks allowed for a sequence.
     pub fn max_active_blocks(&self) -> usize {
-        (self.max_budget_tokens + self.block_tokens - 1) / self.block_tokens
+        self.max_budget_tokens.div_ceil(self.block_tokens)
     }
 }
 
@@ -109,10 +109,19 @@ impl StreamingKvManager {
             .collect();
 
         // Sort descending by score to keep heavy hitters
-        scored_middle.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored_middle
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let retained_middle: Vec<u32> = scored_middle.iter().take(allowable_middle).map(|p| p.0).collect();
-        let evicted_middle: Vec<u32> = scored_middle.iter().skip(allowable_middle).map(|p| p.0).collect();
+        let retained_middle: Vec<u32> = scored_middle
+            .iter()
+            .take(allowable_middle)
+            .map(|p| p.0)
+            .collect();
+        let evicted_middle: Vec<u32> = scored_middle
+            .iter()
+            .skip(allowable_middle)
+            .map(|p| p.0)
+            .collect();
 
         let mut retained = Vec::with_capacity(max_blocks);
         retained.extend_from_slice(sink_blocks);
@@ -148,10 +157,19 @@ mod tests {
 
         assert_eq!(retained.len(), 4);
         assert_eq!(retained[0], 100, "Sink block 100 must be preserved");
-        assert!(retained.contains(&106), "Recent block 106 must be preserved");
-        assert!(retained.contains(&107), "Recent block 107 must be preserved");
+        assert!(
+            retained.contains(&106),
+            "Recent block 106 must be preserved"
+        );
+        assert!(
+            retained.contains(&107),
+            "Recent block 107 must be preserved"
+        );
 
         assert_eq!(evicted.len(), 4);
-        println!("Retained blocks: {:?}, Evicted blocks: {:?}", retained, evicted);
+        println!(
+            "Retained blocks: {:?}, Evicted blocks: {:?}",
+            retained, evicted
+        );
     }
 }

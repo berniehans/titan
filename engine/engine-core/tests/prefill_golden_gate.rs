@@ -284,6 +284,7 @@ fn run_cpu_reference(
 #[test]
 #[ignore] // GPU test
 fn prefill_matches_golden_and_cpu_reference() {
+    engine_cuda::ensure_cuda_dll_paths();
     let fixture_path = match get_fixture_path() {
         Some(p) => p,
         None => {

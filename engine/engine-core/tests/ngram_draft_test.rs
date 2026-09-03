@@ -38,7 +38,10 @@ fn test_ngram_proposer_no_match() {
     let history = vec![1, 2, 3, 4, 5, 6, 7];
 
     let draft = proposer.propose(&history);
-    assert!(draft.is_empty(), "No recurring suffix should propose nothing");
+    assert!(
+        draft.is_empty(),
+        "No recurring suffix should propose nothing"
+    );
 }
 
 #[test]
@@ -47,5 +50,8 @@ fn test_ngram_proposer_short_history() {
     let history = vec![1];
 
     let draft = proposer.propose(&history);
-    assert!(draft.is_empty(), "Single token history should propose nothing");
+    assert!(
+        draft.is_empty(),
+        "Single token history should propose nothing"
+    );
 }

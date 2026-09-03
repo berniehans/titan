@@ -59,7 +59,11 @@ fn test_chunked_prefill_parity() -> Result<(), DynError> {
             continue;
         }
 
-        println!("\nEvaluating Prompt {i:02} ({:?}): {} tokens", prompt, token_ids.len());
+        println!(
+            "\nEvaluating Prompt {i:02} ({:?}): {} tokens",
+            prompt,
+            token_ids.len()
+        );
 
         // 1. Serial prefill baseline
         let mut drv_serial = ForwardDriver::new(&reader, &pinned, &cfg, token_ids.len())?;

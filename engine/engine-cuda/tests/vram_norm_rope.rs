@@ -11,6 +11,8 @@
 //! 3. `DECLARED_PINGPONG_BYTES + DECLARED_RESIDENT_KV_BYTES + DECLARED_ACTIVATIONS_BYTES <= BUDGET_GB`.
 //! 4. Live free device memory `free > 0`.
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use cudarc::driver::sys;
 use engine_cuda::{CudaError, CudaStream, DeviceBuffer, MODE_FUSED, NormRope};
@@ -25,6 +27,7 @@ const DECLARED_ACTIVATIONS_BYTES: f64 = 1.3 * 1024.0 * 1024.0 * 1024.0;
 #[ignore]
 #[allow(clippy::assertions_on_constants)]
 fn vram_worst_case_norm_rope_guard() -> Result<(), CudaError> {
+    common::initialize_cuda();
     const N: usize = 4096;
     const N_DIMS: usize = 128;
     const FREQ_BASE: f32 = 10000.0;

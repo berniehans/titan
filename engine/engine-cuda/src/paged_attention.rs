@@ -63,6 +63,7 @@ impl PagedAttention {
             nvrtc::CompileOptions {
                 arch: Some(KERNEL_ARCH),
                 use_fast_math: Some(true),
+                options: vec!["--maxrregcount=64".to_string()],
                 ..Default::default()
             },
         )
@@ -94,16 +95,31 @@ impl PagedAttention {
             let r2 = lib.cuModuleGetFunction(&mut func_split, cu_module, name_split_c.as_ptr());
             let r3 = lib.cuModuleGetFunction(&mut func_reduce, cu_module, name_reduce_c.as_ptr());
 
-            if r1 != CUresult::CUDA_SUCCESS || r2 != CUresult::CUDA_SUCCESS || r3 != CUresult::CUDA_SUCCESS {
+            if r1 != CUresult::CUDA_SUCCESS
+                || r2 != CUresult::CUDA_SUCCESS
+                || r3 != CUresult::CUDA_SUCCESS
+            {
                 let _ = lib.cuModuleUnload(cu_module);
-                return Err(CudaError::KernelLoad("cuModuleGetFunction (PagedAttention/FlashDecoding)", r1));
+                return Err(CudaError::KernelLoad(
+                    "cuModuleGetFunction (PagedAttention/FlashDecoding)",
+                    r1,
+                ));
             }
         }
 
         // Allocate static scratchpad buffers for zero-overhead CUDA Graph capture
-        let partial_acc = DeviceBuffer::alloc(device.clone(), MAX_ATTN_HEADS * MAX_FLASH_DECODING_SPLITS * MAX_HEAD_DIM * 4)?;
-        let partial_m = DeviceBuffer::alloc(device.clone(), MAX_ATTN_HEADS * MAX_FLASH_DECODING_SPLITS * 4)?;
-        let partial_l = DeviceBuffer::alloc(device.clone(), MAX_ATTN_HEADS * MAX_FLASH_DECODING_SPLITS * 4)?;
+        let partial_acc = DeviceBuffer::alloc(
+            device.clone(),
+            MAX_ATTN_HEADS * MAX_FLASH_DECODING_SPLITS * MAX_HEAD_DIM * 4,
+        )?;
+        let partial_m = DeviceBuffer::alloc(
+            device.clone(),
+            MAX_ATTN_HEADS * MAX_FLASH_DECODING_SPLITS * 4,
+        )?;
+        let partial_l = DeviceBuffer::alloc(
+            device.clone(),
+            MAX_ATTN_HEADS * MAX_FLASH_DECODING_SPLITS * 4,
+        )?;
 
         Ok(Self {
             device,
@@ -295,15 +311,19 @@ impl PagedAttention {
 
         self.device.bind_to_thread()?;
 
+        // Keep the experimental HD64 symbol loaded for isolated parity work, but
+        // use the validated decode kernel for all production launches.
+        let kernel_func = self.func;
+
         // SAFETY:
         // `self.device.bind_to_thread()` ensured a valid CUDA context on this thread.
-        // `self.func` is a valid `CUfunction` from a live module.
+        // `kernel_func` is a valid `CUfunction` from a live module.
         // `stream.raw()` is a valid `CUstream`. `args` points to 13 raw pointers that
         // map to the kernel parameters.
         let res = unsafe {
             let lib = sys::lib();
             lib.cuLaunchKernel(
-                self.func,
+                kernel_func,
                 grid_x,
                 1,
                 1,
@@ -347,7 +367,7 @@ impl PagedAttention {
     ) -> Result<(), CudaError> {
         let tokens_per_split = 256usize;
         let max_splits = MAX_FLASH_DECODING_SPLITS;
-        let num_splits = ((seq_tokens + tokens_per_split - 1) / tokens_per_split).min(max_splits).max(1);
+        let num_splits = seq_tokens.div_ceil(tokens_per_split).min(max_splits).max(1);
 
         if num_splits == 1 {
             return self.launch_with_pos_ptr(
@@ -427,7 +447,10 @@ impl PagedAttention {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (FlashDecoding Split)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (FlashDecoding Split)",
+                    res,
+                ));
             }
 
             // 2. Launch Reduction kernel
@@ -456,7 +479,10 @@ impl PagedAttention {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (FlashDecoding Reduce)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (FlashDecoding Reduce)",
+                    res,
+                ));
             }
         }
 

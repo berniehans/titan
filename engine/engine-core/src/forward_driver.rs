@@ -33,11 +33,203 @@ use crate::error::EngineError;
 use crate::forward_cpu::{Tensor, TensorType, embed_lookup, logits_from_hidden};
 use cudarc::driver::CudaDevice;
 use engine_cuda::{
-    BatchedGEMM, CudaStream, DeviceBuffer, FlashAttention2, GemvFormat, MODE_BROADCAST_RESIDUAL,
-    MODE_NORM, MODE_ROPE, MODE_SWIGLU, NormRope, PagedAttention, PagedKvGpu, PagedKvLayout,
+    BatchedGEMM, CudaStream, DeviceBuffer, DispatchTelemetry, DispatchTelemetrySnapshot,
+    FlashAttention2, GemvFormat, MODE_BROADCAST_RESIDUAL, MODE_NORM, MODE_ROPE, MODE_SWIGLU,
+    NormRope, PagedAttention, PagedKvGpu, PagedKvLayout,
 };
 use engine_io::{GgmlType, GgufReader, LoadedPinned, ModelConfig};
+use serde::Serialize;
+
 use std::sync::Arc;
+
+const FORWARD_DECODE_PATH_ENV: &str = "TITAN_FORWARD_DECODE_PATH";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecodePath {
+    F32,
+    Q8,
+}
+
+impl DecodePath {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::Q8 => "q8",
+        }
+    }
+}
+
+fn parse_decode_path(value: Option<&str>) -> Result<DecodePath, String> {
+    match value.unwrap_or("f32") {
+        "f32" => Ok(DecodePath::F32),
+        "q8" => Ok(DecodePath::Q8),
+        value => Err(format!(
+            "invalid {FORWARD_DECODE_PATH_ENV}={value:?}; expected \"f32\" or \"q8\""
+        )),
+    }
+}
+
+#[cfg(test)]
+mod decode_path_tests {
+    use super::{DecodePath, parse_decode_path};
+
+    #[test]
+    fn parses_default_and_rejects_unknown_path() {
+        assert_eq!(parse_decode_path(None).unwrap(), DecodePath::F32);
+        assert_eq!(parse_decode_path(Some("f32")).unwrap(), DecodePath::F32);
+        assert_eq!(parse_decode_path(Some("q8")).unwrap(), DecodePath::Q8);
+        let error = parse_decode_path(Some("bogus")).unwrap_err();
+        assert!(error.contains("TITAN_FORWARD_DECODE_PATH"));
+        assert!(error.contains("f32"));
+        assert!(error.contains("q8"));
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DecodeStageTiming {
+    pub elapsed_ms: Option<f64>,
+    pub status: String,
+}
+
+impl DecodeStageTiming {
+    fn unavailable() -> Self {
+        Self {
+            elapsed_ms: None,
+            status: "not_applicable".into(),
+        }
+    }
+    fn measured(value: f64) -> Self {
+        Self {
+            elapsed_ms: Some(value),
+            status: "measured".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DecodeStageTimings {
+    pub gemv_gemm: DecodeStageTiming,
+    pub attention: DecodeStageTiming,
+    pub ffn: DecodeStageTiming,
+    pub lm_head: DecodeStageTiming,
+    pub copies: DecodeStageTiming,
+    pub waits: DecodeStageTiming,
+    pub graph_replay: DecodeStageTiming,
+}
+
+impl Default for DecodeStageTimings {
+    fn default() -> Self {
+        Self {
+            gemv_gemm: DecodeStageTiming::unavailable(),
+            attention: DecodeStageTiming::unavailable(),
+            ffn: DecodeStageTiming::unavailable(),
+            lm_head: DecodeStageTiming::unavailable(),
+            copies: DecodeStageTiming::unavailable(),
+            waits: DecodeStageTiming::unavailable(),
+            graph_replay: DecodeStageTiming::unavailable(),
+        }
+    }
+}
+
+impl DecodeStageTimings {
+    pub fn measured(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64) -> Self {
+        Self {
+            gemv_gemm: DecodeStageTiming::measured(a),
+            attention: DecodeStageTiming::measured(b),
+            ffn: DecodeStageTiming::measured(c),
+            lm_head: DecodeStageTiming::measured(d),
+            copies: DecodeStageTiming::measured(e),
+            waits: DecodeStageTiming::measured(f),
+            graph_replay: DecodeStageTiming::measured(0.0),
+        }
+    }
+    pub fn measured_with_graph_replay(
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+        graph: f64,
+    ) -> Self {
+        let mut value = Self::measured(a, b, c, d, e, f);
+        value.graph_replay = DecodeStageTiming::measured(graph);
+        value
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DecodeTelemetryCounters {
+    pub graph_launches: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DecodeTelemetry {
+    pub decode_ms: f64,
+    pub stage_timings: DecodeStageTimings,
+    pub counters: DecodeTelemetryCounters,
+    pub overhead_ms: f64,
+    pub overlap_ms: f64,
+    pub attribution: &'static str,
+    pub reconciliation_tolerance_ms: f64,
+}
+
+impl DecodeTelemetry {
+    pub fn from_measured_stages(
+        decode_ms: f64,
+        stages: DecodeStageTimings,
+        overhead_ms: f64,
+        tolerance: f64,
+        graph_launches: usize,
+    ) -> Self {
+        Self {
+            decode_ms,
+            stage_timings: stages,
+            counters: DecodeTelemetryCounters { graph_launches },
+            overhead_ms,
+            overlap_ms: 0.0,
+            attribution: "cuda_events_plus_host_boundaries",
+            reconciliation_tolerance_ms: tolerance,
+        }
+    }
+    pub fn from_measured_stages_with_accounting(
+        decode_ms: f64,
+        stages: DecodeStageTimings,
+        graph_launches: usize,
+    ) -> Self {
+        let sum = Self::stage_sum(&stages);
+        let (overhead, overlap) = if sum >= decode_ms {
+            (0.0, sum - decode_ms)
+        } else {
+            (decode_ms - sum, 0.0)
+        };
+        let mut result =
+            Self::from_measured_stages(decode_ms, stages, overhead, 0.001, graph_launches);
+        result.overlap_ms = overlap;
+        result
+    }
+    fn stage_sum(stages: &DecodeStageTimings) -> f64 {
+        [
+            &stages.gemv_gemm,
+            &stages.attention,
+            &stages.ffn,
+            &stages.lm_head,
+            &stages.copies,
+            &stages.waits,
+            &stages.graph_replay,
+        ]
+        .into_iter()
+        .filter_map(|s| s.elapsed_ms)
+        .sum()
+    }
+    pub fn stage_sum_ms(&self) -> f64 {
+        Self::stage_sum(&self.stage_timings)
+    }
+    pub fn reconciles(&self, tolerance: f64) -> bool {
+        (self.stage_sum_ms() + self.overhead_ms - self.overlap_ms - self.decode_ms).abs()
+            <= tolerance
+    }
+}
 
 /// Resident transient working-set VRAM budget: `pingpong + kv_pool +
 /// activations + logits` must stay <= 5.2 GiB at every step (6.7 gate).
@@ -268,10 +460,15 @@ pub const MAX_SPEC_K: usize = 8;
 
 /// Forward driver executing transformer prefill and single-token decode steps
 /// over GPU kernels and CPU fallbacks.
+// GPU scratch buffers are preallocated for optional resident/speculative paths.
+#[allow(dead_code)]
 pub struct ForwardDriver<'a> {
     device: Arc<CudaDevice>,
     stream: CudaStream,
     batched_gemm: BatchedGEMM,
+    decode_path: DecodePath,
+    dispatch_telemetry: Option<Arc<DispatchTelemetry>>,
+    decode_telemetry: Option<DecodeTelemetry>,
     nr: NormRope,
     pkv: PagedKvGpu,
     pa: PagedAttention,
@@ -376,6 +573,7 @@ pub struct ForwardDriver<'a> {
     logits_host: Vec<f32>,
     history_dev: DeviceBuffer,
     step_counter_dev: DeviceBuffer,
+
     pub radix_tree: engine_kvcache::RadixTree,
 }
 
@@ -388,6 +586,9 @@ impl<'a> ForwardDriver<'a> {
         cfg: &ModelConfig,
         capacity_tokens: usize,
     ) -> Result<Self, EngineError> {
+        let decode_path = parse_decode_path(std::env::var(FORWARD_DECODE_PATH_ENV).ok().as_deref())
+            .map_err(EngineError::Validation)?;
+        println!("Configured forward decode path: {}", decode_path.as_str());
         let capacity = capacity_tokens.max(1);
         let device = CudaDevice::new(0)?;
         let stream = CudaStream::new(Arc::clone(&device))?;
@@ -445,13 +646,13 @@ impl<'a> ForwardDriver<'a> {
             let kb = f32_norm_opt(pinned, &format!("blk.{l}.attn_k.bias"), kvd);
             let vb = f32_norm_opt(pinned, &format!("blk.{l}.attn_v.bias"), kvd);
 
-            let wq_dev = upload_bytes(&stream, &device, &wq.data)?;
-            let wk_dev = upload_bytes(&stream, &device, &wk.data)?;
-            let wv_dev = upload_bytes(&stream, &device, &wv.data)?;
-            let wo_dev = upload_bytes(&stream, &device, &wo.data)?;
-            let wgate_dev = upload_bytes(&stream, &device, &wgate.data)?;
-            let wup_dev = upload_bytes(&stream, &device, &wup.data)?;
-            let wdown_dev = upload_bytes(&stream, &device, &wdown.data)?;
+            let wq_dev = upload_bytes(&stream, &device, wq.data)?;
+            let wk_dev = upload_bytes(&stream, &device, wk.data)?;
+            let wv_dev = upload_bytes(&stream, &device, wv.data)?;
+            let wo_dev = upload_bytes(&stream, &device, wo.data)?;
+            let wgate_dev = upload_bytes(&stream, &device, wgate.data)?;
+            let wup_dev = upload_bytes(&stream, &device, wup.data)?;
+            let wdown_dev = upload_bytes(&stream, &device, wdown.data)?;
 
             let an_dev = upload_f32(&stream, &device, &an)?;
             let qn_dev = upload_f32(&stream, &device, &qn)?;
@@ -462,11 +663,7 @@ impl<'a> ForwardDriver<'a> {
             let kb_dev = upload_f32(&stream, &device, &kb)?;
             let vb_dev = upload_f32(&stream, &device, &vb)?;
 
-            let pool_dev = upload_bytes(
-                &stream,
-                &device,
-                &vec![0u8; layout.floats_total() * 4],
-            )?;
+            let pool_dev = upload_bytes(&stream, &device, &vec![0u8; layout.floats_total() * 4])?;
 
             layers.push(LayerRsrc {
                 wq_dev,
@@ -519,7 +716,10 @@ impl<'a> ForwardDriver<'a> {
         let bt_dev = upload_bytes(
             &stream,
             &device,
-            &bt_ids.iter().flat_map(|id| id.to_le_bytes()).collect::<Vec<u8>>(),
+            &bt_ids
+                .iter()
+                .flat_map(|id| id.to_le_bytes())
+                .collect::<Vec<u8>>(),
         )?;
 
         let x_dev = alloc_dev(&device, h)?;
@@ -562,7 +762,7 @@ impl<'a> ForwardDriver<'a> {
         let spec_zq = upload_f32(&stream, &device, &vec![0.0f32; MAX_SPEC_K * qdim])?;
         let spec_zk = upload_f32(&stream, &device, &vec![0.0f32; MAX_SPEC_K * kvd])?;
         let spec_zff = upload_f32(&stream, &device, &vec![0.0f32; MAX_SPEC_K * hff])?;
-        let lm_head_dev = upload_bytes(&stream, &device, &lm_head_weight.data)?;
+        let lm_head_dev = upload_bytes(&stream, &device, lm_head_weight.data)?;
         let lm_head_fmt = ggml_to_gemv(lm_head_weight.ty)?;
         let head_norm_dev = upload_f32(&stream, &device, &head_norm)?;
         let head_normed_dev = alloc_dev(&device, h)?;
@@ -571,7 +771,7 @@ impl<'a> ForwardDriver<'a> {
 
         let spec_head_normed_dev = alloc_dev(&device, MAX_SPEC_K * h)?;
         let spec_logits_dev = alloc_dev(&device, MAX_SPEC_K * vocab_size)?;
-        let emb_dev = upload_bytes(&stream, &device, &emb.data)?;
+        let emb_dev = upload_bytes(&stream, &device, emb.data)?;
         let token_id_dev = upload_bytes(&stream, &device, &[0u8; 4])?;
         let selected_token_dev = upload_bytes(&stream, &device, &[0u8; 64])?;
         let spec_tokens_dev = upload_bytes(&stream, &device, &[0u8; 64])?;
@@ -601,6 +801,7 @@ impl<'a> ForwardDriver<'a> {
             device,
             stream,
             batched_gemm,
+            decode_path,
             nr,
             pkv,
             pa,
@@ -701,6 +902,9 @@ impl<'a> ForwardDriver<'a> {
             logits_host: vec![0.0f32; vocab_size],
             history_dev,
             step_counter_dev,
+            dispatch_telemetry: None,
+            decode_telemetry: None,
+
             radix_tree: engine_kvcache::RadixTree::new(layout.block_tokens),
         };
         driver
@@ -709,8 +913,29 @@ impl<'a> ForwardDriver<'a> {
         Ok(driver)
     }
 
+    /// Enables dispatch accounting for benchmark runs only.
+    pub fn enable_dispatch_telemetry(&mut self) {
+        let telemetry = Arc::new(DispatchTelemetry::new());
+        self.batched_gemm
+            .set_dispatch_telemetry(Some(Arc::clone(&telemetry)));
+        self.dispatch_telemetry = Some(telemetry);
+    }
+
+    /// Returns benchmark dispatch telemetry for diagnostic probes.
+    pub fn dispatch_telemetry_snapshot(&self) -> Option<DispatchTelemetrySnapshot> {
+        self.dispatch_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.snapshot())
+    }
+
+    /// Takes aggregate decode telemetry when a reliable measurement is available.
+    pub fn take_decode_telemetry(&mut self) -> Option<DecodeTelemetry> {
+        self.decode_telemetry.take()
+    }
+
     /// Evaluates `tokens` in parallel chunks using batched GEMM and FlashAttention-2,
     /// populating resident KV cache and returning the final position's next-token logits.
+    #[allow(clippy::manual_clamp)] // Bounds are fixed and ordered: 1 <= 512.
     pub fn prefill_chunked(
         &mut self,
         tokens: &[u32],
@@ -723,16 +948,18 @@ impl<'a> ForwardDriver<'a> {
             return Err(engine_cuda::CudaError::InvalidSize {
                 expected: self.layout.block_tokens,
                 actual: tokens.len(),
-            }.into());
+            }
+            .into());
         }
 
         // 1. Radix Prefix Cache Match
         let match_res = self.radix_tree.match_prefix(tokens);
-        let mut current_pos = if match_res.matched_tokens > 0 && self.pos == match_res.matched_tokens {
-            match_res.matched_tokens
-        } else {
-            0
-        };
+        let mut current_pos =
+            if match_res.matched_tokens > 0 && self.pos == match_res.matched_tokens {
+                match_res.matched_tokens
+            } else {
+                0
+            };
 
         if current_pos == tokens.len() {
             let logits = download_f32(&self.stream, &self.logits_dev, self.vocab_size)?;
@@ -753,19 +980,14 @@ impl<'a> ForwardDriver<'a> {
                 let row = embed_lookup(&self.emb, t as usize);
                 x_host.extend_from_slice(&row);
             }
-            self.prefill_x_dev.copy_from_host(&self.stream, &f32_bytes(&x_host))?;
+            self.prefill_x_dev
+                .copy_from_host(&self.stream, &f32_bytes(&x_host))?;
             let t_embed = t_all_start.elapsed();
 
             let t_layers_start = std::time::Instant::now();
-            for (l_idx, layer) in self.layers.iter().enumerate() {
-                let t_l0_start = std::time::Instant::now();
+            for layer in self.layers.iter() {
                 // a & b. QKV Projection with Precomputed Input RMSNorm
-                let (qb_opt, kb_opt, vb_opt) = if self.has_attn_bias {
-                    (Some(&layer.qb_dev), Some(&layer.kb_dev), Some(&layer.vb_dev))
-                } else {
-                    (None, None, None)
-                };
-
+                self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
                 // b. Input RMSNorm with fused bias residual
                 self.nr.launch_batched_with_pos_ptr(
                     &self.stream,
@@ -822,8 +1044,16 @@ impl<'a> ForwardDriver<'a> {
                 } else {
                     MODE_ROPE | MODE_BROADCAST_RESIDUAL
                 };
-                let q_res = if self.has_attn_bias { &layer.qb_dev } else { &self.prefill_zq_dev };
-                let k_res = if self.has_attn_bias { &layer.kb_dev } else { &self.prefill_zk_dev };
+                let q_res = if self.has_attn_bias {
+                    &layer.qb_dev
+                } else {
+                    &self.prefill_zq_dev
+                };
+                let k_res = if self.has_attn_bias {
+                    &layer.kb_dev
+                } else {
+                    &self.prefill_zk_dev
+                };
 
                 self.nr.launch_batched_with_pos_ptr(
                     &self.stream,
@@ -888,6 +1118,8 @@ impl<'a> ForwardDriver<'a> {
                 )?;
 
                 // f. Output projection with Fused In-Place Residual 1
+                self.batched_gemm
+                    .set_telemetry_tensor_role(Some("attn_output"));
                 self.batched_gemm.gemm_with_residual(
                     &self.stream,
                     &layer.wo_dev,
@@ -901,6 +1133,8 @@ impl<'a> ForwardDriver<'a> {
                 )?;
 
                 // g & h. FFN gate & up projections with fused SwiGLU
+                self.batched_gemm
+                    .set_telemetry_tensor_role(Some("ffn_gate_up"));
                 self.nr.launch_batched_with_pos_ptr(
                     &self.stream,
                     &self.prefill_op_dev,
@@ -958,6 +1192,8 @@ impl<'a> ForwardDriver<'a> {
                 )?;
 
                 // i. Down projection with Fused In-Place Residual 2
+                self.batched_gemm
+                    .set_telemetry_tensor_role(Some("ffn_down"));
                 self.batched_gemm.gemm_with_residual(
                     &self.stream,
                     &layer.wdown_dev,
@@ -977,11 +1213,13 @@ impl<'a> ForwardDriver<'a> {
             // Download last token hidden state
             let t_dl_start = std::time::Instant::now();
             let x_out_all = download_f32(&self.stream, &self.prefill_x_dev, chunk_len * self.h)?;
-            let last_token_hidden = x_out_all[(chunk_len - 1) * self.h..chunk_len * self.h].to_vec();
+            let last_token_hidden =
+                x_out_all[(chunk_len - 1) * self.h..chunk_len * self.h].to_vec();
             last_hidden = last_token_hidden;
             let t_dl = t_dl_start.elapsed();
 
-            println!("  [Prefill Timing] Tokens: {}, Embed: {:.2} ms, 28 Layers: {:.2} ms, DL: {:.2} ms",
+            println!(
+                "  [Prefill Timing] Tokens: {}, Embed: {:.2} ms, 28 Layers: {:.2} ms, DL: {:.2} ms",
                 chunk_len,
                 t_embed.as_secs_f64() * 1000.0,
                 t_layers.as_secs_f64() * 1000.0,
@@ -992,8 +1230,10 @@ impl<'a> ForwardDriver<'a> {
         }
 
         self.pos = tokens.len();
-        self.pos_dev.copy_from_host(&self.stream, &(self.pos as u32).to_le_bytes())?;
-        self.x_dev.copy_from_host(&self.stream, &f32_bytes(&last_hidden))?;
+        self.pos_dev
+            .copy_from_host(&self.stream, &(self.pos as u32).to_le_bytes())?;
+        self.x_dev
+            .copy_from_host(&self.stream, &f32_bytes(&last_hidden))?;
         self.record_lm_head_pass(&self.x_dev)?;
         let logits = download_f32(&self.stream, &self.logits_dev, self.vocab_size)?;
         self.stream.sync()?;
@@ -1062,7 +1302,8 @@ impl<'a> ForwardDriver<'a> {
             for (i, &t) in batch_tokens.iter().enumerate() {
                 batch_token_bytes[i * 4..(i + 1) * 4].copy_from_slice(&t.to_le_bytes());
             }
-            self.spec_tokens_dev.copy_from_host(&self.stream, &batch_token_bytes)?;
+            self.spec_tokens_dev
+                .copy_from_host(&self.stream, &batch_token_bytes)?;
             let pos_bytes = (current_pos as u32).to_le_bytes();
             self.pos_dev.copy_from_host(&self.stream, &pos_bytes)?;
 
@@ -1071,7 +1312,8 @@ impl<'a> ForwardDriver<'a> {
             }
 
             let mut sampled_bytes = [0u8; 16];
-            self.selected_token_dev.copy_to_host(&self.stream, &mut sampled_bytes)?;
+            self.selected_token_dev
+                .copy_to_host(&self.stream, &mut sampled_bytes)?;
             self.stream.sync()?;
 
             let mut target_preds = Vec::with_capacity(4);
@@ -1117,10 +1359,13 @@ impl<'a> ForwardDriver<'a> {
             x_host.extend_from_slice(&emb_vec);
         }
 
-        self.spec_x_dev.copy_from_host(&self.stream, &f32_bytes(&x_host))?;
+        self.spec_x_dev
+            .copy_from_host(&self.stream, &f32_bytes(&x_host))?;
 
-        for (l_i, layer) in self.layers.iter().enumerate() {
+        for layer in self.layers.iter() {
             // a. Quantize spec_x_dev with input RMSNorm -> (spec_qx_dev, spec_qd_dev, spec_qs_dev)
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
             self.batched_gemm.quantize_q8_1_batched(
                 &self.stream,
                 &self.spec_x_dev,
@@ -1134,12 +1379,21 @@ impl<'a> ForwardDriver<'a> {
             )?;
 
             // b. Fused QKV Projection
+            self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
             let (qb_opt, kb_opt, vb_opt) = if self.has_attn_bias {
-                (Some(&layer.qb_dev), Some(&layer.kb_dev), Some(&layer.vb_dev))
+                (
+                    Some(&layer.qb_dev),
+                    Some(&layer.kb_dev),
+                    Some(&layer.vb_dev),
+                )
             } else {
                 (None, None, None)
             };
-            if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q4K {
+            if layer.wq_fmt == GemvFormat::Q4K
+                && layer.wk_fmt == GemvFormat::Q4K
+                && layer.wv_fmt == GemvFormat::Q4K
+            {
+                self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
                 self.batched_gemm.gemm_fused_qkv_q4k(
                     &self.stream,
                     &layer.wq_dev,
@@ -1159,7 +1413,10 @@ impl<'a> ForwardDriver<'a> {
                     kb_opt,
                     vb_opt,
                 )?;
-            } else if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q6K {
+            } else if layer.wq_fmt == GemvFormat::Q4K
+                && layer.wk_fmt == GemvFormat::Q4K
+                && layer.wv_fmt == GemvFormat::Q6K
+            {
                 self.batched_gemm.gemm_fused_qkv(
                     &self.stream,
                     &layer.wq_dev,
@@ -1227,8 +1484,16 @@ impl<'a> ForwardDriver<'a> {
             } else {
                 MODE_ROPE | MODE_BROADCAST_RESIDUAL
             };
-            let q_res = if self.has_attn_bias { &layer.qb_dev } else { &self.spec_zq };
-            let k_res = if self.has_attn_bias { &layer.kb_dev } else { &self.spec_zk };
+            let q_res = if self.has_attn_bias {
+                &layer.qb_dev
+            } else {
+                &self.spec_zq
+            };
+            let k_res = if self.has_attn_bias {
+                &layer.kb_dev
+            } else {
+                &self.spec_zk
+            };
 
             self.nr.launch_batched_with_pos_ptr(
                 &self.stream,
@@ -1293,6 +1558,8 @@ impl<'a> ForwardDriver<'a> {
             )?;
 
             // f. Output projection: quantize spec_attn_dev (no norm) -> gemm_q8_act_with_residual with residual spec_x_dev -> spec_op_dev
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("attn_output"));
             self.batched_gemm.quantize_q8_1_batched(
                 &self.stream,
                 &self.spec_attn_dev,
@@ -1319,6 +1586,8 @@ impl<'a> ForwardDriver<'a> {
             )?;
 
             // g. FFN: quantize spec_op_dev with FFN RMSNorm (layer.fn_dev) -> (spec_qx_dev, spec_qd_dev, spec_qs_dev)
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
             self.batched_gemm.quantize_q8_1_batched(
                 &self.stream,
                 &self.spec_op_dev,
@@ -1332,6 +1601,8 @@ impl<'a> ForwardDriver<'a> {
             )?;
 
             // h. Fused Gate + Up SwiGLU: gemm_q4k_fused_gate_up_swiglu_mma -> spec_proj_dev
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("ffn_gate_up"));
             if layer.wgate_fmt == GemvFormat::Q4K && layer.wup_fmt == GemvFormat::Q4K {
                 self.batched_gemm.gemm_q4k_fused_gate_up_swiglu_mma(
                     &self.stream,
@@ -1392,6 +1663,8 @@ impl<'a> ForwardDriver<'a> {
             }
 
             // i. Down projection: quantize spec_proj_dev (no norm) -> gemm_q8_act_with_residual with residual spec_op_dev -> spec_x_dev
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("ffn_down"));
             self.batched_gemm.quantize_q8_1_batched(
                 &self.stream,
                 &self.spec_proj_dev,
@@ -1419,6 +1692,8 @@ impl<'a> ForwardDriver<'a> {
         }
 
         // 2. GPU batched final RMSNorm + lm_head projection for all K candidate positions
+        self.batched_gemm
+            .set_telemetry_tensor_role(Some("activation_quantization"));
         self.batched_gemm.quantize_q8_1_batched(
             &self.stream,
             &self.spec_x_dev,
@@ -1454,7 +1729,8 @@ impl<'a> ForwardDriver<'a> {
                 k,
             )?;
             let mut sampled_bytes = vec![0u8; k * 4];
-            self.selected_token_dev.copy_to_host(&self.stream, &mut sampled_bytes)?;
+            self.selected_token_dev
+                .copy_to_host(&self.stream, &mut sampled_bytes)?;
             self.stream.sync()?;
 
             let mut target_preds = Vec::with_capacity(k);
@@ -1525,7 +1801,9 @@ impl<'a> ForwardDriver<'a> {
     /// Sets the sequence position (e.g. for speculative rollback / synchronization).
     pub fn set_pos(&mut self, pos: usize) {
         self.pos = pos;
-        let _ = self.pos_dev.copy_from_host(&self.stream, &(pos as u32).to_le_bytes());
+        let _ = self
+            .pos_dev
+            .copy_from_host(&self.stream, &(pos as u32).to_le_bytes());
     }
 
     /// Returns the number of transformer layers in this model.
@@ -1533,16 +1811,21 @@ impl<'a> ForwardDriver<'a> {
         self.layers.len()
     }
 
-    /// Records the full 28-layer forward decode pass onto `self.stream`.
     fn record_decode_pass(&self) -> Result<(), EngineError> {
         for layer in &self.layers {
             // Stage 1 & 2: Fused QKV Projection with Fused Input RMSNorm (Projects Q, K, V simultaneously in 1 kernel)
             let (qb_opt, kb_opt, vb_opt) = if self.has_attn_bias {
-                (Some(&layer.qb_dev), Some(&layer.kb_dev), Some(&layer.vb_dev))
+                (
+                    Some(&layer.qb_dev),
+                    Some(&layer.kb_dev),
+                    Some(&layer.vb_dev),
+                )
             } else {
                 (None, None, None)
             };
 
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
             self.batched_gemm.quantize_q8_1(
                 &self.stream,
                 &self.x_dev,
@@ -1554,7 +1837,11 @@ impl<'a> ForwardDriver<'a> {
                 self.eps,
             )?;
 
-            if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q4K {
+            if layer.wq_fmt == GemvFormat::Q4K
+                && layer.wk_fmt == GemvFormat::Q4K
+                && layer.wv_fmt == GemvFormat::Q4K
+            {
+                self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
                 self.batched_gemm.gemm_fused_qkv_q4k(
                     &self.stream,
                     &layer.wq_dev,
@@ -1574,7 +1861,11 @@ impl<'a> ForwardDriver<'a> {
                     kb_opt,
                     vb_opt,
                 )?;
-            } else if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q6K {
+            } else if layer.wq_fmt == GemvFormat::Q4K
+                && layer.wk_fmt == GemvFormat::Q4K
+                && layer.wv_fmt == GemvFormat::Q6K
+            {
+                self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
                 self.batched_gemm.gemm_fused_qkv(
                     &self.stream,
                     &layer.wq_dev,
@@ -1595,6 +1886,7 @@ impl<'a> ForwardDriver<'a> {
                     vb_opt,
                 )?;
             } else {
+                self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
                 self.batched_gemm.gemm_q8_act_with_residual(
                     &self.stream,
                     &layer.wq_dev,
@@ -1608,6 +1900,7 @@ impl<'a> ForwardDriver<'a> {
                     layer.wq_fmt,
                     None,
                 )?;
+                self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
                 self.batched_gemm.gemm_q8_act_with_residual(
                     &self.stream,
                     &layer.wk_dev,
@@ -1621,6 +1914,7 @@ impl<'a> ForwardDriver<'a> {
                     layer.wk_fmt,
                     None,
                 )?;
+                self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
                 self.batched_gemm.gemm_q8_act_with_residual(
                     &self.stream,
                     &layer.wv_dev,
@@ -1681,6 +1975,8 @@ impl<'a> ForwardDriver<'a> {
             )?;
 
             // Stage 6: Output Projection with Fused In-Place Residual 1 (attn_dev -> h1_dev with + x_dev)
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
             self.batched_gemm.quantize_q8_1(
                 &self.stream,
                 &self.attn_dev,
@@ -1692,6 +1988,8 @@ impl<'a> ForwardDriver<'a> {
                 0.0,
             )?;
             if layer.wo_fmt == GemvFormat::Q4K {
+                self.batched_gemm
+                    .set_telemetry_tensor_role(Some("attn_output"));
                 self.batched_gemm.gemm_q4k_mma(
                     &self.stream,
                     &layer.wo_dev,
@@ -1705,6 +2003,8 @@ impl<'a> ForwardDriver<'a> {
                     Some(&self.x_dev),
                 )?;
             } else {
+                self.batched_gemm
+                    .set_telemetry_tensor_role(Some("attn_output"));
                 self.batched_gemm.gemm_q8_act_with_residual(
                     &self.stream,
                     &layer.wo_dev,
@@ -1721,6 +2021,8 @@ impl<'a> ForwardDriver<'a> {
             }
 
             // Stage 7: FFN Gate & Up (+ Fused SwiGLU & FFN RMSNorm)
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
             self.batched_gemm.quantize_q8_1(
                 &self.stream,
                 &self.h1_dev,
@@ -1733,6 +2035,8 @@ impl<'a> ForwardDriver<'a> {
             )?;
 
             if layer.wgate_fmt == GemvFormat::Q4K && layer.wup_fmt == GemvFormat::Q4K {
+                self.batched_gemm
+                    .set_telemetry_tensor_role(Some("ffn_gate_up"));
                 self.batched_gemm.gemm_q4k_fused_gate_up_swiglu_mma(
                     &self.stream,
                     &layer.wgate_dev,
@@ -1746,6 +2050,8 @@ impl<'a> ForwardDriver<'a> {
                     1,
                 )?;
             } else {
+                self.batched_gemm
+                    .set_telemetry_tensor_role(Some("ffn_gate_up"));
                 self.batched_gemm.gemm_q8_act_with_residual(
                     &self.stream,
                     &layer.wgate_dev,
@@ -1759,6 +2065,8 @@ impl<'a> ForwardDriver<'a> {
                     layer.wgate_fmt,
                     None,
                 )?;
+                self.batched_gemm
+                    .set_telemetry_tensor_role(Some("ffn_gate_up"));
                 self.batched_gemm.gemm_q8_act_with_residual(
                     &self.stream,
                     &layer.wup_dev,
@@ -1789,6 +2097,8 @@ impl<'a> ForwardDriver<'a> {
             }
 
             // Stage 11: FFN Down with Fused In-Place Residual 2 (gate_dev -> x_dev with + h1_dev)
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
             self.batched_gemm.quantize_q8_1(
                 &self.stream,
                 &self.gate_dev,
@@ -1800,6 +2110,8 @@ impl<'a> ForwardDriver<'a> {
                 0.0,
             )?;
             if layer.wdown_fmt == GemvFormat::Q4K {
+                self.batched_gemm
+                    .set_telemetry_tensor_role(Some("ffn_down"));
                 self.batched_gemm.gemm_q4k_mma(
                     &self.stream,
                     &layer.wdown_dev,
@@ -1813,6 +2125,8 @@ impl<'a> ForwardDriver<'a> {
                     Some(&self.h1_dev),
                 )?;
             } else {
+                self.batched_gemm
+                    .set_telemetry_tensor_role(Some("ffn_down"));
                 self.batched_gemm.gemm_q8_act_with_residual(
                     &self.stream,
                     &layer.wdown_dev,
@@ -1831,8 +2145,197 @@ impl<'a> ForwardDriver<'a> {
         Ok(())
     }
 
-    /// Records the GPU lm_head projection: single-pass fused RMSNorm + batched GEMM into `logits_dev`.
+    /// Records the full 28-layer forward decode pass onto `self.stream`.
+    fn record_decode_pass_f32(&mut self) -> Result<(), EngineError> {
+        for layer in self.layers.iter() {
+            // Stage 1 & 2: correctness-first F32-input QKV projections.
+            // Keep activation quantization out of the integrated decode path.
+
+            self.nr.launch(
+                &self.stream,
+                &self.x_dev,
+                &self.zff,
+                &layer.an_dev,
+                &self.zff,
+                &self.input_norm_dev,
+                self.eps,
+                self.h,
+                0,
+                self.base,
+                0,
+                MODE_NORM,
+            )?;
+            self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wq_dev,
+                &self.input_norm_dev,
+                &self.q_dev,
+                layer.wq_ne0,
+                layer.wq_ne1,
+                1,
+                layer.wq_fmt,
+            )?;
+            self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wk_dev,
+                &self.input_norm_dev,
+                &self.k_dev,
+                layer.wk_ne0,
+                layer.wk_ne1,
+                1,
+                layer.wk_fmt,
+            )?;
+            self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wv_dev,
+                &self.input_norm_dev,
+                &self.v_dev,
+                layer.wv_ne0,
+                layer.wv_ne1,
+                1,
+                layer.wv_fmt,
+            )?;
+
+            // Stage 3 & 4: Per-head Q/K RMSNorm + RoPE + Paged KV Append (Fused in 1 single kernel launch!)
+            let qk_mode = if self.has_qk_norm {
+                MODE_NORM | MODE_ROPE
+            } else {
+                MODE_ROPE
+            };
+
+            self.nr.launch_fused_qk(
+                &self.stream,
+                &self.q_dev,
+                &self.k_dev,
+                &layer.qn_dev,
+                &layer.kn_dev,
+                self.nh,
+                self.nkv,
+                self.hd,
+                self.n_rot,
+                self.base,
+                self.eps,
+                qk_mode,
+                Some(&self.pos_dev),
+                Some(&self.v_dev),
+                Some(&layer.pool_dev),
+                Some(&self.bt_dev),
+                self.layout.block_tokens,
+            )?;
+
+            // Stage 5: FlashDecoding Split-KV Attention (GPU)
+            self.pa.launch_flash_decoding(
+                &self.stream,
+                &self.q_dev,
+                &layer.pool_dev,
+                &self.bt_dev,
+                &self.attn_dev,
+                self.nh,
+                self.nkv,
+                self.hd,
+                self.layout.block_tokens,
+                self.pos + 1,
+                self.pos,
+                true,
+                Some(&self.pos_dev),
+            )?;
+
+            // Stage 6: Direct F32-input output projection with residual.
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("attn_output"));
+            self.batched_gemm.gemm_with_residual(
+                &self.stream,
+                &layer.wo_dev,
+                &self.attn_dev,
+                &self.h1_dev,
+                layer.wo_ne0,
+                layer.wo_ne1,
+                1,
+                layer.wo_fmt,
+                Some(&self.x_dev),
+            )?;
+
+            // Stage 7: FFN Gate & Up (+ Fused SwiGLU & FFN RMSNorm)
+            self.nr.launch(
+                &self.stream,
+                &self.h1_dev,
+                &self.zff,
+                &layer.fn_dev,
+                &self.zff,
+                &self.ffin_dev,
+                self.eps,
+                self.h,
+                0,
+                self.base,
+                0,
+                MODE_NORM,
+            )?;
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("ffn_gate_up"));
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wgate_dev,
+                &self.ffin_dev,
+                &self.gate_dev,
+                layer.wgate_ne0,
+                layer.wgate_ne1,
+                1,
+                layer.wgate_fmt,
+            )?;
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("ffn_gate_up"));
+            self.batched_gemm.gemm(
+                &self.stream,
+                &layer.wup_dev,
+                &self.ffin_dev,
+                &self.up_dev,
+                layer._wup_ne0,
+                layer._wup_ne1,
+                1,
+                layer.wup_fmt,
+            )?;
+            self.nr.launch(
+                &self.stream,
+                &self.gate_dev,
+                &self.zff,
+                &self.zff,
+                &self.up_dev,
+                &self.proj_dev,
+                self.eps,
+                self.hff,
+                0,
+                self.base,
+                0,
+                MODE_SWIGLU,
+            )?;
+
+            // Stage 11: Direct F32-input FFN down projection with residual.
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
+
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("ffn_down"));
+            self.batched_gemm.gemm_with_residual(
+                &self.stream,
+                &layer.wdown_dev,
+                &self.proj_dev,
+                &self.x_dev,
+                layer.wdown_ne0,
+                layer.wdown_ne1,
+                1,
+                layer.wdown_fmt,
+                Some(&self.h1_dev),
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn record_lm_head_pass(&self, hidden_dev: &DeviceBuffer) -> Result<(), EngineError> {
+        self.batched_gemm
+            .set_telemetry_tensor_role(Some("activation_quantization"));
         self.batched_gemm.quantize_q8_1(
             &self.stream,
             hidden_dev,
@@ -1844,6 +2347,7 @@ impl<'a> ForwardDriver<'a> {
             self.eps,
         )?;
         if self.lm_head_fmt == GemvFormat::Q4K {
+            self.batched_gemm.set_telemetry_tensor_role(Some("lm_head"));
             self.batched_gemm.gemm_q4k_mma(
                 &self.stream,
                 &self.lm_head_dev,
@@ -1857,6 +2361,7 @@ impl<'a> ForwardDriver<'a> {
                 None,
             )?;
         } else {
+            self.batched_gemm.set_telemetry_tensor_role(Some("lm_head"));
             self.batched_gemm.gemm_q8_act_with_residual(
                 &self.stream,
                 &self.lm_head_dev,
@@ -1874,11 +2379,47 @@ impl<'a> ForwardDriver<'a> {
         Ok(())
     }
 
+    /// Records the correctness-first direct-F32 lm_head projection.
+    pub fn record_lm_head_pass_f32(&self, hidden_dev: &DeviceBuffer) -> Result<(), EngineError> {
+        self.nr.launch(
+            &self.stream,
+            hidden_dev,
+            &self.zff,
+            &self.head_norm_dev,
+            &self.zff,
+            &self.head_normed_dev,
+            self.eps,
+            self.h,
+            0,
+            self.base,
+            0,
+            MODE_NORM,
+        )?;
+        self.batched_gemm.set_telemetry_tensor_role(Some("lm_head"));
+        self.batched_gemm.gemm(
+            &self.stream,
+            &self.lm_head_dev,
+            &self.head_normed_dev,
+            &self.logits_dev,
+            self.h,
+            self.vocab_size,
+            1,
+            self.lm_head_fmt,
+        )?;
+        Ok(())
+    }
+
     /// Captures the full 28-layer transformer decode pass + lm_head into a CUDA graph.
     pub fn capture_decode_graph(&mut self) -> Result<(), EngineError> {
         self.stream.begin_capture()?;
-        self.record_decode_pass()?;
-        self.record_lm_head_pass(&self.x_dev)?;
+        match self.decode_path {
+            DecodePath::F32 => self.record_decode_pass_f32()?,
+            DecodePath::Q8 => self.record_decode_pass()?,
+        }
+        match self.decode_path {
+            DecodePath::F32 => self.record_lm_head_pass_f32(&self.x_dev)?,
+            DecodePath::Q8 => self.record_lm_head_pass(&self.x_dev)?,
+        }
         let graph = self.stream.end_capture()?;
         let exec = graph.instantiate()?;
         self.decode_graph = Some(exec);
@@ -1972,8 +2513,14 @@ impl<'a> ForwardDriver<'a> {
             1,
             self.emb_fmt,
         )?;
-        self.record_decode_pass()?;
-        self.record_lm_head_pass(&self.x_dev)?;
+        match self.decode_path {
+            DecodePath::F32 => self.record_decode_pass_f32()?,
+            DecodePath::Q8 => self.record_decode_pass()?,
+        }
+        match self.decode_path {
+            DecodePath::F32 => self.record_lm_head_pass_f32(&self.x_dev)?,
+            DecodePath::Q8 => self.record_lm_head_pass(&self.x_dev)?,
+        }
         self.batched_gemm.sample_greedy(
             &self.stream,
             &self.logits_dev,
@@ -2008,6 +2555,8 @@ impl<'a> ForwardDriver<'a> {
         )?;
         for layer in &self.layers {
             // a. Quantize spec_x_dev with input RMSNorm
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
             self.batched_gemm.quantize_q8_1_batched(
                 &self.stream,
                 &self.spec_x_dev,
@@ -2022,11 +2571,19 @@ impl<'a> ForwardDriver<'a> {
 
             // b. Fused QKV
             let (qb_opt, kb_opt, vb_opt) = if self.has_attn_bias {
-                (Some(&layer.qb_dev), Some(&layer.kb_dev), Some(&layer.vb_dev))
+                (
+                    Some(&layer.qb_dev),
+                    Some(&layer.kb_dev),
+                    Some(&layer.vb_dev),
+                )
             } else {
                 (None, None, None)
             };
-            if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q4K {
+            if layer.wq_fmt == GemvFormat::Q4K
+                && layer.wk_fmt == GemvFormat::Q4K
+                && layer.wv_fmt == GemvFormat::Q4K
+            {
+                self.batched_gemm.set_telemetry_tensor_role(Some("qkv"));
                 self.batched_gemm.gemm_fused_qkv_q4k(
                     &self.stream,
                     &layer.wq_dev,
@@ -2046,7 +2603,10 @@ impl<'a> ForwardDriver<'a> {
                     kb_opt,
                     vb_opt,
                 )?;
-            } else if layer.wq_fmt == GemvFormat::Q4K && layer.wk_fmt == GemvFormat::Q4K && layer.wv_fmt == GemvFormat::Q6K {
+            } else if layer.wq_fmt == GemvFormat::Q4K
+                && layer.wk_fmt == GemvFormat::Q4K
+                && layer.wv_fmt == GemvFormat::Q6K
+            {
                 self.batched_gemm.gemm_fused_qkv(
                     &self.stream,
                     &layer.wq_dev,
@@ -2108,62 +2668,34 @@ impl<'a> ForwardDriver<'a> {
                 )?;
             }
 
-            // c. Q/K RMSNorm + RoPE
+            // c, d, e. Fused Q/K Norm + RoPE + Paged KV Append (1 single kernel!)
             let qk_mode = if self.has_qk_norm {
                 MODE_NORM | MODE_ROPE
             } else {
                 MODE_ROPE
             };
-            self.nr.launch_batched_with_pos_ptr(
+            self.nr.launch_fused_qk(
                 &self.stream,
                 &self.spec_q_dev,
-                &self.spec_zq,
+                &self.spec_k_dev,
                 &layer.qn_dev,
-                &self.spec_zq,
-                &self.spec_q_dev,
-                self.eps,
-                self.hd,
-                self.n_rot,
-                self.base,
-                0,
-                qk_mode,
-                Some(&self.pos_dev),
-                self.nh * k,
-                self.nh,
-            )?;
-            self.nr.launch_batched_with_pos_ptr(
-                &self.stream,
-                &self.spec_k_dev,
-                &self.spec_zk,
                 &layer.kn_dev,
-                &self.spec_zk,
-                &self.spec_k_dev,
-                self.eps,
+                self.nh,
+                self.nkv,
                 self.hd,
                 self.n_rot,
                 self.base,
-                0,
+                self.eps,
                 qk_mode,
                 Some(&self.pos_dev),
-                self.nkv * k,
-                self.nkv,
+                Some(&self.spec_v_dev),
+                Some(&layer.pool_dev),
+                Some(&self.bt_dev),
+                self.layout.block_tokens,
             )?;
 
-            // d. Append KV
-            self.pkv.append_kv_with_pos_ptr(
-                &self.stream,
-                &self.layout,
-                &layer.pool_dev,
-                &self.spec_k_dev,
-                &self.spec_v_dev,
-                &self.bt_dev,
-                0,
-                k,
-                Some(&self.pos_dev),
-            )?;
-
-            // e. FlashAttention-2
-            self.flash_attn.launch_with_pos_ptr(
+            // e. FlashDecoding Attention
+            self.pa.launch_with_pos_ptr(
                 &self.stream,
                 &self.spec_q_dev,
                 &layer.pool_dev,
@@ -2173,12 +2705,15 @@ impl<'a> ForwardDriver<'a> {
                 self.nkv,
                 self.hd,
                 self.layout.block_tokens,
-                k,
+                1,
                 0,
+                true,
                 Some(&self.pos_dev),
             )?;
 
             // f. Output projection
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
             self.batched_gemm.quantize_q8_1_batched(
                 &self.stream,
                 &self.spec_attn_dev,
@@ -2190,21 +2725,38 @@ impl<'a> ForwardDriver<'a> {
                 k,
                 self.eps,
             )?;
-            self.batched_gemm.gemm_q8_act_with_residual(
-                &self.stream,
-                &layer.wo_dev,
-                &self.spec_qx_dev,
-                &self.spec_qd_dev,
-                &self.spec_qs_dev,
-                &self.spec_op_dev,
-                self._qdim,
-                self.h,
-                k,
-                layer.wo_fmt,
-                Some(&self.spec_x_dev),
-            )?;
+            if layer.wo_fmt == GemvFormat::Q4K {
+                self.batched_gemm.gemm_q4k_mma(
+                    &self.stream,
+                    &layer.wo_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_op_dev,
+                    self._qdim,
+                    self.h,
+                    k,
+                    Some(&self.spec_x_dev),
+                )?;
+            } else {
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wo_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_op_dev,
+                    self._qdim,
+                    self.h,
+                    k,
+                    layer.wo_fmt,
+                    Some(&self.spec_x_dev),
+                )?;
+            }
 
             // g. FFN RMSNorm
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
             self.batched_gemm.quantize_q8_1_batched(
                 &self.stream,
                 &self.spec_op_dev,
@@ -2278,6 +2830,8 @@ impl<'a> ForwardDriver<'a> {
             }
 
             // i. Down projection
+            self.batched_gemm
+                .set_telemetry_tensor_role(Some("activation_quantization"));
             self.batched_gemm.quantize_q8_1_batched(
                 &self.stream,
                 &self.spec_proj_dev,
@@ -2289,22 +2843,39 @@ impl<'a> ForwardDriver<'a> {
                 k,
                 self.eps,
             )?;
-            self.batched_gemm.gemm_q8_act_with_residual(
-                &self.stream,
-                &layer.wdown_dev,
-                &self.spec_qx_dev,
-                &self.spec_qd_dev,
-                &self.spec_qs_dev,
-                &self.spec_x_dev,
-                layer.wdown_ne0,
-                layer.wdown_ne1,
-                k,
-                layer.wdown_fmt,
-                Some(&self.spec_op_dev),
-            )?;
+            if layer.wdown_fmt == GemvFormat::Q4K {
+                self.batched_gemm.gemm_q4k_mma(
+                    &self.stream,
+                    &layer.wdown_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_x_dev,
+                    layer.wdown_ne0,
+                    layer.wdown_ne1,
+                    k,
+                    Some(&self.spec_op_dev),
+                )?;
+            } else {
+                self.batched_gemm.gemm_q8_act_with_residual(
+                    &self.stream,
+                    &layer.wdown_dev,
+                    &self.spec_qx_dev,
+                    &self.spec_qd_dev,
+                    &self.spec_qs_dev,
+                    &self.spec_x_dev,
+                    layer.wdown_ne0,
+                    layer.wdown_ne1,
+                    k,
+                    layer.wdown_fmt,
+                    Some(&self.spec_op_dev),
+                )?;
+            }
         }
 
         // LM Head
+        self.batched_gemm
+            .set_telemetry_tensor_role(Some("activation_quantization"));
         self.batched_gemm.quantize_q8_1_batched(
             &self.stream,
             &self.spec_x_dev,
@@ -2316,19 +2887,47 @@ impl<'a> ForwardDriver<'a> {
             k,
             self.eps,
         )?;
-        self.batched_gemm.gemm_q8_act_with_residual(
-            &self.stream,
-            &self.lm_head_dev,
-            &self.spec_qx_dev,
-            &self.spec_qd_dev,
-            &self.spec_qs_dev,
-            &self.spec_logits_dev,
-            self.h,
-            self.vocab_size,
-            k,
-            self.lm_head_fmt,
-            None,
-        )?;
+        if self.lm_head_fmt == GemvFormat::Q4K {
+            self.batched_gemm.gemm_q4k_mma(
+                &self.stream,
+                &self.lm_head_dev,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                &self.spec_logits_dev,
+                self.h,
+                self.vocab_size,
+                k,
+                None,
+            )?;
+        } else if self.lm_head_fmt == GemvFormat::Q6K {
+            self.batched_gemm.gemm_q6k(
+                &self.stream,
+                &self.lm_head_dev,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                &self.spec_logits_dev,
+                self.h,
+                self.vocab_size,
+                k,
+                None,
+            )?;
+        } else {
+            self.batched_gemm.gemm_q8_act_with_residual(
+                &self.stream,
+                &self.lm_head_dev,
+                &self.spec_qx_dev,
+                &self.spec_qd_dev,
+                &self.spec_qs_dev,
+                &self.spec_logits_dev,
+                self.h,
+                self.vocab_size,
+                k,
+                self.lm_head_fmt,
+                None,
+            )?;
+        }
         self.batched_gemm.sample_greedy_batched(
             &self.stream,
             &self.spec_logits_dev,
@@ -2365,14 +2964,16 @@ impl<'a> ForwardDriver<'a> {
         let pos_bytes = (p as u32).to_le_bytes();
         self.pos_dev.copy_from_host(&self.stream, &pos_bytes)?;
         let zero_step = 0u32.to_le_bytes();
-        self.step_counter_dev.copy_from_host(&self.stream, &zero_step)?;
+        self.step_counter_dev
+            .copy_from_host(&self.stream, &zero_step)?;
 
         if let Some(ref exec) = self.autonomous_graph {
             exec.launch(&self.stream)?;
         }
 
         let mut out_bytes = [0u8; 4];
-        self.selected_token_dev.copy_to_host(&self.stream, &mut out_bytes)?;
+        self.selected_token_dev
+            .copy_to_host(&self.stream, &mut out_bytes)?;
         self.pos += 1;
         self.stream.sync()?;
         Ok(u32::from_le_bytes(out_bytes))
@@ -2408,17 +3009,17 @@ impl<'a> ForwardDriver<'a> {
         let pos_bytes = (p as u32).to_le_bytes();
         self.pos_dev.copy_from_host(&self.stream, &pos_bytes)?;
         let zero_step = 0u32.to_le_bytes();
-        self.step_counter_dev.copy_from_host(&self.stream, &zero_step)?;
-
+        self.step_counter_dev
+            .copy_from_host(&self.stream, &zero_step)?;
         if let Some(ref exec) = self.autonomous_graph {
             for _ in 0..max_new_tokens {
                 exec.launch(&self.stream)?;
             }
         }
-
         self.pos += max_new_tokens;
         let mut out_bytes = vec![0u8; max_new_tokens * 4];
-        self.history_dev.copy_to_host(&self.stream, &mut out_bytes)?;
+        self.history_dev
+            .copy_to_host(&self.stream, &mut out_bytes)?;
         self.stream.sync()?;
 
         let mut generated_tokens = Vec::with_capacity(max_new_tokens);
@@ -2448,22 +3049,23 @@ impl<'a> ForwardDriver<'a> {
         self.pos_dev.copy_from_host(&self.stream, &pos_bytes)?;
 
         let t_start = std::time::Instant::now();
-        self.record_decode_pass()?;
-        self.stream.sync()?;
-        let t_dec = t_start.elapsed();
-        let t_lm_start = std::time::Instant::now();
-        self.record_lm_head_pass(&self.x_dev)?;
-        self.stream.sync()?;
-        let t_lm = t_lm_start.elapsed();
-        println!("    [Decode Step Profile] 28 Layers: {:.2} ms | LM Head: {:.2} ms | Total: {:.2} ms",
-            t_dec.as_secs_f64() * 1000.0,
-            t_lm.as_secs_f64() * 1000.0,
-            (t_dec + t_lm).as_secs_f64() * 1000.0
-        );
+        match self.decode_path {
+            DecodePath::F32 => self.record_decode_pass_f32()?,
+            DecodePath::Q8 => self.record_decode_pass()?,
+        }
+        match self.decode_path {
+            DecodePath::F32 => self.record_lm_head_pass_f32(&self.x_dev)?,
+            DecodePath::Q8 => self.record_lm_head_pass(&self.x_dev)?,
+        }
 
         let logits = download_f32(&self.stream, &self.logits_dev, self.vocab_size)?;
         self.pos += 1;
         self.stream.sync()?;
+        let t_dec = t_start.elapsed();
+        println!(
+            "    [Decode Step Profile] Total: {:.2} ms",
+            t_dec.as_secs_f64() * 1000.0
+        );
         Ok(logits)
     }
 
@@ -2484,7 +3086,9 @@ impl<'a> ForwardDriver<'a> {
         let zero_bytes = 0u32.to_le_bytes();
         let _ = self.pos_dev.copy_from_host(&self.stream, &zero_bytes);
         for layer in &self.layers {
-            let _ = layer.pool_dev.copy_from_host(&self.stream, &vec![0u8; self.layout.floats_total() * 4]);
+            let _ = layer
+                .pool_dev
+                .copy_from_host(&self.stream, &vec![0u8; self.layout.floats_total() * 4]);
         }
         let _ = self.stream.sync();
     }

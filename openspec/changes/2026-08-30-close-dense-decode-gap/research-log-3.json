@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "date": "2026-08-31",
+  "project": "Titan dense decode gap",
+  "status": "research-recorded-milestone-open",
+  "experiments": [
+    {"id":"R3-FFN-001","hypothesis":"Cache FFN RMSNorm/Q8_1 source row in shared memory","decision":"accepted_provisional","artifact":"local-artifacts/benchmarks/ffn-iteration-full.json","repetitions":3},
+    {"id":"R3-Q6K-001","hypothesis":"Use Q6_K multi-row tile of four to reduce live accumulators/register pressure","decision":"accepted_provisional","artifact":"local-artifacts/benchmarks/q6k-iteration-full.json","repetitions":3},
+    {"id":"R3-NORM-001","hypothesis":"Pack two Norm/SwiGLU rows per 64-thread block","decision":"accepted_neutral","artifact":"local-artifacts/benchmarks/norm-swiglu-iteration-full.json","repetitions":3},
+    {"id":"R3-FLASH-001","hypothesis":"Broadcast block_table physical index once per warp","decision":"accepted_neutral","artifact":"local-artifacts/benchmarks/flash-attention-iteration-full.json","repetitions":3},
+    {"id":"R3-Q6K-002","hypothesis":"Remove forced unrolling from Q6_K row loop","decision":"rejected_reverted","artifact":"local-artifacts/benchmarks/q6k-unroll-iteration-full.json","repetitions":3},
+    {"id":"R3-DECODE-001","hypothesis":"Use HD64 paged-attention dispatch for head_dim=64 decode","decision":"rejected_for_correctness","artifact":"local-artifacts/decode-drift-after-hd64-fix.log"},
+    {"id":"R3-Q6K-003","hypothesis":"Restore Q6_K multi-row dispatch after accidental disablement","decision":"accepted_restoration","artifact":"local-artifacts/benchmarks/q6k-restored-final.json","repetitions":3},
+    {"id":"R3-LMHEAD-001","hypothesis":"Use Q6_K 2-column single-row kernel for tied LM head","decision":"rejected_reverted","artifact":"local-artifacts/benchmarks/lm-head-q6k-single-row-3b-20260831.json","repetitions":3}
+  ],
+  "validation": {
+    "openspec": {"passed":17,"failed":0},
+    "cargo_check_workspace":"passed",
+    "cargo_clippy_workspace_all_targets":"passed",
+    "cargo_test_workspace_non_ignored":"passed",
+    "directed_gpu_parity":"passed",
+    "teacher_forced_drift":"inconclusive_partial",
+    "final_per_model_ratio_gate": "failed_for_four_of_five_models"
+  },
+  "final_checkpoint": "local-artifacts/benchmarks/q6k-restored-final.json",
+  "commit_created": false,
+  "push_performed": false
+}

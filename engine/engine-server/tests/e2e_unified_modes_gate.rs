@@ -47,14 +47,9 @@ async fn spawn_server(
         load_to_pinned(&reader, model_path).expect("pinned load"),
     ));
 
-    let real_model: RealModel<'static> = runtime::build_unified_driver_model(
-        &reader,
-        pinned,
-        128,
-        engine_mode,
-        spec_mode,
-    )
-    .expect("build unified model");
+    let real_model: RealModel<'static> =
+        runtime::build_unified_driver_model(&reader, pinned, 128, engine_mode, spec_mode)
+            .expect("build unified model");
 
     let shared = Arc::new(Mutex::new(real_model));
     let cfg = Arc::new(RealServerCfg {
@@ -87,12 +82,8 @@ async fn test_unified_modes_resident_and_streaming() {
     };
 
     println!("\n=== Testing EngineMode::Resident with OpenAI Chat Completions ===");
-    let (client_res, base_res) = spawn_server(
-        &fixture_path,
-        EngineMode::Resident,
-        SpeculativeMode::None,
-    )
-    .await;
+    let (client_res, base_res) =
+        spawn_server(&fixture_path, EngineMode::Resident, SpeculativeMode::None).await;
 
     let req_json = serde_json::json!({
         "messages": [{"role": "user", "content": "Hi!"}],
@@ -113,20 +104,29 @@ async fn test_unified_modes_resident_and_streaming() {
 
     assert_eq!(resp_res.status(), 200);
     assert_eq!(
-        resp_res.headers().get("x-titan-engine-mode").unwrap().to_str().unwrap(),
+        resp_res
+            .headers()
+            .get("x-titan-engine-mode")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "resident"
     );
-    let body_res: serde_json::Value = serde_json::from_str(&resp_res.text().await.unwrap()).unwrap();
-    println!("  Resident generated: {:?}", body_res["choices"][0]["message"]["content"]);
-    assert!(body_res["choices"][0]["message"]["content"].as_str().is_some());
+    let body_res: serde_json::Value =
+        serde_json::from_str(&resp_res.text().await.unwrap()).unwrap();
+    println!(
+        "  Resident generated: {:?}",
+        body_res["choices"][0]["message"]["content"]
+    );
+    assert!(
+        body_res["choices"][0]["message"]["content"]
+            .as_str()
+            .is_some()
+    );
 
     println!("\n=== Testing EngineMode::Streaming with Speculative Ngram Acceleration ===");
-    let (client_str, base_str) = spawn_server(
-        &fixture_path,
-        EngineMode::Streaming,
-        SpeculativeMode::Ngram,
-    )
-    .await;
+    let (client_str, base_str) =
+        spawn_server(&fixture_path, EngineMode::Streaming, SpeculativeMode::Ngram).await;
 
     let req_stream = serde_json::json!({
         "messages": [{"role": "user", "content": "Hi"}],
@@ -147,14 +147,24 @@ async fn test_unified_modes_resident_and_streaming() {
 
     assert_eq!(resp_str.status(), 200);
     assert_eq!(
-        resp_str.headers().get("x-titan-engine-mode").unwrap().to_str().unwrap(),
+        resp_str
+            .headers()
+            .get("x-titan-engine-mode")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "streaming"
     );
 
     let stream_body = resp_str.text().await.expect("read stream");
-    println!("  Streaming SSE body snippet: {:?}", &stream_body[..stream_body.len().min(120)]);
+    println!(
+        "  Streaming SSE body snippet: {:?}",
+        &stream_body[..stream_body.len().min(120)]
+    );
     assert!(stream_body.contains("chat.completion.chunk"));
     assert!(stream_body.contains("[DONE]"));
 
-    println!("\nGate PASS: All unified engine modes (Resident, Streaming, Speculative) validated successfully over HTTP!");
+    println!(
+        "\nGate PASS: All unified engine modes (Resident, Streaming, Speculative) validated successfully over HTTP!"
+    );
 }

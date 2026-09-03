@@ -125,12 +125,20 @@ impl SpeculativeVerifier {
 
             let q_cand = if !draft_probs.is_empty() && i < draft_probs.len() {
                 let dp = draft_probs[i];
-                if (cand as usize) < dp.len() { dp[cand as usize] } else { 1.0 / vocab_size as f32 }
+                if (cand as usize) < dp.len() {
+                    dp[cand as usize]
+                } else {
+                    1.0 / vocab_size as f32
+                }
             } else {
                 1.0 / vocab_size as f32
             };
 
-            let r = if q_cand > 0.0 { (p_cand / q_cand).min(1.0) } else { 1.0 };
+            let r = if q_cand > 0.0 {
+                (p_cand / q_cand).min(1.0)
+            } else {
+                1.0
+            };
             let u = sampler.sample_uniform();
 
             if u <= r {
@@ -149,9 +157,17 @@ impl SpeculativeVerifier {
                 };
 
                 for v in 0..vocab_size {
-                    let p_v = if v < target_prob.len() { target_prob[v] } else { 0.0 };
+                    let p_v = if v < target_prob.len() {
+                        target_prob[v]
+                    } else {
+                        0.0
+                    };
                     let q_v = if let Some(d) = dp {
-                        if v < d.len() { d[v] } else { 1.0 / vocab_size as f32 }
+                        if v < d.len() {
+                            d[v]
+                        } else {
+                            1.0 / vocab_size as f32
+                        }
                     } else {
                         1.0 / vocab_size as f32
                     };
@@ -161,8 +177,8 @@ impl SpeculativeVerifier {
                 }
 
                 let bonus_token = if sum_res > 1e-8 {
-                    for v in 0..vocab_size {
-                        residual[v] /= sum_res;
+                    for value in residual.iter_mut().take(vocab_size) {
+                        *value /= sum_res;
                     }
                     sampler.sample_from_probs(&residual)
                 } else {

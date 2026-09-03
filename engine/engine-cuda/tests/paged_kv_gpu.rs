@@ -14,6 +14,8 @@
 //!   `row_len = heads * head_dim` ; `floats_per_token = 2 * row_len` ;
 //!   `floats_per_block = block_tokens * floats_per_token`.
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_cuda::paged_kv::{PagedKvGpu, PagedKvLayout};
 use engine_cuda::{CudaError, CudaStream, DeviceBuffer};
@@ -41,6 +43,7 @@ fn bytes_f32(v: &[u8]) -> Vec<f32> {
 #[test]
 #[ignore]
 fn append_and_gather_paged_kv_gpu_roundtrip() -> Result<(), CudaError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(Arc::clone(&device))?;
 

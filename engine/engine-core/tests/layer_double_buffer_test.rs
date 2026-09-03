@@ -63,7 +63,8 @@ fn test_layer_double_buffer_ping_pong_swapping() -> Result<(), DynError> {
         stream.sync()?;
 
         assert_eq!(
-            wq_readback, wq_host,
+            wq_readback,
+            wq_host,
             "Layer {layer_idx} readback mismatch in slot {}",
             layer_idx % 2
         );

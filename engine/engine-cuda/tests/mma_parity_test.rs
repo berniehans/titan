@@ -1,4 +1,9 @@
-use cudarc::driver::{CudaDevice, sys::{self, CUfunction, CUmodule, CUresult}};
+mod common;
+
+use cudarc::driver::{
+    CudaDevice,
+    sys::{self, CUfunction, CUmodule, CUresult},
+};
 use cudarc::nvrtc::{self, Ptx};
 use engine_cuda::ensure_cuda_dll_paths;
 use std::ffi::CString;
@@ -8,6 +13,7 @@ const KERNEL_SRC: &str = include_str!("../kernels/gemm_q4k_mma.cu");
 #[test]
 #[ignore]
 fn test_q4k_mma_kernel_compilation_and_parity() -> Result<(), Box<dyn std::error::Error>> {
+    common::initialize_cuda();
     ensure_cuda_dll_paths();
     let dev = CudaDevice::new(0)?;
     dev.bind_to_thread()?;
@@ -47,7 +53,9 @@ fn test_q4k_mma_kernel_compilation_and_parity() -> Result<(), Box<dyn std::error
     assert_eq!(res, CUresult::CUDA_SUCCESS);
     assert!(!func2.is_null());
 
-    println!("Successfully compiled and verified gemm_q4k_mma_kernel and gemm_q4k_fused_gate_up_swiglu_mma_kernel on Ampere GPU!");
+    println!(
+        "Successfully compiled and verified gemm_q4k_mma_kernel and gemm_q4k_fused_gate_up_swiglu_mma_kernel on Ampere GPU!"
+    );
 
     // Clean up
     unsafe {

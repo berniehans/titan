@@ -36,7 +36,10 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
     let target_path = models_dir.join("Llama-3.2-3B-Instruct-Q4_K_M.gguf");
 
     if !draft_path.exists() || !target_path.exists() {
-        println!("Skipping speculative bench: models not found ({:?}, {:?})", draft_path, target_path);
+        println!(
+            "Skipping speculative bench: models not found ({:?}, {:?})",
+            draft_path, target_path
+        );
         return Ok(());
     }
 
@@ -84,7 +87,11 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
         }
         best_i as u32
     };
-    println!("  Target 3B cur_token in [1/2]: {} ({:?})", cur_token, tokenizer.decode(&[cur_token]));
+    println!(
+        "  Target 3B cur_token in [1/2]: {} ({:?})",
+        cur_token,
+        tokenizer.decode(&[cur_token])
+    );
 
     let n_steps = 30;
     let t_start_base = Instant::now();
@@ -92,8 +99,13 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
     let elapsed_base = t_start_base.elapsed().as_secs_f64();
     let base_tok_per_sec = gen_tokens.len() as f64 / elapsed_base;
     let base_ms_per_tok = (elapsed_base * 1000.0) / gen_tokens.len() as f64;
-    println!("  Target 3B Baseline: {:.1} tok/s ({:.2} ms/tok) | {} tokens generated in {:.2} ms",
-        base_tok_per_sec, base_ms_per_tok, gen_tokens.len(), elapsed_base * 1000.0);
+    println!(
+        "  Target 3B Baseline: {:.1} tok/s ({:.2} ms/tok) | {} tokens generated in {:.2} ms",
+        base_tok_per_sec,
+        base_ms_per_tok,
+        gen_tokens.len(),
+        elapsed_base * 1000.0
+    );
     println!("  Baseline text: {:?}", tokenizer.decode(&gen_tokens));
 
     // -------------------------------------------------------------------------
@@ -108,8 +120,16 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
     let draft_init_token = Sampler::argmax(&draft_init_logits) as u32;
     let target_init_token = Sampler::argmax(&target_init_logits) as u32;
 
-    println!("  Draft initial token from prefill: {} ({:?})", draft_init_token, tokenizer.decode(&[draft_init_token]));
-    println!("  Target initial token from prefill: {} ({:?})", target_init_token, tokenizer.decode(&[target_init_token]));
+    println!(
+        "  Draft initial token from prefill: {} ({:?})",
+        draft_init_token,
+        tokenizer.decode(&[draft_init_token])
+    );
+    println!(
+        "  Target initial token from prefill: {} ({:?})",
+        target_init_token,
+        tokenizer.decode(&[target_init_token])
+    );
 
     let mut current_token = target_init_token;
     let mut spec_emitted_tokens = vec![current_token];
@@ -138,12 +158,25 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
         let t_verif = t_verif_start.elapsed();
 
         if spec_emitted_tokens.len() < 15 {
-            let cand_str: Vec<(u32, String)> = candidates.iter().map(|&c| (c, tokenizer.decode(&[c]).unwrap_or_default())).collect();
-            let emit_str: Vec<(u32, String)> = verif.emitted_tokens.iter().map(|&c| (c, tokenizer.decode(&[c]).unwrap_or_default())).collect();
-            println!("  [DEBUG] cur: {} ({:?}) | Draft cand: {:?} | Target emitted: {:?} | Acc: {} | Draft: {:.2}ms, Verif: {:.2}ms",
-                current_token, tokenizer.decode(&[current_token]).unwrap_or_default(),
-                cand_str, emit_str, verif.n_accepted,
-                t_draft.as_secs_f64() * 1000.0, t_verif.as_secs_f64() * 1000.0);
+            let cand_str: Vec<(u32, String)> = candidates
+                .iter()
+                .map(|&c| (c, tokenizer.decode(&[c]).unwrap_or_default()))
+                .collect();
+            let emit_str: Vec<(u32, String)> = verif
+                .emitted_tokens
+                .iter()
+                .map(|&c| (c, tokenizer.decode(&[c]).unwrap_or_default()))
+                .collect();
+            println!(
+                "  [DEBUG] cur: {} ({:?}) | Draft cand: {:?} | Target emitted: {:?} | Acc: {} | Draft: {:.2}ms, Verif: {:.2}ms",
+                current_token,
+                tokenizer.decode(&[current_token]).unwrap_or_default(),
+                cand_str,
+                emit_str,
+                verif.n_accepted,
+                t_draft.as_secs_f64() * 1000.0,
+                t_verif.as_secs_f64() * 1000.0
+            );
         }
 
         total_accepted += verif.n_accepted;
@@ -162,10 +195,17 @@ fn test_speculative_speedup_1b_to_3b() -> Result<(), Box<dyn std::error::Error>>
     let acceptance_rate = (total_accepted as f64 / total_proposed as f64) * 100.0;
     let speedup = spec_tok_per_sec / base_tok_per_sec;
 
-    println!("  Speculative Decoding: {:.1} tok/s ({:.2} ms/tok) | {} tokens in {:.2} ms",
-        spec_tok_per_sec, spec_ms_per_tok, spec_tokens_generated, elapsed_spec * 1000.0);
-    println!("  Acceptance Rate: {:.1}% ({}/{} candidates accepted)",
-        acceptance_rate, total_accepted, total_proposed);
+    println!(
+        "  Speculative Decoding: {:.1} tok/s ({:.2} ms/tok) | {} tokens in {:.2} ms",
+        spec_tok_per_sec,
+        spec_ms_per_tok,
+        spec_tokens_generated,
+        elapsed_spec * 1000.0
+    );
+    println!(
+        "  Acceptance Rate: {:.1}% ({}/{} candidates accepted)",
+        acceptance_rate, total_accepted, total_proposed
+    );
     println!("  Effective Speedup: {:.2}x vs Target 3B Baseline", speedup);
 
     println!("\n================================================================================");

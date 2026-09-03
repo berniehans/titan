@@ -50,32 +50,32 @@ pub fn format_chatml_with_tools(
     let mut has_system = false;
 
     // If tools are provided, inject tool schema into the system prompt
-    if let Some(t_list) = tools {
-        if !t_list.is_empty() {
-            let tools_json = serde_json::to_string_pretty(t_list).unwrap_or_default();
-            let tools_system_prompt = format!(
-                "# Tools\n\nYou have access to the following functions:\n\n<tools>\n{}\n</tools>\n\nTo call a function, respond with a JSON object inside <tool_call></tool_call> tags containing 'name' and 'arguments'.",
-                tools_json
-            );
+    if let Some(t_list) = tools
+        && !t_list.is_empty()
+    {
+        let tools_json = serde_json::to_string_pretty(t_list).unwrap_or_default();
+        let tools_system_prompt = format!(
+            "# Tools\n\nYou have access to the following functions:\n\n<tools>\n{}\n</tools>\n\nTo call a function, respond with a JSON object inside <tool_call></tool_call> tags containing 'name' and 'arguments'.",
+            tools_json
+        );
 
-            if let Some(first) = messages.first() {
-                if first.role == "system" {
-                    has_system = true;
-                    prompt.push_str("<|im_start|>system\n");
-                    prompt.push_str(&first.content);
-                    prompt.push_str("\n\n");
-                    prompt.push_str(&tools_system_prompt);
-                    prompt.push_str("<|im_end|>\n");
-                } else {
-                    prompt.push_str("<|im_start|>system\n");
-                    prompt.push_str(&tools_system_prompt);
-                    prompt.push_str("<|im_end|>\n");
-                }
+        if let Some(first) = messages.first() {
+            if first.role == "system" {
+                has_system = true;
+                prompt.push_str("<|im_start|>system\n");
+                prompt.push_str(&first.content);
+                prompt.push_str("\n\n");
+                prompt.push_str(&tools_system_prompt);
+                prompt.push_str("<|im_end|>\n");
             } else {
                 prompt.push_str("<|im_start|>system\n");
                 prompt.push_str(&tools_system_prompt);
                 prompt.push_str("<|im_end|>\n");
             }
+        } else {
+            prompt.push_str("<|im_start|>system\n");
+            prompt.push_str(&tools_system_prompt);
+            prompt.push_str("<|im_end|>\n");
         }
     }
 

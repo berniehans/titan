@@ -10,6 +10,7 @@ mod common;
 use common::{
     Xorshift, bytes_f32, cosine, f32_bytes, fill_pool_paged, floats_per_block_of, u32_bytes,
 };
+
 use cudarc::driver::CudaDevice;
 use engine_core::forward_cpu::sdpa_decode;
 use engine_cuda::{CudaError, CudaStream, DeviceBuffer, PagedAttention};
@@ -18,6 +19,7 @@ use std::sync::Arc;
 #[test]
 #[ignore]
 fn scattered_parity_1_to_2048() -> Result<(), CudaError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(Arc::clone(&device))?;
     let pa = PagedAttention::new(Arc::clone(&device))?;
@@ -148,6 +150,7 @@ fn scattered_parity_1_to_2048() -> Result<(), CudaError> {
 #[test]
 #[ignore]
 fn launch_path_zero_runtime_cudamalloc() -> Result<(), CudaError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(Arc::clone(&device))?;
     let pa = PagedAttention::new(Arc::clone(&device))?;

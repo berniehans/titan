@@ -102,7 +102,7 @@ impl LayerDoubleBuffer {
 
     /// Returns a reference to the slot with index `idx % 2`.
     pub fn slot(&self, idx: usize) -> &LayerSlotGpu {
-        if idx % 2 == 0 {
+        if idx.is_multiple_of(2) {
             &self.slot_a
         } else {
             &self.slot_b
@@ -116,7 +116,7 @@ impl LayerDoubleBuffer {
         weights: &HostLayerWeights<'_>,
         stream: &CudaStream,
     ) -> Result<(), EngineError> {
-        let target_slot = if idx % 2 == 0 {
+        let target_slot = if idx.is_multiple_of(2) {
             &mut self.slot_a
         } else {
             &mut self.slot_b
@@ -126,9 +126,15 @@ impl LayerDoubleBuffer {
         target_slot.wk_dev.copy_from_host(stream, weights.wk_data)?;
         target_slot.wv_dev.copy_from_host(stream, weights.wv_data)?;
         target_slot.wo_dev.copy_from_host(stream, weights.wo_data)?;
-        target_slot.wgate_dev.copy_from_host(stream, weights.wgate_data)?;
-        target_slot.wup_dev.copy_from_host(stream, weights.wup_data)?;
-        target_slot.wdown_dev.copy_from_host(stream, weights.wdown_data)?;
+        target_slot
+            .wgate_dev
+            .copy_from_host(stream, weights.wgate_data)?;
+        target_slot
+            .wup_dev
+            .copy_from_host(stream, weights.wup_data)?;
+        target_slot
+            .wdown_dev
+            .copy_from_host(stream, weights.wdown_data)?;
 
         Ok(())
     }

@@ -271,7 +271,10 @@ dependencies = [
  "cudarc",
  "engine-core",
  "engine-kvcache",
+ "serde",
+ "serde_json",
  "thiserror",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

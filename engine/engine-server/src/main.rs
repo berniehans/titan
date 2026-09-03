@@ -67,14 +67,29 @@ fn print_diagnostics(
 ) {
     print_banner();
     println!("  ╔══════════════════════════════════════════════════════════════════╗");
-    println!("  ║ Engine Mode:       {:<45} ║", format!("{engine_mode:?}"));
+    println!(
+        "  ║ Engine Mode:       {:<45} ║",
+        format!("{engine_mode:?}")
+    );
     println!("  ║ Speculative Mode:  {:<45} ║", format!("{spec_mode:?}"));
     println!(
         "  ║ Model File:        {:<45} ║",
-        format!("{}", model_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"))
+        format!(
+            "{}",
+            model_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+        )
     );
-    println!("  ║ VRAM Working Set:  {:<45} ║", format!("{vram_mb:.1} MB"));
-    println!("  ║ Host Load Time:    {:<45} ║", format!("{load_ms:.2} ms"));
+    println!(
+        "  ║ VRAM Working Set:  {:<45} ║",
+        format!("{vram_mb:.1} MB")
+    );
+    println!(
+        "  ║ Host Load Time:    {:<45} ║",
+        format!("{load_ms:.2} ms")
+    );
     println!("  ╚══════════════════════════════════════════════════════════════════╝\n");
 }
 
@@ -93,13 +108,8 @@ fn run_chat(
     let _device = CudaDevice::new(0)?;
     let load_ms = start_load.elapsed().as_secs_f64() * 1000.0;
 
-    let mut model: RealModel<'static> = runtime::build_unified_driver_model(
-        &reader,
-        pinned,
-        kv_capacity,
-        engine_mode,
-        spec_mode,
-    )?;
+    let mut model: RealModel<'static> =
+        runtime::build_unified_driver_model(&reader, pinned, kv_capacity, engine_mode, spec_mode)?;
 
     let vram_mb = model
         .driver
@@ -115,7 +125,9 @@ fn run_chat(
         load_ms,
     );
 
-    println!("Interactive chat ready! Type your message and press Enter. Commands: /reset, /exit\n");
+    println!(
+        "Interactive chat ready! Type your message and press Enter. Commands: /reset, /exit\n"
+    );
 
     let mut messages: Vec<ChatMessage> = Vec::new();
     if let Some(sys) = system_prompt {
@@ -208,7 +220,12 @@ fn run_chat(
                         let mut stopped = false;
                         for &emitted_tok in &verif.emitted_tokens {
                             let piece = tokenizer.decode(&[emitted_tok]).unwrap_or_default();
-                            if Sampler::is_stop_sequence(emitted_tok, &piece, &stop_tokens, &stop_strings) {
+                            if Sampler::is_stop_sequence(
+                                emitted_tok,
+                                &piece,
+                                &stop_tokens,
+                                &stop_strings,
+                            ) {
                                 stopped = true;
                                 break;
                             }
@@ -246,8 +263,14 @@ fn run_chat(
 
         let n_gen = context.len().saturating_sub(prompt_tokens.len());
         let elapsed = t_start_gen.elapsed().as_secs_f64();
-        let tok_per_sec = if elapsed > 0.0 { n_gen as f64 / elapsed } else { 0.0 };
-        println!("\n\x1b[90m[{n_gen} tokens generated in {elapsed:.2}s — {tok_per_sec:.1} tok/s]\x1b[0m\n");
+        let tok_per_sec = if elapsed > 0.0 {
+            n_gen as f64 / elapsed
+        } else {
+            0.0
+        };
+        println!(
+            "\n\x1b[90m[{n_gen} tokens generated in {elapsed:.2}s — {tok_per_sec:.1} tok/s]\x1b[0m\n"
+        );
         messages.push(ChatMessage::assistant(assistant_response));
     }
 
@@ -260,20 +283,18 @@ fn run_bench(
     spec_mode: SpeculativeMode,
     kv_capacity: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n>>> RUNNING TITAN EMPIRICAL BENCHMARK ON: {}", model_path.display());
+    println!(
+        "\n>>> RUNNING TITAN EMPIRICAL BENCHMARK ON: {}",
+        model_path.display()
+    );
     let start_load = Instant::now();
     let reader = GgufReader::open(model_path)?;
     let pinned: &'static LoadedPinned = Box::leak(Box::new(load_to_pinned(&reader, model_path)?));
     let _device = CudaDevice::new(0)?;
     let load_ms = start_load.elapsed().as_secs_f64() * 1000.0;
 
-    let mut model: RealModel<'static> = runtime::build_unified_driver_model(
-        &reader,
-        pinned,
-        kv_capacity,
-        engine_mode,
-        spec_mode,
-    )?;
+    let mut model: RealModel<'static> =
+        runtime::build_unified_driver_model(&reader, pinned, kv_capacity, engine_mode, spec_mode)?;
 
     let vram_mb = model
         .driver
@@ -281,15 +302,27 @@ fn run_bench(
         .map(|d| d.vram_footprint().total() as f64 / (1024.0 * 1024.0))
         .unwrap_or(0.0);
 
-    print_diagnostics(model_path, model.engine_mode, model.speculative_mode, vram_mb, load_ms);
+    print_diagnostics(
+        model_path,
+        model.engine_mode,
+        model.speculative_mode,
+        vram_mb,
+        load_ms,
+    );
 
     let tokenizer = model.tokenizer.take().expect("tokenizer");
     let mut driver = model.driver.take().expect("driver");
 
     let test_prompts = [
         ("Short (Math)", "2 + 2 ="),
-        ("Medium (Fact)", "The capital of France is Paris. What is the capital of Spain?"),
-        ("Long (Code)", "Write a high performance Rust function that computes the Fibonacci sequence using iterative memoization:"),
+        (
+            "Medium (Fact)",
+            "The capital of France is Paris. What is the capital of Spain?",
+        ),
+        (
+            "Long (Code)",
+            "Write a high performance Rust function that computes the Fibonacci sequence using iterative memoization:",
+        ),
     ];
 
     println!("================================================================================");
@@ -315,8 +348,10 @@ fn run_bench(
         let decode_tps = gen_tokens as f64 / gen_sec;
         let ms_per_tok = (gen_sec * 1000.0) / gen_tokens as f64;
 
-        println!("  • {:<16} | Prefill: {:>6.1} tok/s ({:>5.2} ms) | Decode: {:>6.1} tok/s ({:>5.2} ms/tok)",
-            name, prefill_tps, prefill_ms, decode_tps, ms_per_tok);
+        println!(
+            "  • {:<16} | Prefill: {:>6.1} tok/s ({:>5.2} ms) | Decode: {:>6.1} tok/s ({:>5.2} ms/tok)",
+            name, prefill_tps, prefill_ms, decode_tps, ms_per_tok
+        );
     }
     println!("================================================================================\n");
 
@@ -363,7 +398,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let positional_model = args.get(2).filter(|s| !s.starts_with('-')).map(PathBuf::from);
+    let positional_model = args
+        .get(2)
+        .filter(|s| !s.starts_with('-'))
+        .map(PathBuf::from);
     let raw_model_path = positional_model
         .or_else(|| {
             args.iter()
@@ -434,17 +472,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             system_prompt,
         )?;
     } else if mode == "bench" {
-        run_bench(
-            &model_path,
-            engine_mode,
-            spec_mode,
-            kv_capacity,
-        )?;
+        run_bench(&model_path, engine_mode, spec_mode, kv_capacity)?;
     } else if mode == "serve" || mode == "agent" {
-        let actual_port = if mode == "agent" && port == 8000 { 8080 } else { port };
+        let actual_port = if mode == "agent" && port == 8000 {
+            8080
+        } else {
+            port
+        };
         let start_load = Instant::now();
         let reader = GgufReader::open(&model_path)?;
-        let pinned: &'static LoadedPinned = Box::leak(Box::new(load_to_pinned(&reader, &model_path)?));
+        let pinned: &'static LoadedPinned =
+            Box::leak(Box::new(load_to_pinned(&reader, &model_path)?));
         let _device = CudaDevice::new(0)?;
         let load_ms = start_load.elapsed().as_secs_f64() * 1000.0;
 

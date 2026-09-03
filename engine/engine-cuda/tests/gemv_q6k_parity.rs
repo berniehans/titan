@@ -4,6 +4,8 @@
 //! 1. GPU `MultiFormatGEMV::gemv(GemvFormat::Q6K)` matches CPU reference dot product.
 //! 2. Max relative difference is < 1e-4 and cosine similarity is > 0.9999 across non-trivial matrices.
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_core::dequant_q6k_cpu;
 use engine_cuda::{CudaStream, DeviceBuffer, GemvFormat, MultiFormatGEMV};
@@ -91,6 +93,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[test]
 #[ignore]
 fn test_gemv_q6k_gpu_matches_cpu_reference() -> Result<(), DynError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(device.clone())?;
     let gemv_engine = MultiFormatGEMV::new(device.clone())?;

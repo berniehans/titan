@@ -9,7 +9,6 @@
 ///     -> Pipeline / ForwardDriver / StreamingForwardDriver (unified engine)
 ///     -> deterministic or sampled per-token logits
 ///     -> SSE chunks emitted by the axum server
-
 use cudarc::driver::CudaDevice;
 use engine_core::moe::{
     ExpertSlotCache, HardwareBandwidthProfile, HostExpertBank, LayerCacheStats, MoeBackend,
@@ -94,6 +93,7 @@ impl std::str::FromStr for SpeculativeMode {
 }
 
 /// Unified driver instance dispatching forward passes across resident or PCIe streaming engines.
+#[allow(clippy::large_enum_variant)] // Keep the public resident/streaming API free of boxing.
 pub enum DriverInstance<'a> {
     Resident(ForwardDriver<'a>),
     Streaming(StreamingForwardDriver<'a>),
@@ -272,7 +272,13 @@ pub fn build_real_driver_model<'a>(
     fixture: &'a LoadedPinned,
     max_seq: usize,
 ) -> Result<RealModel<'a>, EngineError> {
-    build_unified_driver_model(reader, fixture, max_seq, EngineMode::Auto, SpeculativeMode::None)
+    build_unified_driver_model(
+        reader,
+        fixture,
+        max_seq,
+        EngineMode::Auto,
+        SpeculativeMode::None,
+    )
 }
 
 /// Builds a unified server model configured with explicit or auto-resolved engine mode and speculative proposer.
@@ -431,7 +437,7 @@ pub fn prompt_token(prompt: &str, vocab: u32) -> u32 {
 /// Runs a multi-step decode for one completion.
 pub fn decode_run(
     model: &mut RealModel<'_>,
-    vocab: u32,
+    _vocab: u32,
     prompt: &str,
     max_tokens: u32,
 ) -> Result<Vec<u32>, EngineError> {
@@ -454,15 +460,13 @@ pub fn decode_run(
         }
         Ok(out)
     } else {
-        let mut out = Vec::<u32>::with_capacity(max_tokens as usize);
-        let mut current = prompt_token(prompt, vocab);
-        for _ in 0..max_tokens {
-            let d = forward_digest(model)?;
-            current = stub_next_token(current, d, vocab);
-            out.push(current);
-        }
-        Ok(out)
+        Err(real_runtime_initialization_error())
     }
+}
+
+fn real_runtime_initialization_error() -> EngineError {
+    engine_cuda::CudaError::AllocFailed("Driver and tokenizer must be initialized for real decode")
+        .into()
 }
 
 /// Runs multi-step decode tracking MoE expert routing and cache telemetry per layer.
@@ -518,7 +522,20 @@ mod tests {
         assert_eq!(EngineMode::Moe.to_string(), "moe");
 
         assert_eq!("auto".parse::<EngineMode>().unwrap(), EngineMode::Auto);
-        assert_eq!("resident".parse::<EngineMode>().unwrap(), EngineMode::Resident);
-        assert_eq!("streaming".parse::<EngineMode>().unwrap(), EngineMode::Streaming);
+        assert_eq!(
+            "resident".parse::<EngineMode>().unwrap(),
+            EngineMode::Resident
+        );
+        assert_eq!(
+            "streaming".parse::<EngineMode>().unwrap(),
+            EngineMode::Streaming
+        );
+    }
+
+    #[test]
+    fn real_runtime_initialization_error_is_explicit() {
+        let error = real_runtime_initialization_error();
+        assert!(error.to_string().contains("Driver and tokenizer"));
+        assert!(!error.to_string().contains("stub"));
     }
 }

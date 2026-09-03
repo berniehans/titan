@@ -116,8 +116,6 @@ impl Sampler {
             return 0;
         }
 
-
-
         // 1. Clone logits into candidate working buffer
         let mut filtered: Vec<(usize, f32)> = logits
             .iter()
@@ -179,7 +177,8 @@ impl Sampler {
         }
 
         // 6. Sort only top-k candidates descending by logit:
-        filtered.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        filtered
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // 7. Compute Softmax probabilities:
         let max_logit = filtered[0].1;
@@ -263,7 +262,8 @@ impl Sampler {
             .filter(|(_, l)| l.is_finite())
             .collect();
 
-        top_candidates.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        top_candidates
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut filtered: Vec<(usize, f32)> = Vec::with_capacity(64);
         for (idx, logit) in top_candidates {
@@ -285,13 +285,13 @@ impl Sampler {
             let mut seen = std::collections::HashSet::new();
             for &tok in context_tokens {
                 let idx = tok as usize;
-                if let Some(pos) = filtered.iter().position(|&(i, _)| i == idx) {
-                    if seen.insert(idx) {
-                        if filtered[pos].1 > 0.0 {
-                            filtered[pos].1 /= pen;
-                        } else {
-                            filtered[pos].1 *= pen;
-                        }
+                if let Some(pos) = filtered.iter().position(|&(i, _)| i == idx)
+                    && seen.insert(idx)
+                {
+                    if filtered[pos].1 > 0.0 {
+                        filtered[pos].1 /= pen;
+                    } else {
+                        filtered[pos].1 *= pen;
                     }
                 }
             }
@@ -316,7 +316,8 @@ impl Sampler {
             cand.1 *= inv_temp;
         }
 
-        filtered.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        filtered
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let max_logit = filtered[0].1;
         let mut sum_exp = 0.0f32;
         let mut probs: Vec<(usize, f32)> = Vec::with_capacity(filtered.len());
@@ -438,7 +439,8 @@ impl Sampler {
             cand.1 *= inv_temp;
         }
 
-        filtered.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        filtered
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         if params.top_k > 0 && params.top_k < filtered.len() {
             filtered.truncate(params.top_k);
@@ -563,9 +565,29 @@ mod tests {
         let stop_tokens = vec![151645, 151643]; // <|im_end|>, <|endoftext|>
         let stop_strings = vec!["<|im_end|>".to_string(), "Human:".to_string()];
 
-        assert!(Sampler::is_stop_sequence(151645, "", &stop_tokens, &stop_strings));
-        assert!(Sampler::is_stop_sequence(100, "<|im_end|>", &stop_tokens, &stop_strings));
-        assert!(Sampler::is_stop_sequence(100, "Hello Human: how are you", &stop_tokens, &stop_strings));
-        assert!(!Sampler::is_stop_sequence(100, "Hello world", &stop_tokens, &stop_strings));
+        assert!(Sampler::is_stop_sequence(
+            151645,
+            "",
+            &stop_tokens,
+            &stop_strings
+        ));
+        assert!(Sampler::is_stop_sequence(
+            100,
+            "<|im_end|>",
+            &stop_tokens,
+            &stop_strings
+        ));
+        assert!(Sampler::is_stop_sequence(
+            100,
+            "Hello Human: how are you",
+            &stop_tokens,
+            &stop_strings
+        ));
+        assert!(!Sampler::is_stop_sequence(
+            100,
+            "Hello world",
+            &stop_tokens,
+            &stop_strings
+        ));
     }
 }

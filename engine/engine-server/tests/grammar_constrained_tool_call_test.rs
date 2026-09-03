@@ -1,4 +1,4 @@
-﻿//! Grammar-Constrained Tool Call Generation Test (Milestone 7).
+//! Grammar-Constrained Tool Call Generation Test (Milestone 7).
 //!
 //! Spawns the real Titan engine on GPU with JSON Grammar constrained sampling
 //! and verifies that generated structured output strictly conforms to valid JSON.
@@ -73,7 +73,8 @@ fn test_grammar_constrained_json_generation() -> Result<(), DynError> {
             grammar.is_token_valid(&cand_str)
         });
 
-        if tok == 0 || tok == 151645 || tok == 151643 { // EOS tokens
+        if tok == 0 || tok == 151645 || tok == 151643 {
+            // EOS tokens
             break;
         }
 
@@ -85,14 +86,20 @@ fn test_grammar_constrained_json_generation() -> Result<(), DynError> {
         logits = driver.decode(tok)?;
 
         if grammar.is_complete() && step >= 5 {
-            println!("\n  [Grammar] Reached complete JSON document state at step {}", step);
+            println!(
+                "\n  [Grammar] Reached complete JSON document state at step {}",
+                step
+            );
             break;
         }
     }
 
     let raw_generated = tokenizer.decode(&generated_tokens)?;
     let generated_json_text = format!("{{{raw_generated}");
-    println!("\n  [Final Generated Output]:\n{}", generated_json_text.trim());
+    println!(
+        "\n  [Final Generated Output]:\n{}",
+        generated_json_text.trim()
+    );
 
     // Verify output strictly parses as JSON
     let parsed: serde_json::Value = serde_json::from_str(generated_json_text.trim())?;

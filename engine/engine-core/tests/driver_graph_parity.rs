@@ -58,11 +58,13 @@ fn test_forward_driver_cuda_graph_decode_parity() -> Result<(), DynError> {
         assert_eq!(l0.len(), 151936);
 
         // Decode remaining prompt tokens sequentially
-        for p in 1..token_ids.len() {
-            let input_tok = token_ids[p];
+        for (p, &input_tok) in token_ids.iter().enumerate().skip(1) {
             let logits = drv.decode_graph(input_tok)?;
             assert_eq!(logits.len(), 151936);
-            assert!(!logits.iter().any(|v| v.is_nan()), "NaN encountered at prompt {i} step {p}");
+            assert!(
+                !logits.iter().any(|v| v.is_nan()),
+                "NaN encountered at prompt {i} step {p}"
+            );
 
             let top = logits
                 .iter()

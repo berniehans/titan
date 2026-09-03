@@ -1,6 +1,6 @@
 # 📊 Titan — Performance Benchmarks & Empirical Evaluation
 
-This document contains reproducible benchmark results measured directly on real GPU hardware. The current head-to-head baseline compares **Titan (100% Pure Rust)** against CUDA-enabled **llama.cpp (C++)**. Older cross-engine estimates are retained only when explicitly labelled historical; they are not current measurements.
+This document contains reproducible benchmark results measured directly on real GPU hardware. The current workspace status is maintained in [`WORKSPACE_STATE.md`](WORKSPACE_STATE.md). The head-to-head table below is the historical 2026-09-01 checkpoint; the fresh 2026-09-02 comparison is in `local-artifacts/benchmarks/final-head-to-head-20260902_165459.json` and remains release-blocked.
 
 ---
 
@@ -22,29 +22,22 @@ All benchmarks were executed on the following reference hardware and operating e
 
 ---
 
-## 2. Multi-Model Head-to-Head: Titan vs. llama.cpp (Latest Reproduction)
+## 2. Historical Multi-Model Head-to-Head: Titan vs. llama.cpp (2026-09-01 checkpoint)
 
-Automated head-to-head comparison running against the installed CUDA-enabled `llama-server.exe` with CUDA Graphs enabled, under the same GGUF files, two prompts per model, 41 generated tokens, batch size = 1, and greedy sampling ($T=0$). The test completed with `1 passed, 0 failed` in 34.41 seconds.
+Fresh controlled run from the current checkout using the installed CUDA-enabled `llama-server.exe`, identical GGUF files, two prompts per model, 41 generated tokens, batch size = 1, greedy sampling ($T=0$), and three repetitions per model. The test completed with `1 passed, 0 failed` in 100.76 seconds.
 
-```
-=========================================================================================================
-===                                MULTI-MODEL HEAD-TO-HEAD COMPARISON                                ===
-=========================================================================================================
-Model Name                   | llama.cpp (C++)      | Titan (Pure Rust)    | Ratio (Titan / llama.cpp)
------------------------------|----------------------|----------------------|-------------
-Qwen3 0.6B Base/Chat         | 225.5  tok/s (4.46 ms) | 228.2  tok/s (4.38 ms) | 1.01x (+1.2%)
-DeepSeek-R1-Distill 1.5B     | 148.9  tok/s (6.72 ms) | 121.0  tok/s (8.27 ms) | 0.81x (-18.7%)
-Qwen 2.5 1.5B Instruct       | 149.5  tok/s (6.70 ms) | 128.2  tok/s (7.80 ms) | 0.86x (-14.3%)
-Llama 3.2 1B Instruct        | 214.3  tok/s (4.67 ms) | 158.8  tok/s (6.30 ms) | 0.74x (-25.9%)
-Llama 3.2 3B Instruct        | 97.4   tok/s (10.27 ms)| 66.6   tok/s (15.01 ms)| 0.68x (-31.6%)
-=========================================================================================================
-```
+Artifact: `../local-artifacts/benchmarks/rerun-20260901-085229.json`
+Raw log: `../local-artifacts/benchmarks/rerun-20260901-085229.log`
 
-### Key Takeaways:
-1. **Qwen3 0.6B:** Titan measured **228.2 tok/s** versus `llama.cpp` at 225.5 tok/s, a marginal **+1.2%** advantage.
-2. **Models from 1B to 3B:** `llama.cpp` was faster by **14.3% to 31.6%** in this run.
-3. **The previous published figures are superseded:** the current checkout did not reproduce the older 220.8/202.2 and 139.3/136.7 pairs.
-4. **Throughput is not numerical parity:** current numerical validation remains a separate gate, and the SwiGLU gate still fails with rel-L2 = 1.047.
+| Model | Cold llama.cpp | Cold Titan | Cold ratio | Warm llama.cpp | Warm Titan | Warm ratio | Reported ratio |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen 2.5 1.5B Instruct | 138.6 | 124.1 | 1.018x | 135.5 | 128.5 | 0.987x | **1.009x** |
+| Llama 3.2 1B Instruct | 178.6 | 170.2 | 0.947x | 189.0 | 179.7 | 0.848x | **0.896x** |
+| Llama 3.2 3B Instruct | 104.7 | 77.0 | 0.734x | 105.0 | 76.9 | 0.732x | **0.735x** |
+| DeepSeek-R1-Distill 1.5B | 157.0 | 143.3 | 0.912x | 173.1 | 143.3 | 0.826x | **0.864x** |
+| Qwen3 0.6B Base/Chat | 240.2 | 274.1 | 1.142x | 278.1 | 274.1 | 0.984x | **1.057x** |
+
+The reported ratio is the artifact's average across prompt/cache statistics; raw cold and warm medians are shown separately. The simple mean of the five reported ratios is **0.912x**. This is a valid fresh checkpoint, not a release sign-off: the `>=0.95x` per-model and aggregate gates remain open, with Llama 3.2 3B as the principal deficit.
 
 ---
 
@@ -56,7 +49,7 @@ Historical comparison estimates from prior work are not comparable to the latest
 
 ## 4. Kernel-Level Profiling & Latency Breakdown
 
-The older per-stage timing profile below is historical and has not been rerun with the current checkout. It must not be used to derive the current head-to-head numbers.
+The per-stage timing profile below is historical and has not been rerun as a symmetric cross-engine profile with the current checkpoint. It must not be used to derive the current head-to-head numbers.
 
 | Pipeline Stage | Kernel Implementation | Execution Time | % Total Time |
 | :--- | :--- | :--- | :--- |

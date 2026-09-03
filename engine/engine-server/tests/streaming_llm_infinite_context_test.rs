@@ -1,4 +1,4 @@
-﻿//! StreamingLLM Infinite Context & Attention Sinks GPU Test (Milestone 8).
+//! StreamingLLM Infinite Context & Attention Sinks GPU Test (Milestone 8).
 //!
 //! Verifies that under bounded physical KV cache budgets, Attention Sinks (0..4)
 //! and rolling recent window enable stable autoregressive generation past
@@ -61,8 +61,12 @@ fn test_streaming_llm_attention_sinks_gpu_stability() -> Result<(), DynError> {
     let streaming_cfg = StreamingKvConfig::new(4, 128, 256, 16);
     let manager = StreamingKvManager::new(streaming_cfg);
 
-    println!("  [Streaming Config] Sink Tokens: {}, Window: {}, Max Budget: {}",
-        streaming_cfg.sink_tokens, streaming_cfg.recent_window_tokens, streaming_cfg.max_budget_tokens);
+    println!(
+        "  [Streaming Config] Sink Tokens: {}, Window: {}, Max Budget: {}",
+        streaming_cfg.sink_tokens,
+        streaming_cfg.recent_window_tokens,
+        streaming_cfg.max_budget_tokens
+    );
 
     let prompt = "Once upon a time in a high-performance compute cluster, an autonomous agent";
     let prompt_tokens = tokenizer.encode(prompt)?;
@@ -90,22 +94,37 @@ fn test_streaming_llm_attention_sinks_gpu_stability() -> Result<(), DynError> {
         logits = driver.decode(tok)?;
 
         // Verify attention sink stability (logits finite and no NaN/Inf)
-        assert!(logits.iter().all(|l| l.is_finite()), "Logits must remain finite at step {}", step);
+        assert!(
+            logits.iter().all(|l| l.is_finite()),
+            "Logits must remain finite at step {}",
+            step
+        );
     }
 
     let elapsed = t0.elapsed();
     let throughput = (prompt_tokens.len() + generated_tokens.len()) as f64 / elapsed.as_secs_f64();
 
-    println!("\n\n  [Summary] Generated {} tokens in {:.2}s ({:.1} tok/s)",
-        generated_tokens.len(), elapsed.as_secs_f64(), throughput);
+    println!(
+        "\n\n  [Summary] Generated {} tokens in {:.2}s ({:.1} tok/s)",
+        generated_tokens.len(),
+        elapsed.as_secs_f64(),
+        throughput
+    );
 
     // Verify virtual block table pruning mechanism
     let virtual_block_table: Vec<u32> = (0..32).collect();
     let (retained, evicted) = manager.prune_blocks(&virtual_block_table);
     assert_eq!(retained.len(), streaming_cfg.max_active_blocks());
-    assert_eq!(retained[0], 0, "Attention sink block 0 must always be preserved");
-    println!("  [Prune Verification] 32 Virtual Blocks -> {} Retained ({:?}), {} Evicted",
-        retained.len(), retained, evicted.len());
+    assert_eq!(
+        retained[0], 0,
+        "Attention sink block 0 must always be preserved"
+    );
+    println!(
+        "  [Prune Verification] 32 Virtual Blocks -> {} Retained ({:?}), {} Evicted",
+        retained.len(),
+        retained,
+        evicted.len()
+    );
 
     println!("\n>>> SUCCESS: StreamingLLM Attention Sinks maintained 100% numerical stability!");
     println!("================================================================================\n");

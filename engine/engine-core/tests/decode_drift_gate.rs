@@ -342,7 +342,12 @@ fn decode_reuses_resident_kv_and_emits_logits() {
         let full_pre = run_prefill(&reader, &pinned, &cfg, &token_ids)
             .expect("run_prefill full prompt failed");
 
-        println!("    [T_DBG] dec: {:?}\n    [T_DBG] cpu: {:?}\n    [T_DBG] pre: {:?}", &dec[..5], &cpu_ref[..5], &full_pre.logits[..5]);
+        println!(
+            "    [T_DBG] dec: {:?}\n    [T_DBG] cpu: {:?}\n    [T_DBG] pre: {:?}",
+            &dec[..5],
+            &cpu_ref[..5],
+            &full_pre.logits[..5]
+        );
         let cs_cpu = cosim(&dec, &cpu_ref);
         let rl_cpu = rel_l2(&dec, &cpu_ref);
         let cs_pre = cosim(&dec, &full_pre.logits);
@@ -508,5 +513,73 @@ fn teacher_forced_drift_curve_10_checkpoints() {
     assert!(
         max_rel_l2 < 0.15,
         "Overall max rel_l2 {max_rel_l2:.3e} >= 0.15"
+    );
+}
+
+/// Diagnostic-only probe for the first resident decode step.
+///
+/// This uses the existing dispatch telemetry seam without changing kernel
+/// algorithms. Tensor values are explicitly reported as unavailable because
+/// ForwardDriver has no public intermediate tensor download API.
+#[test]
+#[ignore] // GPU diagnostic; requires local NVRTC and testdata
+fn diagnostic_resident_decode_stage_dispatch_probe() {
+    engine_cuda::ensure_cuda_dll_paths();
+    let fixture_path = get_fixture_path().expect("diagnostic fixture missing");
+    let prompts_path = get_prompts_path().expect("diagnostic prompts fixture missing");
+    let prompt = std::fs::read_to_string(prompts_path)
+        .expect("read diagnostic prompts")
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .expect("diagnostic prompt missing")
+        .to_owned();
+
+    let reader = GgufReader::open(&fixture_path).expect("open gguf");
+    let cfg = ModelConfig::from_reader(&reader).expect("read config");
+    let pinned = load_to_pinned(&reader, &fixture_path).expect("load pinned");
+    let tokenizer = BpeTokenizer::from_reader(&reader).expect("tokenizer");
+    let tokens = tokenizer.encode(&prompt).expect("encode diagnostic prompt");
+    assert!(
+        !tokens.is_empty(),
+        "diagnostic prompt encoded to zero tokens"
+    );
+
+    let mut driver = ForwardDriver::new(&reader, &pinned, &cfg, tokens.len() + 1)
+        .expect("ForwardDriver::new failed");
+    driver.enable_dispatch_telemetry();
+    let logits = driver.decode(tokens[0]).expect("diagnostic decode failed");
+    let telemetry = driver
+        .dispatch_telemetry_snapshot()
+        .expect("dispatch telemetry was not enabled");
+
+    let artifact = serde_json::json!({
+        "diagnostic": "resident_decode_stage_dispatch_probe",
+        "status": "diagnostic_only",
+        "fixture": fixture_path.display().to_string(),
+        "prompt_token_count": tokens.len(),
+        "probed_token": tokens[0],
+        "logits_len": logits.len(),
+        "dispatch": telemetry,
+
+    });
+    let artifact_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../local-artifacts/reviews/phase3-resident-decode-dispatch-probe.json");
+    if let Some(parent) = artifact_path.parent() {
+        std::fs::create_dir_all(parent).expect("create diagnostic artifact directory");
+    }
+    std::fs::write(
+        &artifact_path,
+        serde_json::to_vec_pretty(&artifact).expect("serialize diagnostic artifact"),
+    )
+    .expect("write diagnostic artifact");
+    println!("diagnostic artifact: {}", artifact_path.display());
+
+    let dispatch = artifact["dispatch"]
+        .as_object()
+        .expect("dispatch telemetry object");
+    assert!(
+        dispatch["observed_launches"].as_u64().unwrap_or(0) > 0,
+        "diagnostic probe captured no successful dispatches"
     );
 }

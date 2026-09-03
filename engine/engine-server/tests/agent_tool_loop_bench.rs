@@ -1,4 +1,4 @@
-﻿use engine_core::grammar::JsonGrammar;
+use engine_core::grammar::JsonGrammar;
 use engine_kvcache::RadixTree;
 use std::time::Instant;
 
@@ -25,9 +25,16 @@ fn test_agent_tool_loop_prefix_cache_and_json_validity() {
         let match_res = prefix_tree.match_prefix(&turn_prompt);
         let match_dur = t_match_start.elapsed();
 
-        assert_eq!(match_res.matched_tokens, 256, "System + Tools prefix should match 100%");
+        assert_eq!(
+            match_res.matched_tokens, 256,
+            "System + Tools prefix should match 100%"
+        );
         assert_eq!(match_res.matched_blocks.len(), 16);
-        assert!(match_dur.as_micros() < 500, "Radix LCP match should take < 0.5 ms (was {} us)", match_dur.as_micros());
+        assert!(
+            match_dur.as_micros() < 500,
+            "Radix LCP match should take < 0.5 ms (was {} us)",
+            match_dur.as_micros()
+        );
 
         total_bypassed_tokens += match_res.matched_tokens;
         total_prefilled_tokens += turn_user_tokens.len();
@@ -38,20 +45,37 @@ fn test_agent_tool_loop_prefix_cache_and_json_validity() {
             "{\n",
             "  \"tool\": \"fetch_weather\",\n",
             "  \"arguments\": {\"location\": \"San Francisco\"}\n",
-            "}"
+            "}",
         ];
 
         for tok_str in &tool_response_tokens {
-            assert!(grammar.is_token_valid(tok_str), "Valid JSON tool call token: {}", tok_str);
+            assert!(
+                grammar.is_token_valid(tok_str),
+                "Valid JSON tool call token: {}",
+                tok_str
+            );
             grammar.advance(tok_str);
         }
 
-        assert!(grammar.is_complete(), "Tool call must be fully accepted as valid JSON object");
+        assert!(
+            grammar.is_complete(),
+            "Tool call must be fully accepted as valid JSON object"
+        );
     }
 
     println!("\n=== AGENT MULTI-TURN PREFIX CACHE SUMMARY ===");
-    println!("Total Prefix Tokens Bypassed: {} tokens", total_bypassed_tokens);
-    println!("Total New Tokens Prefilled:    {} tokens", total_prefilled_tokens);
-    println!("Cache Reuse Rate:              {:.1}%", (total_bypassed_tokens as f64 / (total_bypassed_tokens + total_prefilled_tokens) as f64) * 100.0);
+    println!(
+        "Total Prefix Tokens Bypassed: {} tokens",
+        total_bypassed_tokens
+    );
+    println!(
+        "Total New Tokens Prefilled:    {} tokens",
+        total_prefilled_tokens
+    );
+    println!(
+        "Cache Reuse Rate:              {:.1}%",
+        (total_bypassed_tokens as f64 / (total_bypassed_tokens + total_prefilled_tokens) as f64)
+            * 100.0
+    );
     println!("==============================================\n");
 }

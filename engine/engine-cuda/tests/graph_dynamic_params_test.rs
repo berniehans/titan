@@ -5,6 +5,8 @@
 //! 2. A single captured `CudaGraphExec` correctly advances token positions $p=0, 1, 2, \dots$ when `pos_dev` is updated on the host without re-capturing or recreating the graph.
 //! 3. Output activations match standard stream-by-stream execution with bit-exact parity.
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_cuda::{
     CudaStream, DeviceBuffer, MODE_ROPE, NormRope, PagedAttention, PagedKvGpu, PagedKvLayout,
@@ -15,6 +17,7 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 #[test]
 #[ignore]
 fn test_cuda_graph_dynamic_position_replay() -> Result<(), DynError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(device.clone())?;
 

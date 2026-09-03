@@ -116,7 +116,8 @@ impl ModelConfig {
         let context_length = get_u32("context_length").unwrap_or(4096);
 
         // Optional head dims; derive from n_embd/n_head when absent.
-        let head_dim = get_u32("attention.key_length").unwrap_or(if n_head > 0 { hidden_size / n_head } else { 0 });
+        let head_dim =
+            get_u32("attention.key_length").unwrap_or(hidden_size.checked_div(n_head).unwrap_or(0));
         let value_dim = get_u32("attention.value_length").unwrap_or(head_dim);
 
         // Optional rope / norm defaults mirror llama.cpp.

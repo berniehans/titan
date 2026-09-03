@@ -1,16 +1,18 @@
-﻿use engine_cuda::{CudaDevice, CudaStream, DeviceBuffer, LogitMaskGpu};
-use std::sync::Arc;
+mod common;
+
+use engine_cuda::{CudaDevice, CudaStream, DeviceBuffer, LogitMaskGpu};
 
 #[test]
 #[ignore]
 fn test_gpu_logit_mask_parity() -> Result<(), Box<dyn std::error::Error>> {
+    common::initialize_cuda();
     engine_cuda::ensure_cuda_dll_paths();
     let dev = CudaDevice::new(0)?;
     let stream = CudaStream::new(dev.clone())?;
     let mask_gpu = LogitMaskGpu::new(dev.clone())?;
 
     let vocab_size: usize = 128;
-    let bitmask_words = (vocab_size + 31) / 32;
+    let bitmask_words = vocab_size.div_ceil(32);
 
     // Initial logits: 0.0, 1.0, 2.0, ..., 127.0
     let mut host_logits = Vec::with_capacity(vocab_size);
@@ -24,8 +26,8 @@ fn test_gpu_logit_mask_parity() -> Result<(), Box<dyn std::error::Error>> {
     // Explicitly allow token 1 and disallow token 0 in word 0
     host_mask[0] = 0xAAAAAAAA; // allows 1, 3, 5, 7, ...
 
-    let mut dev_logits = DeviceBuffer::alloc(dev.clone(), vocab_size * 4)?;
-    let mut dev_mask = DeviceBuffer::alloc(dev.clone(), bitmask_words * 4)?;
+    let dev_logits = DeviceBuffer::alloc(dev.clone(), vocab_size * 4)?;
+    let dev_mask = DeviceBuffer::alloc(dev.clone(), bitmask_words * 4)?;
 
     let logits_bytes: Vec<u8> = host_logits.iter().flat_map(|f| f.to_le_bytes()).collect();
     let mask_bytes: Vec<u8> = host_mask.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -52,7 +54,12 @@ fn test_gpu_logit_mask_parity() -> Result<(), Box<dyn std::error::Error>> {
             if i % 2 == 1 {
                 assert_eq!(val, i as f32, "Allowed odd token {} was modified", i);
             } else {
-                assert!(val <= -1e29, "Disallowed even token {} was not masked (got {})", i, val);
+                assert!(
+                    val <= -1e29,
+                    "Disallowed even token {} was not masked (got {})",
+                    i,
+                    val
+                );
             }
         }
     }

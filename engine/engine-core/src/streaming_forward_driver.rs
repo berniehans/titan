@@ -414,8 +414,11 @@ impl<'a> StreamingForwardDriver<'a> {
                     self.events_compute_done[next_slot_idx].stream_wait(&self.transfer_stream)?;
                 }
                 let hw_next = extract_host_weights(&self.pinned_layers[l + 1]);
-                self.double_buffer
-                    .copy_layer_async(next_slot_idx, &hw_next, &self.transfer_stream)?;
+                self.double_buffer.copy_layer_async(
+                    next_slot_idx,
+                    &hw_next,
+                    &self.transfer_stream,
+                )?;
                 self.events_transfer_done[next_slot_idx].record(&self.transfer_stream)?;
             }
 

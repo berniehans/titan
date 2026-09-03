@@ -114,6 +114,13 @@ impl DeviceBuffer {
     ///
     /// Synchronizes the stream after launching the copy helper.
     pub fn copy_to_host(&self, stream: &CudaStream, dst: &mut [u8]) -> Result<(), CudaError> {
+        self.copy_to_host_async(stream, dst)?;
+        stream.sync()?;
+        Ok(())
+    }
+
+    /// Copies data from this device memory buffer to a host buffer slice without synchronizing.
+    pub fn copy_to_host_async(&self, stream: &CudaStream, dst: &mut [u8]) -> Result<(), CudaError> {
         if dst.len() > self.size {
             return Err(CudaError::InvalidSize {
                 expected: self.size,
@@ -141,8 +148,6 @@ impl DeviceBuffer {
         if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
             return Err(CudaError::MemcpyFailed("cuMemcpyDtoHAsync_v2", res));
         }
-
-        stream.sync()?;
 
         Ok(())
     }

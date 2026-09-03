@@ -4,6 +4,8 @@
 //! 1. `BatchedGEMM::gemm` computes `Out[M, N] = X[M, K] * W[N, K]^T` across batch sizes M in {1, 4, 16, 64, 128}.
 //! 2. Numerics match CPU reference dot products with cosine similarity >= 0.9999 and rel-L2 < 1e-4.
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_core::dequant_q6k_cpu;
 use engine_cuda::{BatchedGEMM, CudaStream, DeviceBuffer, GemvFormat};
@@ -23,7 +25,7 @@ fn create_synthetic_q6k_block(seed: u32) -> [u8; 210] {
         block[192 + i] = val as u8;
     }
     block[208..210].copy_from_slice(&0x3000u16.to_le_bytes()); // 0.125
-    for i in 0..128 {
+    for (i, byte) in block[..128].iter_mut().enumerate() {
         let low = (seed
             .wrapping_add(i as u32)
             .wrapping_mul(1664525)
@@ -36,7 +38,7 @@ fn create_synthetic_q6k_block(seed: u32) -> [u8; 210] {
             .wrapping_add(1013904223)
             >> 16)
             & 0x0F;
-        block[i] = (low | (high << 4)) as u8;
+        *byte = (low | (high << 4)) as u8;
     }
     for i in 0..64 {
         let b0 = (seed.wrapping_add(i as u32 * 4).wrapping_mul(22695477) >> 16) & 3;
@@ -53,10 +55,12 @@ fn create_synthetic_q4k_block(seed: u32) -> [u8; 144] {
     block[0..2].copy_from_slice(&0x3000u16.to_le_bytes()); // d = 0.125
     block[2..4].copy_from_slice(&0x2800u16.to_le_bytes()); // dmin = 0.0625
     for i in 0..12 {
-        block[4 + i] = ((seed.wrapping_add(i as u32 * 7).wrapping_mul(1103515245) >> 16) & 0x3F) as u8;
+        block[4 + i] =
+            ((seed.wrapping_add(i as u32 * 7).wrapping_mul(1103515245) >> 16) & 0x3F) as u8;
     }
     for i in 0..128 {
-        block[16 + i] = ((seed.wrapping_add(i as u32 * 13).wrapping_mul(1664525) >> 16) & 0xFF) as u8;
+        block[16 + i] =
+            ((seed.wrapping_add(i as u32 * 13).wrapping_mul(1664525) >> 16) & 0xFF) as u8;
     }
     block
 }
@@ -82,12 +86,13 @@ fn f32_bytes(v: &[f32]) -> Vec<u8> {
 #[test]
 #[ignore]
 fn test_batched_gemm_q6k_parity() -> Result<(), DynError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(device.clone())?;
     let gemm = BatchedGEMM::new(device.clone())?;
 
     let ne0 = 512; // K = 2 blocks
-    let ne1 = 64;  // N = 64 columns
+    let ne1 = 64; // N = 64 columns
     let n_blocks = ne0 / 256;
 
     let mut weight_bytes = Vec::new();
@@ -107,7 +112,7 @@ fn test_batched_gemm_q6k_parity() -> Result<(), DynError> {
     let w_dev = DeviceBuffer::alloc(device.clone(), weight_bytes.len())?;
     w_dev.copy_from_host(&stream, &weight_bytes)?;
 
-    let batch_sizes = [1, 4, 16, 64, 128];
+    let batch_sizes = [1, 3, 4, 5, 16, 64, 128];
 
     for &batch_size in &batch_sizes {
         let mut x_host = Vec::with_capacity(batch_size * ne0);
@@ -168,6 +173,7 @@ fn test_batched_gemm_q6k_parity() -> Result<(), DynError> {
 #[test]
 #[ignore]
 fn test_batched_gemm_q4k_parity() -> Result<(), DynError> {
+    common::initialize_cuda();
     use engine_core::dequant_q4k_cpu;
 
     let device = CudaDevice::new(0)?;
@@ -175,7 +181,7 @@ fn test_batched_gemm_q4k_parity() -> Result<(), DynError> {
     let gemm = BatchedGEMM::new(device.clone())?;
 
     let ne0 = 512; // K = 2 blocks
-    let ne1 = 64;  // N = 64 columns
+    let ne1 = 64; // N = 64 columns
     let n_blocks = ne0 / 256;
 
     let mut weight_bytes = Vec::new();

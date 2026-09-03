@@ -204,8 +204,6 @@ extern "C" __global__ void gemm_q4k_fused_gate_up_swiglu_mma_kernel(
     const int col_offset = warp_id / 2;
     const int k_split = warp_id % 2;
     const int col = blockIdx.x * 4 + col_offset;
-    const int batch_idx = blockIdx.y;
-    if (batch_idx >= batch_size) return;
 
     __shared__ float s_warp_gate[8];
     __shared__ float s_warp_up[8];

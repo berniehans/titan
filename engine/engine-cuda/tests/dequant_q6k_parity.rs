@@ -5,6 +5,8 @@
 //! 2. Cosine similarity between GPU output and CPU reference is > 0.9999.
 //! 3. Multi-block batches (16 superblocks = 4096 weights) dequantize with zero drift.
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_core::dequant_q6k_cpu;
 use engine_cuda::{CudaStream, DeviceBuffer, Q6KDequantizer};
@@ -92,6 +94,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[test]
 #[ignore]
 fn test_q6k_gpu_vs_cpu_single_block() -> Result<(), DynError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(device.clone())?;
     let dequant = Q6KDequantizer::new(device.clone())?;
@@ -142,6 +145,7 @@ fn test_q6k_gpu_vs_cpu_single_block() -> Result<(), DynError> {
 #[test]
 #[ignore]
 fn test_q6k_gpu_vs_cpu_multi_block_batch() -> Result<(), DynError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(device.clone())?;
     let dequant = Q6KDequantizer::new(device.clone())?;

@@ -5,8 +5,13 @@ edition = "2024"
 
 [dependencies]
 cudarc.workspace = true
+serde.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
 
 [dev-dependencies]
 engine-core = { path = "../engine-core" }
 engine-kvcache = { path = "../engine-kvcache" }
+serde_json.workspace = true

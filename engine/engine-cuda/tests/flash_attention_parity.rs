@@ -4,6 +4,8 @@
 //! 1. `FlashAttention2::launch` computes causal multi-head attention directly over resident paged KV blocks.
 //! 2. Numerics match exact CPU reference causal attention with cosine similarity >= 0.9999 across sequence lengths S in {1, 4, 16, 64, 128}.
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_cuda::{CudaStream, DeviceBuffer, FlashAttention2, PagedKvGpu, PagedKvLayout};
 
@@ -28,8 +30,22 @@ fn f32_bytes(v: &[f32]) -> Vec<u8> {
 }
 
 #[test]
+fn test_flash_attention_kernel_broadcasts_block_table_per_warp() {
+    let kernel = include_str!("../kernels/flash_attention_2.cu");
+    assert!(
+        kernel.contains("__shfl_sync"),
+        "block-table values must be broadcast per warp"
+    );
+    assert!(
+        kernel.contains("(tid == 0) ? block_table[b]"),
+        "only lane 0 may load each block-table entry"
+    );
+}
+
+#[test]
 #[ignore]
 fn test_flash_attention_2_parity() -> Result<(), DynError> {
+    common::initialize_cuda();
     let device = CudaDevice::new(0)?;
     let stream = CudaStream::new(device.clone())?;
     let flash_attn = FlashAttention2::new(device.clone())?;
@@ -53,7 +69,7 @@ fn test_flash_attention_2_parity() -> Result<(), DynError> {
     for &seq_tokens in &test_seq_lens {
         let pool_floats = layout.floats_total();
         let pool_dev = DeviceBuffer::alloc(device.clone(), pool_floats * 4)?;
-        let block_table_bytes = vec![0u8; 4 * 4]; // block 0..3 maps to phys 0..3
+        let block_table_bytes = [0u8; 4 * 4]; // block 0..3 maps to phys 0..3
         let mut bt_u32 = Vec::new();
         for i in 0..4u32 {
             bt_u32.extend_from_slice(&i.to_le_bytes());
@@ -83,14 +99,7 @@ fn test_flash_attention_2_parity() -> Result<(), DynError> {
 
         // Append to resident paged KV pool
         pkv.append_kv(
-            &stream,
-            &layout,
-            &pool_dev,
-            &k_dev,
-            &v_dev,
-            &bt_dev,
-            0,
-            seq_tokens,
+            &stream, &layout, &pool_dev, &k_dev, &v_dev, &bt_dev, 0, seq_tokens,
         )?;
 
         // Generate synthetic Q vectors for all positions 0..seq_tokens
@@ -143,7 +152,8 @@ fn test_flash_attention_2_parity() -> Result<(), DynError> {
                 // Compute scores against all k_pos in [0, q_pos]
                 let mut scores = Vec::with_capacity(q_pos + 1);
                 for k_pos in 0..=q_pos {
-                    let k_vec = &keys_host[(k_pos * nkv * hd + kh * hd)..(k_pos * nkv * hd + (kh + 1) * hd)];
+                    let k_vec = &keys_host
+                        [(k_pos * nkv * hd + kh * hd)..(k_pos * nkv * hd + (kh + 1) * hd)];
                     let dot: f32 = q_vec.iter().zip(k_vec.iter()).map(|(a, b)| a * b).sum();
                     scores.push(dot * scale);
                 }
@@ -164,7 +174,8 @@ fn test_flash_attention_2_parity() -> Result<(), DynError> {
                 // Weighted sum of V
                 let mut out_head = vec![0.0f32; hd];
                 for (k_pos, &w) in weights.iter().enumerate() {
-                    let v_vec = &vals_host[(k_pos * nkv * hd + kh * hd)..(k_pos * nkv * hd + (kh + 1) * hd)];
+                    let v_vec = &vals_host
+                        [(k_pos * nkv * hd + kh * hd)..(k_pos * nkv * hd + (kh + 1) * hd)];
                     for d in 0..hd {
                         out_head[d] += w * v_vec[d];
                     }

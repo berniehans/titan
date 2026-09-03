@@ -47,7 +47,10 @@ fn test_streaming_driver_golden_parity() -> Result<(), DynError> {
             "  Streamed Step {step}: Token {tok} -> Top predicted: token={} logit={:.2}",
             top.0, top.1
         );
-        assert!(!logits[0].is_nan(), "Streamed logits contained NaN on step {step}");
+        assert!(
+            !logits[0].is_nan(),
+            "Streamed logits contained NaN on step {step}"
+        );
         assert_eq!(logits.len(), 151936, "Logits size mismatch");
     }
 

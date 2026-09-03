@@ -69,8 +69,8 @@ extern "C" __global__ void paged_attention_decode_kernel(
             const float* k = krow + (size_t)t * floats_per_token;
             const float* v = vrow + (size_t)t * floats_per_token;
 
-            const float4 k_val = (tid * 4 + 3 < head_dim) ? ((const float4*)k)[tid] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-            const float4 v_val = (tid * 4 + 3 < head_dim) ? ((const float4*)v)[tid] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            const float4 k_val = (tid * 4 + 3 < head_dim) ? __ldg(((const float4*)k) + tid) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            const float4 v_val = (tid * 4 + 3 < head_dim) ? __ldg(((const float4*)v) + tid) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
             float part = __fmaf_rn(q_val.x, k_val.x, __fmaf_rn(q_val.y, k_val.y, __fmaf_rn(q_val.z, k_val.z, q_val.w * k_val.w)));
 
@@ -100,6 +100,97 @@ extern "C" __global__ void paged_attention_decode_kernel(
     if (tid * 4 + 3 < head_dim) {
         ((float4*)out_head)[tid] = make_float4(acc0 * inv_l, acc1 * inv_l, acc2 * inv_l, acc3 * inv_l);
     }
+}
+
+extern "C" __global__ void paged_attention_hd64_decode_kernel(
+    const float* __restrict__ q,
+    const float* __restrict__ pool,
+    const unsigned* __restrict__ block_table,
+    float* __restrict__ out,
+    int n_head,
+    int n_head_kv,
+    int head_dim,
+    int block_tokens,
+    int seq_tokens,
+    int query_pos,
+    int causal,
+    float scale,
+    const unsigned int* __restrict__ pos_ptr)
+{
+    if (pos_ptr != nullptr) {
+        query_pos = (int)*pos_ptr;
+        seq_tokens = (int)*pos_ptr + 1;
+    }
+
+    const int qh = blockIdx.x;
+    const int tid = threadIdx.x;
+
+    const int group = n_head / n_head_kv;
+    const int hk = qh / group;
+
+    const size_t row_len = (size_t)n_head_kv * 64u;
+    const size_t floats_per_token = 2 * row_len;
+    const size_t floats_per_block = (size_t)block_tokens * floats_per_token;
+
+    const float* qrow = q + (size_t)qh * 64u;
+
+    const float2 q_val = ((const float2*)qrow)[tid];
+
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+
+    float s_m = -__int_as_float(0x7f800000u);
+    float s_l = 0.0f;
+
+    const int n_blocks = (seq_tokens + block_tokens - 1) / block_tokens;
+
+    for (int b = 0; b < n_blocks; ++b) {
+        const int in_block = (seq_tokens - b * block_tokens < block_tokens)
+                             ? (seq_tokens - b * block_tokens)
+                             : block_tokens;
+        int valid = in_block;
+        if (causal) {
+            const int first_invalid = query_pos + 1 - b * block_tokens;
+            if (in_block > first_invalid) {
+                valid = (first_invalid > 0 ? first_invalid : 0);
+            }
+        }
+        if (valid <= 0) continue;
+
+        const unsigned phys = block_table[b];
+        const float* krow = pool + (size_t)phys * floats_per_block + (size_t)hk * 64u;
+        const float* vrow = krow + row_len;
+
+        for (int t = 0; t < valid; ++t) {
+            const float* k = krow + (size_t)t * floats_per_token;
+            const float* v = vrow + (size_t)t * floats_per_token;
+
+            const float2 k_val = __ldg(((const float2*)k) + tid);
+            const float2 v_val = __ldg(((const float2*)v) + tid);
+
+            float part = __fmaf_rn(q_val.x, k_val.x, q_val.y * k_val.y);
+
+            #pragma unroll
+            for (int mask = 16; mask > 0; mask >>= 1) {
+                part += __shfl_down_sync(0xffffffff, part, mask);
+            }
+
+            const float total_score = __shfl_sync(0xffffffff, part, 0) * scale;
+            const float m_new = fmaxf(s_m, total_score);
+            const float corr = __expf(s_m - m_new);
+            const float p_new = __expf(total_score - m_new);
+
+            s_l = __fmaf_rn(s_l, corr, p_new);
+            s_m = m_new;
+
+            acc0 = __fmaf_rn(acc0, corr, v_val.x * p_new);
+            acc1 = __fmaf_rn(acc1, corr, v_val.y * p_new);
+        }
+    }
+
+    float* out_head = out + (size_t)qh * 64u;
+    const float inv_l = 1.0f / s_l;
+    ((float2*)out_head)[tid] = make_float2(acc0 * inv_l, acc1 * inv_l);
 }
 
 // FlashDecoding Split-KV Kernel:
@@ -179,8 +270,8 @@ extern "C" __global__ void flash_decoding_split_kernel(
                 const float* k = krow + (size_t)t * floats_per_token;
                 const float* v = vrow + (size_t)t * floats_per_token;
 
-                const float4 k_val = (tid * 4 + 3 < head_dim) ? ((const float4*)k)[tid] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-                const float4 v_val = (tid * 4 + 3 < head_dim) ? ((const float4*)v)[tid] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+                const float4 k_val = (tid * 4 + 3 < head_dim) ? __ldg(((const float4*)k) + tid) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+                const float4 v_val = (tid * 4 + 3 < head_dim) ? __ldg(((const float4*)v) + tid) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
                 float part = __fmaf_rn(q_val.x, k_val.x, __fmaf_rn(q_val.y, k_val.y, __fmaf_rn(q_val.z, k_val.z, q_val.w * k_val.w)));
 

@@ -5,6 +5,7 @@
 //! Kernel source lives at `../kernels/gemm_quant.cu`, compiled via NVRTC to PTX at runtime.
 
 use crate::DeviceBuffer;
+use crate::dispatch_telemetry::{DispatchRecord, DispatchTelemetry};
 use crate::error::CudaError;
 use crate::multiformat_gemv::GemvFormat;
 use crate::streams::CudaStream;
@@ -14,8 +15,8 @@ use cudarc::nvrtc::{self, Ptx};
 use std::ffi::CString;
 use std::sync::Arc;
 
-const KERNEL_ARCH: &str = "compute_86";
 const FUNC_NAME_QUANTIZE_Q8_1: &str = "quantize_row_q8_1_kernel";
+const FUNC_NAME_QUANTIZE_Q8_1_CACHED: &str = "quantize_row_q8_1_cached_kernel";
 const FUNC_NAME_Q4K: &str = "gemm_q4k_kernel";
 const FUNC_NAME_Q6K: &str = "gemm_q6k_kernel";
 const FUNC_NAME_Q8: &str = "gemm_q8_kernel";
@@ -38,25 +39,240 @@ const FUNC_NAME_GET_ROWS_F16: &str = "get_rows_f16_kernel";
 const FUNC_NAME_SAMPLE_GREEDY: &str = "gpu_sample_greedy_kernel";
 const FUNC_NAME_ADVANCE_TOKEN: &str = "gpu_advance_token_step_kernel";
 const FUNC_NAME_Q4K_MMA: &str = "gemm_q4k_mma_kernel";
+const FUNC_NAME_Q4K_2COL: &str = "gemm_q4k_2col_kernel";
+const FUNC_NAME_Q4K_MMA_SPLITK2: &str = "gemm_q4k_mma_splitk2_kernel";
 const FUNC_NAME_Q4K_MULTI_ROW: &str = "gemm_q4k_multi_row_kernel";
 const FUNC_NAME_Q6K_MULTI_ROW: &str = "gemm_q6k_multi_row_kernel";
+const FUNC_NAME_Q6K_SPLITK2: &str = "gemm_q6k_splitk2_kernel";
+const FUNC_NAME_Q6K_2COL: &str = "gemm_q6k_2col_kernel";
 const FUNC_NAME_FUSED_QKV_Q4K_MULTI_ROW: &str = "gemm_fused_qkv_q4k_multi_row_kernel";
-const FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MULTI_ROW: &str = "gemm_q4k_fused_gate_up_swiglu_multi_row_kernel";
+const FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MULTI_ROW: &str =
+    "gemm_q4k_fused_gate_up_swiglu_multi_row_kernel";
 const FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA: &str = "gemm_q4k_fused_gate_up_swiglu_mma_kernel";
+const FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_2COL: &str =
+    "gemm_q4k_fused_gate_up_swiglu_mma_2col_kernel";
+const FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_SPLITK2: &str =
+    "gemm_q4k_fused_gate_up_swiglu_mma_splitk2_kernel";
 const FUNC_NAME_REDUCE_SPLITK: &str = "reduce_splitk_kernel";
 
 const KERNEL_SRC: &str = include_str!("../kernels/gemm_quant.cu");
 const BLOCK_X: u32 = 128;
+const FFN_DOWN_VARIANT_ENV: &str = "TITAN_FFN_DOWN_VARIANT";
+const FFN_DOWN_NE0: usize = 8192;
+const FFN_DOWN_NE1: usize = 3072;
+const FFN_QUANT_VARIANT_ENV: &str = "TITAN_FFN_QUANT_VARIANT";
+const FFN_QUANT_NE0: usize = 3072;
+const FFN_GATE_UP_VARIANT_ENV: &str = "TITAN_FFN_GATE_UP_VARIANT";
+const FFN_GATE_UP_NE0: usize = 3072;
+const FFN_GATE_UP_NE1: usize = 8192;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QuantizationDispatchSelection {
+    variant: &'static str,
+    fallback_reason: Option<&'static str>,
+}
+
+fn select_ffn_quantization_variant(
+    telemetry_enabled: bool,
+    role: Option<&str>,
+    ne0: usize,
+    batch_size: usize,
+    has_norm_weight: bool,
+    requested: Option<&str>,
+    cached_abi_compatible: bool,
+) -> Option<QuantizationDispatchSelection> {
+    if !telemetry_enabled
+        || role != Some("activation_quantization")
+        || ne0 != FFN_QUANT_NE0
+        || batch_size != 1
+        || !has_norm_weight
+    {
+        return None;
+    }
+
+    let requested = requested.filter(|value| !value.is_empty());
+    if requested != Some("cached") {
+        return Some(QuantizationDispatchSelection {
+            variant: FUNC_NAME_QUANTIZE_Q8_1,
+            fallback_reason: None,
+        });
+    }
+    if cached_abi_compatible {
+        Some(QuantizationDispatchSelection {
+            variant: FUNC_NAME_QUANTIZE_Q8_1_CACHED,
+            fallback_reason: None,
+        })
+    } else {
+        Some(QuantizationDispatchSelection {
+            variant: FUNC_NAME_QUANTIZE_Q8_1,
+            fallback_reason: Some("requested_ffn_quant_cached_abi_incompatible"),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Q4kDispatchSelection {
+    variant: &'static str,
+    cols_per_block: u32,
+    fallback_reason: Option<&'static str>,
+}
+
+fn select_ffn_down_variant(
+    role: Option<&str>,
+    format: &str,
+    ne0: usize,
+    ne1: usize,
+    batch_size: usize,
+    requested: Option<&str>,
+    available: [bool; 4],
+) -> Option<Q4kDispatchSelection> {
+    if role != Some("ffn_down")
+        || format != "Q4K"
+        || ne0 != FFN_DOWN_NE0
+        || ne1 != FFN_DOWN_NE1
+        || batch_size != 1
+    {
+        return None;
+    }
+
+    let requested = requested.filter(|value| !value.is_empty());
+    let fallback = || {
+        if available[0] {
+            (FUNC_NAME_Q4K_MMA_SPLITK2, 4)
+        } else if available[2] {
+            (FUNC_NAME_Q4K_2COL, 16)
+        } else {
+            (FUNC_NAME_Q4K_MMA, 8)
+        }
+    };
+    let (index, variant, cols_per_block) = match requested {
+        None | Some("gemm_q4k_mma_splitk2_kernel") => (0, FUNC_NAME_Q4K_MMA_SPLITK2, 4),
+        Some("gemm_q4k_mma_kernel") => (1, FUNC_NAME_Q4K_MMA, 8),
+        Some("gemm_q4k_2col_kernel") => (2, FUNC_NAME_Q4K_2COL, 16),
+        Some("gemm_q4k_multi_row_kernel") => (3, FUNC_NAME_Q4K_MULTI_ROW, 8),
+        Some(_) => {
+            let (variant, cols_per_block) = fallback();
+            return Some(Q4kDispatchSelection {
+                variant,
+                cols_per_block,
+                fallback_reason: Some("unknown_ffn_down_variant"),
+            });
+        }
+    };
+
+    if available[index] {
+        Some(Q4kDispatchSelection {
+            variant,
+            cols_per_block,
+            fallback_reason: None,
+        })
+    } else {
+        let (variant, cols_per_block) = fallback();
+        Some(Q4kDispatchSelection {
+            variant,
+            cols_per_block,
+            fallback_reason: Some("requested_ffn_down_variant_abi_incompatible"),
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_ffn_gate_up_variant(
+    telemetry_enabled: bool,
+    role: Option<&str>,
+    format: &str,
+    ne0: usize,
+    ne1: usize,
+    batch_size: usize,
+    requested: Option<&str>,
+    available: [bool; 3],
+) -> Option<QuantizationDispatchSelection> {
+    if !telemetry_enabled
+        || role != Some("ffn_gate_up")
+        || format != "Q4K"
+        || ne0 != FFN_GATE_UP_NE0
+        || ne1 != FFN_GATE_UP_NE1
+        || batch_size != 1
+    {
+        return None;
+    }
+    let fallback = || {
+        if available[0] {
+            FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA
+        } else if available[1] {
+            FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_2COL
+        } else {
+            FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_SPLITK2
+        }
+    };
+    let requested = requested.filter(|value| !value.is_empty());
+    let (index, variant) = match requested {
+        None | Some(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA) => {
+            (0, FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA)
+        }
+        Some(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_2COL) => {
+            (1, FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_2COL)
+        }
+        Some(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_SPLITK2) => {
+            (2, FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_SPLITK2)
+        }
+        Some(_) => {
+            return Some(QuantizationDispatchSelection {
+                variant: fallback(),
+                fallback_reason: Some("unknown_ffn_gate_up_variant"),
+            });
+        }
+    };
+    Some(QuantizationDispatchSelection {
+        variant: if available[index] {
+            variant
+        } else {
+            fallback()
+        },
+        fallback_reason: if available[index] {
+            None
+        } else {
+            Some("requested_ffn_gate_up_variant_unavailable")
+        },
+    })
+}
+
+/// Rust-only metadata describing one planned GEMM dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BatchedGemmDispatchRecord {
+    pub operation: String,
+    pub kernel_variant: String,
+    pub ne0: usize,
+    pub ne1: usize,
+    pub batch_size: usize,
+    pub grid_x: u32,
+    pub grid_y: u32,
+    pub grid_z: u32,
+    pub block_x: u32,
+    pub block_y: u32,
+    pub block_z: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+}
 
 /// RAII launcher for Batched Quantized Matrix Multiplication kernels.
+///
+/// Several function handles are resolved during module registration and kept
+/// for optional GPU dispatch paths, even when a given build does not call
+/// every path directly from Rust.
+#[allow(dead_code)]
 pub struct BatchedGEMM {
     device: Arc<CudaDevice>,
+    dispatch_telemetry: Option<Arc<DispatchTelemetry>>,
     cu_module: CUmodule,
     fn_quantize_q8_1: CUfunction,
+    fn_quantize_q8_1_cached: CUfunction,
     fn_q4k: CUfunction,
     fn_q4k_batched: CUfunction,
     fn_q4k_multi_row: CUfunction,
     fn_q6k: CUfunction,
+    fn_q6k_splitk2: CUfunction,
+    fn_q6k_2col: CUfunction,
     fn_q6k_multi_row: CUfunction,
     fn_q8: CUfunction,
     fn_f16: CUfunction,
@@ -79,7 +295,11 @@ pub struct BatchedGEMM {
     fn_sample_greedy: CUfunction,
     fn_advance_token: CUfunction,
     fn_q4k_mma: CUfunction,
+    fn_q4k_2col: CUfunction,
+    fn_q4k_mma_splitk2: CUfunction,
     fn_q4k_fused_gate_up_swiglu_mma: CUfunction,
+    fn_q4k_fused_gate_up_swiglu_mma_2col: CUfunction,
+    fn_q4k_fused_gate_up_swiglu_mma_splitk2: CUfunction,
     fn_reduce_splitk: CUfunction,
 }
 
@@ -109,20 +329,25 @@ impl BatchedGEMM {
             nvrtc::CompileOptions {
                 arch: Some("compute_86"),
                 use_fast_math: Some(true),
-                options: vec!["--maxrregcount=48".to_string()],
+                options: vec!["--maxrregcount=64".to_string()],
                 ..Default::default()
             },
         )
         .map_err(|e| CudaError::KernelCompile(format!("{e:?}")))?;
 
         let ptx_src = ptx.to_src();
-        let ptx_c = CString::new(ptx_src.as_str()).map_err(|_| CudaError::KernelLoad("CString::new", CUresult::CUDA_ERROR_INVALID_VALUE))?;
+        let ptx_c = CString::new(ptx_src.as_str()).map_err(|_| {
+            CudaError::KernelLoad("CString::new", CUresult::CUDA_ERROR_INVALID_VALUE)
+        })?;
 
         let mut cu_module: CUmodule = std::ptr::null_mut();
         let mut fn_quantize_q8_1: CUfunction = std::ptr::null_mut();
+        let mut fn_quantize_q8_1_cached: CUfunction = std::ptr::null_mut();
         let mut fn_q4k: CUfunction = std::ptr::null_mut();
         let mut fn_q4k_batched: CUfunction = std::ptr::null_mut();
         let mut fn_q6k: CUfunction = std::ptr::null_mut();
+        let mut fn_q6k_splitk2: CUfunction = std::ptr::null_mut();
+        let mut fn_q6k_2col: CUfunction = std::ptr::null_mut();
         let mut fn_q8: CUfunction = std::ptr::null_mut();
         let mut fn_f16: CUfunction = std::ptr::null_mut();
         let mut fn_f32: CUfunction = std::ptr::null_mut();
@@ -143,25 +368,33 @@ impl BatchedGEMM {
         let mut fn_advance_token: CUfunction = std::ptr::null_mut();
 
         let mut fn_q4k_mma: CUfunction = std::ptr::null_mut();
+        let mut fn_q4k_2col: CUfunction = std::ptr::null_mut();
+        let mut fn_q4k_mma_splitk2: CUfunction = std::ptr::null_mut();
         let mut fn_q4k_multi_row: CUfunction = std::ptr::null_mut();
         let mut fn_q6k_multi_row: CUfunction = std::ptr::null_mut();
         let mut fn_fused_qkv_q4k_multi_row: CUfunction = std::ptr::null_mut();
         let mut fn_q4k_fused_gate_up_swiglu_multi_row: CUfunction = std::ptr::null_mut();
         let mut fn_q4k_fused_gate_up_swiglu_mma: CUfunction = std::ptr::null_mut();
+        let mut fn_q4k_fused_gate_up_swiglu_mma_2col: CUfunction = std::ptr::null_mut();
+        let mut fn_q4k_fused_gate_up_swiglu_mma_splitk2: CUfunction = std::ptr::null_mut();
         let mut fn_reduce_splitk: CUfunction = std::ptr::null_mut();
 
         unsafe {
             let lib = sys::lib();
-            let res = lib.cuModuleLoadData(&mut cu_module, ptx_c.as_ptr() as *const std::ffi::c_void);
+            let res =
+                lib.cuModuleLoadData(&mut cu_module, ptx_c.as_ptr() as *const std::ffi::c_void);
             if res != CUresult::CUDA_SUCCESS || cu_module.is_null() {
                 return Err(CudaError::KernelLoad("cuModuleLoadData (gemm_quant)", res));
             }
 
             let c_quant = CString::new(FUNC_NAME_QUANTIZE_Q8_1).unwrap();
+            let c_quant_cached = CString::new(FUNC_NAME_QUANTIZE_Q8_1_CACHED).unwrap();
             let c_q4k = CString::new(FUNC_NAME_Q4K).unwrap();
             let c_q4k_b = CString::new(FUNC_NAME_Q4K_BATCHED).unwrap();
             let c_q6k = CString::new(FUNC_NAME_Q6K).unwrap();
-            let c_q8  = CString::new(FUNC_NAME_Q8).unwrap();
+            let c_q6k_splitk2 = CString::new(FUNC_NAME_Q6K_SPLITK2).unwrap();
+            let c_q6k_2col = CString::new(FUNC_NAME_Q6K_2COL).unwrap();
+            let c_q8 = CString::new(FUNC_NAME_Q8).unwrap();
             let c_f16 = CString::new(FUNC_NAME_F16).unwrap();
             let c_f32 = CString::new(FUNC_NAME_F32).unwrap();
             let c_fused = CString::new(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU).unwrap();
@@ -180,45 +413,108 @@ impl BatchedGEMM {
             let c_sample = CString::new(FUNC_NAME_SAMPLE_GREEDY).unwrap();
             let c_advance = CString::new(FUNC_NAME_ADVANCE_TOKEN).unwrap();
             let c_q4k_mma = CString::new(FUNC_NAME_Q4K_MMA).unwrap();
+            let c_q4k_2col = CString::new(FUNC_NAME_Q4K_2COL).unwrap();
+            let c_q4k_mma_splitk2 = CString::new(FUNC_NAME_Q4K_MMA_SPLITK2).unwrap();
             let c_q4k_mr = CString::new(FUNC_NAME_Q4K_MULTI_ROW).unwrap();
             let c_q6k_mr = CString::new(FUNC_NAME_Q6K_MULTI_ROW).unwrap();
             let c_qkv_mr = CString::new(FUNC_NAME_FUSED_QKV_Q4K_MULTI_ROW).unwrap();
             let c_swiglu_mr = CString::new(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MULTI_ROW).unwrap();
             let c_fused_mma = CString::new(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA).unwrap();
+            let c_fused_mma_2col =
+                CString::new(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_2COL).unwrap();
+            let c_fused_mma_splitk2 =
+                CString::new(FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_SPLITK2).unwrap();
 
             let r_q = lib.cuModuleGetFunction(&mut fn_quantize_q8_1, cu_module, c_quant.as_ptr());
+            let r_q_cached = lib.cuModuleGetFunction(
+                &mut fn_quantize_q8_1_cached,
+                cu_module,
+                c_quant_cached.as_ptr(),
+            );
             let r1 = lib.cuModuleGetFunction(&mut fn_q4k, cu_module, c_q4k.as_ptr());
             let r1b = lib.cuModuleGetFunction(&mut fn_q4k_batched, cu_module, c_q4k_b.as_ptr());
             let _ = lib.cuModuleGetFunction(&mut fn_q4k_multi_row, cu_module, c_q4k_mr.as_ptr());
             let _ = lib.cuModuleGetFunction(&mut fn_q6k_multi_row, cu_module, c_q6k_mr.as_ptr());
-            let _ = lib.cuModuleGetFunction(&mut fn_fused_qkv_q4k_multi_row, cu_module, c_qkv_mr.as_ptr());
-            let _ = lib.cuModuleGetFunction(&mut fn_fused_qkv_multi_row, cu_module, c_fused_qkv_mr.as_ptr());
-            let _ = lib.cuModuleGetFunction(&mut fn_q4k_fused_gate_up_swiglu_multi_row, cu_module, c_swiglu_mr.as_ptr());
+            let _ = lib.cuModuleGetFunction(
+                &mut fn_fused_qkv_q4k_multi_row,
+                cu_module,
+                c_qkv_mr.as_ptr(),
+            );
+            let _ = lib.cuModuleGetFunction(
+                &mut fn_fused_qkv_multi_row,
+                cu_module,
+                c_fused_qkv_mr.as_ptr(),
+            );
+            let _ = lib.cuModuleGetFunction(
+                &mut fn_q4k_fused_gate_up_swiglu_multi_row,
+                cu_module,
+                c_swiglu_mr.as_ptr(),
+            );
             let r2 = lib.cuModuleGetFunction(&mut fn_q6k, cu_module, c_q6k.as_ptr());
-            let r3 = lib.cuModuleGetFunction(&mut fn_q8,  cu_module, c_q8.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_q6k_splitk2, cu_module, c_q6k_splitk2.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_q6k_2col, cu_module, c_q6k_2col.as_ptr());
+            let r3 = lib.cuModuleGetFunction(&mut fn_q8, cu_module, c_q8.as_ptr());
             let r4 = lib.cuModuleGetFunction(&mut fn_f16, cu_module, c_f16.as_ptr());
             let r5 = lib.cuModuleGetFunction(&mut fn_f32, cu_module, c_f32.as_ptr());
-            let r6 = lib.cuModuleGetFunction(&mut fn_q4k_fused_gate_up_swiglu, cu_module, c_fused.as_ptr());
-            let r6b = lib.cuModuleGetFunction(&mut fn_q4k_batched_gate_up_swiglu, cu_module, c_b_fused.as_ptr());
+            let r6 = lib.cuModuleGetFunction(
+                &mut fn_q4k_fused_gate_up_swiglu,
+                cu_module,
+                c_fused.as_ptr(),
+            );
+            let r6b = lib.cuModuleGetFunction(
+                &mut fn_q4k_batched_gate_up_swiglu,
+                cu_module,
+                c_b_fused.as_ptr(),
+            );
             let r6c = lib.cuModuleGetFunction(&mut fn_q6k_batched, cu_module, c_b_q6k.as_ptr());
             let r7 = lib.cuModuleGetFunction(&mut fn_q6k_splitk, cu_module, c_splitk.as_ptr());
             let r8 = lib.cuModuleGetFunction(&mut fn_q4k_splitk, cu_module, c_splitk_q4.as_ptr());
             let r9 = lib.cuModuleGetFunction(&mut fn_fused_qkv, cu_module, c_fused_qkv.as_ptr());
-            let r9_q4 = lib.cuModuleGetFunction(&mut fn_fused_qkv_q4k, cu_module, c_fused_qkv_q4k.as_ptr());
-            let r9b = lib.cuModuleGetFunction(&mut fn_fused_qkv_batched, cu_module, c_fused_qkv_b.as_ptr());
+            let r9_q4 =
+                lib.cuModuleGetFunction(&mut fn_fused_qkv_q4k, cu_module, c_fused_qkv_q4k.as_ptr());
+            let r9b = lib.cuModuleGetFunction(
+                &mut fn_fused_qkv_batched,
+                cu_module,
+                c_fused_qkv_b.as_ptr(),
+            );
             let r10 = lib.cuModuleGetFunction(&mut fn_get_rows_q4k, cu_module, c_get_rows.as_ptr());
-            let _ = lib.cuModuleGetFunction(&mut fn_get_rows_q6k, cu_module, c_get_rows_q6k.as_ptr());
-            let _ = lib.cuModuleGetFunction(&mut fn_get_rows_q8_0, cu_module, c_get_rows_q8.as_ptr());
-            let _ = lib.cuModuleGetFunction(&mut fn_get_rows_f16, cu_module, c_get_rows_f16.as_ptr());
+            let _ =
+                lib.cuModuleGetFunction(&mut fn_get_rows_q6k, cu_module, c_get_rows_q6k.as_ptr());
+            let _ =
+                lib.cuModuleGetFunction(&mut fn_get_rows_q8_0, cu_module, c_get_rows_q8.as_ptr());
+            let _ =
+                lib.cuModuleGetFunction(&mut fn_get_rows_f16, cu_module, c_get_rows_f16.as_ptr());
             let r11 = lib.cuModuleGetFunction(&mut fn_sample_greedy, cu_module, c_sample.as_ptr());
             let r12 = lib.cuModuleGetFunction(&mut fn_advance_token, cu_module, c_advance.as_ptr());
             let _ = lib.cuModuleGetFunction(&mut fn_q4k_mma, cu_module, c_q4k_mma.as_ptr());
-            let _ = lib.cuModuleGetFunction(&mut fn_q4k_fused_gate_up_swiglu_mma, cu_module, c_fused_mma.as_ptr());
+            let _ = lib.cuModuleGetFunction(&mut fn_q4k_2col, cu_module, c_q4k_2col.as_ptr());
+            let _ = lib.cuModuleGetFunction(
+                &mut fn_q4k_mma_splitk2,
+                cu_module,
+                c_q4k_mma_splitk2.as_ptr(),
+            );
+            let _ = lib.cuModuleGetFunction(
+                &mut fn_q4k_fused_gate_up_swiglu_mma,
+                cu_module,
+                c_fused_mma.as_ptr(),
+            );
+            let _ = lib.cuModuleGetFunction(
+                &mut fn_q4k_fused_gate_up_swiglu_mma_2col,
+                cu_module,
+                c_fused_mma_2col.as_ptr(),
+            );
+            let _ = lib.cuModuleGetFunction(
+                &mut fn_q4k_fused_gate_up_swiglu_mma_splitk2,
+                cu_module,
+                c_fused_mma_splitk2.as_ptr(),
+            );
 
             let c_reduce_splitk = CString::new(FUNC_NAME_REDUCE_SPLITK).unwrap();
-            let _ = lib.cuModuleGetFunction(&mut fn_reduce_splitk, cu_module, c_reduce_splitk.as_ptr());
+            let _ =
+                lib.cuModuleGetFunction(&mut fn_reduce_splitk, cu_module, c_reduce_splitk.as_ptr());
 
             if r_q != CUresult::CUDA_SUCCESS
+                || r_q_cached != CUresult::CUDA_SUCCESS
                 || r1 != CUresult::CUDA_SUCCESS
                 || r1b != CUresult::CUDA_SUCCESS
                 || r2 != CUresult::CUDA_SUCCESS
@@ -240,16 +536,41 @@ impl BatchedGEMM {
                 let _ = lib.cuModuleUnload(cu_module);
                 return Err(CudaError::KernelLoad("cuModuleGetFunction", r1));
             }
+
+            // Optimize hardware SM cache allocation: maximize L1 data cache carveout (100% L1 / minimal smem)
+            let carveout_attr =
+                sys::CUfunction_attribute::CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT;
+            let fns_to_optimize = [
+                fn_q4k_mma,
+                fn_q4k_2col,
+                fn_q4k_mma_splitk2,
+                fn_q4k_fused_gate_up_swiglu_mma,
+                fn_q4k_fused_gate_up_swiglu_mma_splitk2,
+                fn_q6k,
+                fn_q6k_2col,
+                fn_q6k_splitk2,
+                fn_fused_qkv,
+                fn_fused_qkv_q4k,
+            ];
+            for &f in &fns_to_optimize {
+                if !f.is_null() {
+                    let _ = lib.cuFuncSetAttribute(f, carveout_attr, 100);
+                }
+            }
         }
 
         Ok(Self {
             device,
+            dispatch_telemetry: None,
             cu_module,
             fn_quantize_q8_1,
+            fn_quantize_q8_1_cached,
             fn_q4k,
             fn_q4k_batched,
             fn_q4k_multi_row,
             fn_q6k,
+            fn_q6k_splitk2,
+            fn_q6k_2col,
             fn_q6k_multi_row,
             fn_q8,
             fn_f16,
@@ -272,12 +593,58 @@ impl BatchedGEMM {
             fn_sample_greedy,
             fn_advance_token,
             fn_q4k_mma,
+            fn_q4k_2col,
+            fn_q4k_mma_splitk2,
             fn_q4k_fused_gate_up_swiglu_mma,
+            fn_q4k_fused_gate_up_swiglu_mma_2col,
+            fn_q4k_fused_gate_up_swiglu_mma_splitk2,
             fn_reduce_splitk,
         })
     }
 
+    /// Enables benchmark-only dispatch accounting without changing the default path.
+    pub fn set_dispatch_telemetry(&mut self, telemetry: Option<Arc<DispatchTelemetry>>) {
+        self.dispatch_telemetry = telemetry;
+    }
+
+    /// Sets the logical tensor role for subsequent telemetry records.
+    pub fn set_telemetry_tensor_role(&self, role: Option<&str>) {
+        if let Some(telemetry) = &self.dispatch_telemetry {
+            telemetry.set_tensor_role(role);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)] // Explicit CUDA telemetry fields are intentional.
+    fn record_dispatch(
+        &self,
+        operation: &str,
+        format: &str,
+        ne0: usize,
+        ne1: usize,
+        batch_size: usize,
+        grid: [u32; 3],
+        block: [u32; 3],
+        selected_variant: &str,
+        fallback_reason: Option<&str>,
+    ) {
+        if let Some(telemetry) = &self.dispatch_telemetry {
+            telemetry.record(DispatchRecord::new(
+                operation,
+                None,
+                format,
+                ne0,
+                ne1,
+                batch_size,
+                grid,
+                block,
+                selected_variant,
+                fallback_reason.map(str::to_owned),
+            ));
+        }
+    }
+
     /// Quantizes `x` (floats) on-the-fly into `Q8_1` (int8_t + float scales + float sums) in a single fast 1-block kernel.
+    #[allow(clippy::too_many_arguments)] // CUDA ABI keeps kernel arguments explicit.
     pub fn quantize_q8_1_batched(
         &self,
         stream: &CudaStream,
@@ -312,34 +679,83 @@ impl BatchedGEMM {
         ];
 
         let num_blocks_32 = (ne0 / 32) as u32;
-        let grid_x = if norm_weight.is_some() { 1 } else { num_blocks_32.div_ceil(8) };
+        let grid_x = if norm_weight.is_some() {
+            1
+        } else {
+            num_blocks_32.div_ceil(8)
+        };
         let grid_y = batch_size as u32;
+        let selection = self
+            .dispatch_telemetry
+            .as_ref()
+            .filter(|telemetry| telemetry.has_tensor_role("activation_quantization"))
+            .and_then(|_| {
+                select_ffn_quantization_variant(
+                    true,
+                    Some("activation_quantization"),
+                    ne0,
+                    batch_size,
+                    norm_weight.is_some(),
+                    std::env::var(FFN_QUANT_VARIANT_ENV).ok().as_deref(),
+                    !self.fn_quantize_q8_1_cached.is_null(),
+                )
+            });
+        let (kernel_fn, selected_variant, fallback_reason, shared_bytes) = match selection {
+            Some(selection) if selection.variant == FUNC_NAME_QUANTIZE_Q8_1_CACHED => (
+                self.fn_quantize_q8_1_cached,
+                selection.variant,
+                selection.fallback_reason,
+                (ne0 * std::mem::size_of::<f32>()) as u32,
+            ),
+            Some(selection) => (
+                self.fn_quantize_q8_1,
+                selection.variant,
+                selection.fallback_reason,
+                0,
+            ),
+            None => (self.fn_quantize_q8_1, FUNC_NAME_QUANTIZE_Q8_1, None, 0),
+        };
 
         self.device.bind_to_thread()?;
         unsafe {
             let lib = sys::lib();
             let res = lib.cuLaunchKernel(
-                self.fn_quantize_q8_1,
+                kernel_fn,
                 grid_x,
                 grid_y,
                 1,
                 256,
                 1,
                 1,
-                0,
+                shared_bytes,
                 stream.raw(),
                 args.as_ptr() as *mut *mut std::ffi::c_void,
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (quantize_q8_1)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (quantize_q8_1)",
+                    res,
+                ));
             }
         }
+        self.record_dispatch(
+            "quantize",
+            "Q8_1",
+            ne0,
+            ne0 / 32,
+            batch_size,
+            [grid_x, grid_y, 1],
+            [256, 1, 1],
+            selected_variant,
+            fallback_reason,
+        );
         Ok(())
     }
 
     /// Performs on-the-fly Q8_1 activation quantization of row `x[ne0]` with optional fused RMSNorm:
     /// `qx[ne0] = round(RMSNorm(x)[ne0] * 127 / amax)`, `qd[ne0/32] = amax / 127`, `qs[ne0/32] = sum(RMSNorm(x))`.
+    #[allow(clippy::too_many_arguments)] // CUDA ABI keeps kernel arguments explicit.
     pub fn quantize_q8_1(
         &self,
         stream: &CudaStream,
@@ -352,6 +768,74 @@ impl BatchedGEMM {
         eps: f32,
     ) -> Result<(), CudaError> {
         self.quantize_q8_1_batched(stream, x, norm_weight, out_qx, out_qd, out_qs, ne0, 1, eps)
+    }
+
+    /// FFN-only RMSNorm/Q8_1 path that caches the source row in shared memory.
+    #[allow(clippy::too_many_arguments)]
+    pub fn quantize_q8_1_cached(
+        &self,
+        stream: &CudaStream,
+        x: &DeviceBuffer,
+        norm_weight: &DeviceBuffer,
+        out_qx: &DeviceBuffer,
+        out_qd: &DeviceBuffer,
+        out_qs: &DeviceBuffer,
+        ne0: usize,
+        eps: f32,
+    ) -> Result<(), CudaError> {
+        if ne0 == 0 {
+            return Ok(());
+        }
+        let x_addr = x.device_ptr();
+        let norm_addr = norm_weight.device_ptr();
+        let qx_addr = out_qx.device_ptr();
+        let qd_addr = out_qd.device_ptr();
+        let qs_addr = out_qs.device_ptr();
+        let ne0_i = ne0 as i32;
+        let args: [*mut std::ffi::c_void; 7] = [
+            &x_addr as *const u64 as *mut std::ffi::c_void,
+            &norm_addr as *const u64 as *mut std::ffi::c_void,
+            &qx_addr as *const u64 as *mut std::ffi::c_void,
+            &qd_addr as *const u64 as *mut std::ffi::c_void,
+            &qs_addr as *const u64 as *mut std::ffi::c_void,
+            &ne0_i as *const i32 as *mut std::ffi::c_void,
+            &eps as *const f32 as *mut std::ffi::c_void,
+        ];
+        self.device.bind_to_thread()?;
+        unsafe {
+            let lib = sys::lib();
+            let res = lib.cuLaunchKernel(
+                self.fn_quantize_q8_1_cached,
+                1,
+                1,
+                1,
+                256,
+                1,
+                1,
+                (ne0 * std::mem::size_of::<f32>()) as u32,
+                stream.raw(),
+                args.as_ptr() as *mut *mut std::ffi::c_void,
+                std::ptr::null_mut(),
+            );
+            if res != CUresult::CUDA_SUCCESS {
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (quantize_q8_1_cached)",
+                    res,
+                ));
+            }
+        }
+        self.record_dispatch(
+            "quantize",
+            "Q8_1",
+            ne0,
+            ne0 / 32,
+            1,
+            [1, 1, 1],
+            [256, 1, 1],
+            FUNC_NAME_QUANTIZE_Q8_1_CACHED,
+            None,
+        );
+        Ok(())
     }
 
     /// Evaluates quantized matrix multiplication with fused in-kernel activation quantization:
@@ -373,15 +857,15 @@ impl BatchedGEMM {
         residual: Option<&DeviceBuffer>,
     ) -> Result<(), CudaError> {
         match format {
-            GemvFormat::Q4K => {
-                if !self.fn_q4k_mma.is_null() {
-                    self.gemm_q4k_mma(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual)
-                } else {
-                    self.gemm_q4k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual)
-                }
-            }
-            GemvFormat::Q6K => self.gemm_q6k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
-            _ => self.gemm_q4k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual),
+            GemvFormat::Q4K => self.gemm_q4k(
+                stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual,
+            ),
+            GemvFormat::Q6K => self.gemm_q6k(
+                stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual,
+            ),
+            _ => self.gemm_q4k(
+                stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual,
+            ),
         }
     }
 
@@ -403,6 +887,12 @@ impl BatchedGEMM {
     ) -> Result<(), CudaError> {
         if batch_size == 0 || ne0 == 0 || ne1 == 0 {
             return Ok(());
+        }
+
+        if batch_size == 1 {
+            return self.gemm_q4k_mma(
+                stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual,
+            );
         }
 
         let shared_bytes = (((ne0 * 5) / 4) + 128) as u32;
@@ -431,35 +921,9 @@ impl BatchedGEMM {
 
         let cols_per_block = 8u32;
         let grid_x = (ne1 as u32).div_ceil(cols_per_block);
+        let grid_y = batch_size as u32;
 
         self.device.bind_to_thread()?;
-
-        if batch_size > 1 && batch_size <= 4 && !self.fn_q4k_multi_row.is_null() {
-            let shared_bytes = (((ne0 * 5) / 4) * batch_size + 256) as u32;
-            let grid_y = 1u32;
-            unsafe {
-                let lib = sys::lib();
-                let res = lib.cuLaunchKernel(
-                    self.fn_q4k_multi_row,
-                    grid_x,
-                    grid_y,
-                    1,
-                    256,
-                    1,
-                    1,
-                    shared_bytes,
-                    stream.raw(),
-                    args.as_ptr() as *mut *mut std::ffi::c_void,
-                    std::ptr::null_mut(),
-                );
-                if res != CUresult::CUDA_SUCCESS {
-                    return Err(CudaError::KernelLaunch("cuLaunchKernel (GEMM Q4_K Multi-Row)", res));
-                }
-            }
-            return Ok(());
-        }
-
-        let grid_y = batch_size as u32;
 
         unsafe {
             let lib = sys::lib();
@@ -481,6 +945,17 @@ impl BatchedGEMM {
             }
         }
 
+        self.record_dispatch(
+            "gemm",
+            "Q4K",
+            ne0,
+            ne1,
+            batch_size,
+            [grid_x, grid_y, 1],
+            [256, 1, 1],
+            FUNC_NAME_Q4K,
+            None,
+        );
         Ok(())
     }
 
@@ -502,10 +977,6 @@ impl BatchedGEMM {
     ) -> Result<(), CudaError> {
         if batch_size == 0 || ne0 == 0 || ne1 == 0 {
             return Ok(());
-        }
-
-        if self.fn_q4k_mma.is_null() {
-            return self.gemm_q4k(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual);
         }
 
         let ne0_i: i32 = ne0 as i32;
@@ -531,47 +1002,66 @@ impl BatchedGEMM {
             &res_addr as *const u64 as *mut std::ffi::c_void,
         ];
 
-        let cols_per_block = 4u32;
+        let available = [
+            !self.fn_q4k_mma_splitk2.is_null(),
+            !self.fn_q4k_mma.is_null(),
+            !self.fn_q4k_2col.is_null(),
+            !self.fn_q4k_multi_row.is_null(),
+        ];
+        let override_selection = self
+            .dispatch_telemetry
+            .as_ref()
+            .filter(|telemetry| telemetry.has_tensor_role("ffn_down"))
+            .and_then(|_| {
+                select_ffn_down_variant(
+                    Some("ffn_down"),
+                    "Q4K",
+                    ne0,
+                    ne1,
+                    batch_size,
+                    std::env::var(FFN_DOWN_VARIANT_ENV).ok().as_deref(),
+                    available,
+                )
+            });
+        let (kernel_name, cols_per_block, fallback_reason) = override_selection
+            .map(|selection| {
+                (
+                    selection.variant,
+                    selection.cols_per_block,
+                    selection.fallback_reason,
+                )
+            })
+            .unwrap_or_else(|| {
+                if available[0] {
+                    (FUNC_NAME_Q4K_MMA_SPLITK2, 4, None)
+                } else if available[2] {
+                    (FUNC_NAME_Q4K_2COL, 16, None)
+                } else {
+                    (FUNC_NAME_Q4K_MMA, 8, None)
+                }
+            });
+        let kernel_fn = match kernel_name {
+            FUNC_NAME_Q4K_MMA_SPLITK2 => self.fn_q4k_mma_splitk2,
+            FUNC_NAME_Q4K_2COL => self.fn_q4k_2col,
+            FUNC_NAME_Q4K_MULTI_ROW => self.fn_q4k_multi_row,
+            _ => self.fn_q4k_mma,
+        };
+        let block_dim = 256u32;
+
         let grid_x = (ne1 as u32).div_ceil(cols_per_block);
         let grid_y = batch_size as u32;
         let shared_bytes = (((ne0 * 5) / 4) + 256) as u32;
 
         self.device.bind_to_thread()?;
 
-        if batch_size > 1 && batch_size <= 4 && !self.fn_q4k_multi_row.is_null() {
-            let cols_mr = 8u32;
-            let grid_x_mr = (ne1 as u32).div_ceil(cols_mr);
-            let shared_bytes_mr = (((ne0 * 5) / 4) * batch_size + 256) as u32;
-            unsafe {
-                let lib = sys::lib();
-                let res = lib.cuLaunchKernel(
-                    self.fn_q4k_multi_row,
-                    grid_x_mr,
-                    1,
-                    1,
-                    256,
-                    1,
-                    1,
-                    shared_bytes_mr,
-                    stream.raw(),
-                    args.as_ptr() as *mut *mut std::ffi::c_void,
-                    std::ptr::null_mut(),
-                );
-                if res != CUresult::CUDA_SUCCESS {
-                    return Err(CudaError::KernelLaunch("cuLaunchKernel (GEMM Q4_K Multi-Row)", res));
-                }
-            }
-            return Ok(());
-        }
-
         unsafe {
             let lib = sys::lib();
             let res = lib.cuLaunchKernel(
-                self.fn_q4k_mma,
+                kernel_fn,
                 grid_x,
                 grid_y,
                 1,
-                256,
+                block_dim,
                 1,
                 1,
                 shared_bytes,
@@ -580,10 +1070,24 @@ impl BatchedGEMM {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (GEMM Q4_K MMA)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (GEMM Q4_K MMA)",
+                    res,
+                ));
             }
         }
 
+        self.record_dispatch(
+            "gemm",
+            "Q4K",
+            ne0,
+            ne1,
+            batch_size,
+            [grid_x, grid_y, 1],
+            [block_dim, 1, 1],
+            kernel_name,
+            fallback_reason,
+        );
         Ok(())
     }
 
@@ -611,7 +1115,9 @@ impl BatchedGEMM {
         }
 
         if split_k <= 1 || self.fn_q4k_splitk.is_null() || self.fn_reduce_splitk.is_null() {
-            return self.gemm_q4k_mma(stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual);
+            return self.gemm_q4k(
+                stream, weights, qx, qd, qs, out, ne0, ne1, batch_size, residual,
+            );
         }
 
         let ne0_i: i32 = ne0 as i32;
@@ -661,7 +1167,10 @@ impl BatchedGEMM {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (GEMM Q4_K Split-K)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (GEMM Q4_K Split-K)",
+                    res,
+                ));
             }
         }
 
@@ -698,10 +1207,24 @@ impl BatchedGEMM {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (Reduce Split-K)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (Reduce Split-K)",
+                    res,
+                ));
             }
         }
 
+        self.record_dispatch(
+            "gemm",
+            "Q4K",
+            ne0,
+            ne1,
+            batch_size,
+            [grid_x, grid_y, grid_z],
+            [256, 1, 1],
+            FUNC_NAME_Q4K_SPLITK,
+            None,
+        );
         Ok(())
     }
 
@@ -723,10 +1246,6 @@ impl BatchedGEMM {
     ) -> Result<(), CudaError> {
         if batch_size == 0 || ne0 == 0 || ne1 == 0 {
             return Ok(());
-        }
-
-        if self.fn_q4k_fused_gate_up_swiglu_mma.is_null() {
-            return self.gemm_fused_gate_up_swiglu(stream, wgate, wup, qx, qd, qs, out, ne0, ne1, batch_size);
         }
 
         let ne0_i: i32 = ne0 as i32;
@@ -752,45 +1271,75 @@ impl BatchedGEMM {
             &batch_i as *const i32 as *mut std::ffi::c_void,
         ];
 
-        let cols_per_block = 4u32;
-        let grid_x = (ne1 as u32).div_ceil(cols_per_block);
-
-        self.device.bind_to_thread()?;
-
-        if batch_size > 1 && batch_size <= 4 && !self.fn_q4k_fused_gate_up_swiglu_multi_row.is_null() {
-            let shared_bytes = (((ne0 * 5) / 4) * batch_size + 256) as u32;
-            let cols_mr = 8u32;
-            let grid_x_mr = (ne1 as u32).div_ceil(cols_mr);
-            let grid_y_mr = 1u32;
-            unsafe {
-                let lib = sys::lib();
-                let res = lib.cuLaunchKernel(
-                    self.fn_q4k_fused_gate_up_swiglu_multi_row,
-                    grid_x_mr,
-                    grid_y_mr,
-                    1,
-                    256,
-                    1,
-                    1,
-                    shared_bytes,
-                    stream.raw(),
-                    args.as_ptr() as *mut *mut std::ffi::c_void,
-                    std::ptr::null_mut(),
-                );
-                if res != CUresult::CUDA_SUCCESS {
-                    return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedGateUpSwiGLU Multi-Row)", res));
-                }
+        let selection = self
+            .dispatch_telemetry
+            .as_ref()
+            .filter(|telemetry| telemetry.has_tensor_role("ffn_gate_up"))
+            .and_then(|_| {
+                select_ffn_gate_up_variant(
+                    true,
+                    Some("ffn_gate_up"),
+                    "Q4K",
+                    ne0,
+                    ne1,
+                    batch_size,
+                    std::env::var(FFN_GATE_UP_VARIANT_ENV).ok().as_deref(),
+                    [
+                        !self.fn_q4k_fused_gate_up_swiglu_mma.is_null(),
+                        !self.fn_q4k_fused_gate_up_swiglu_mma_2col.is_null(),
+                        !self.fn_q4k_fused_gate_up_swiglu_mma_splitk2.is_null(),
+                    ],
+                )
+            });
+        let (kernel_fn, selected_variant, fallback_reason, cols_per_block) = match selection {
+            Some(selection) => {
+                let kernel_fn = match selection.variant {
+                    FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_2COL => {
+                        self.fn_q4k_fused_gate_up_swiglu_mma_2col
+                    }
+                    FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_SPLITK2 => {
+                        self.fn_q4k_fused_gate_up_swiglu_mma_splitk2
+                    }
+                    _ => self.fn_q4k_fused_gate_up_swiglu_mma,
+                };
+                let cols = if selection.variant == FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_2COL {
+                    16
+                } else if selection.variant == FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_SPLITK2 {
+                    4
+                } else {
+                    8
+                };
+                (
+                    kernel_fn,
+                    selection.variant,
+                    selection.fallback_reason,
+                    cols,
+                )
             }
-            return Ok(());
-        }
+            None if ne0 >= 4096 && !self.fn_q4k_fused_gate_up_swiglu_mma_splitk2.is_null() => (
+                self.fn_q4k_fused_gate_up_swiglu_mma_splitk2,
+                FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA_SPLITK2,
+                None,
+                4,
+            ),
+            None => (
+                self.fn_q4k_fused_gate_up_swiglu_mma,
+                FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU_MMA,
+                None,
+                8,
+            ),
+        };
 
+        let grid_x = (ne1 as u32).div_ceil(cols_per_block);
         let grid_y = batch_size as u32;
         let shared_bytes = (((ne0 * 5) / 4) + 256) as u32;
+
+        self.device.bind_to_thread()?;
 
         unsafe {
             let lib = sys::lib();
             let res = lib.cuLaunchKernel(
-                self.fn_q4k_fused_gate_up_swiglu_mma,
+                kernel_fn,
                 grid_x,
                 grid_y,
                 1,
@@ -803,10 +1352,24 @@ impl BatchedGEMM {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedGateUpSwiGLU MMA)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (GEMM Q4_K Fused Gate+Up SwiGLU MMA)",
+                    res,
+                ));
             }
         }
 
+        self.record_dispatch(
+            "gemm_fused_gate_up_swiglu",
+            "Q4K",
+            ne0,
+            ne1,
+            batch_size,
+            [grid_x, grid_y, 1],
+            [256, 1, 1],
+            selected_variant,
+            fallback_reason,
+        );
         Ok(())
     }
 
@@ -830,6 +1393,7 @@ impl BatchedGEMM {
     /// Evaluates quantized matrix multiplication with fused in-place residual addition:
     /// `Out[M, ne1] = X[M, ne0] * W[ne1, ne0]^T + Residual[M, ne1]`.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::collapsible_if)] // Keep Rust 2021-compatible nested pattern matching.
     pub fn gemm_with_residual(
         &self,
         stream: &CudaStream,
@@ -849,7 +1413,7 @@ impl BatchedGEMM {
         let expected_weight_bytes = match format {
             GemvFormat::Q4K => (ne0 / 256) * 144 * ne1,
             GemvFormat::Q6K => (ne0 / 256) * 210 * ne1,
-            GemvFormat::Q8  => (ne0 / 32)  * 34  * ne1,
+            GemvFormat::Q8 => (ne0 / 32) * 34 * ne1,
             GemvFormat::F16 => ne0 * 2 * ne1,
         };
 
@@ -887,7 +1451,7 @@ impl BatchedGEMM {
 
         let (func, block_dim_y) = match format {
             GemvFormat::Q4K => (self.fn_q4k_batched, 8u32),
-            GemvFormat::Q6K => (self.fn_q6k_batched, 8u32),
+            GemvFormat::Q6K => (self.fn_q6k_batched, 4u32),
             _ => (self.fn_q4k_batched, 8u32),
         };
 
@@ -935,10 +1499,29 @@ impl BatchedGEMM {
                 return Err(CudaError::KernelLaunch("cuLaunchKernel (BatchedGEMM)", res));
             }
         }
+        self.record_dispatch(
+            "gemm",
+            match format {
+                GemvFormat::Q4K => "Q4K",
+                GemvFormat::Q6K => "Q6K",
+                GemvFormat::Q8 => "Q8",
+                GemvFormat::F16 => "F16",
+            },
+            ne0,
+            ne1,
+            batch_size,
+            [grid_x, grid_y, 1],
+            [128, 1, 1],
+            match format {
+                GemvFormat::Q4K => FUNC_NAME_Q4K_BATCHED,
+                GemvFormat::Q6K => FUNC_NAME_Q6K_BATCHED,
+                GemvFormat::Q8 | GemvFormat::F16 => FUNC_NAME_Q4K_BATCHED,
+            },
+            matches!(format, GemvFormat::Q8 | GemvFormat::F16)
+                .then_some("format_uses_q4k_batched_fallback"),
+        );
         Ok(())
     }
-
-    /// Fused Q6_K LM Head projection with pre-quantized Q8_1 activations:
     /// Computes `Out[M, ne1] = Q8(X)[M, ne0] * W[ne1, ne0]^T`.
     #[allow(clippy::too_many_arguments)]
     pub fn gemm_q6k(
@@ -977,43 +1560,25 @@ impl BatchedGEMM {
             &res_addr as *const u64 as *mut std::ffi::c_void,
         ];
 
-        let cols_per_block = 8u32;
-        let shared_bytes = (((ne0 * 5) / 4) + 128) as u32;
+        let (kernel_fn, cols_per_block) = if ne0 >= 4096 && !self.fn_q6k_splitk2.is_null() {
+            (self.fn_q6k_splitk2, 4u32)
+        } else if !self.fn_q6k_2col.is_null() {
+            (self.fn_q6k_2col, 16u32)
+        } else {
+            (self.fn_q6k, 8u32)
+        };
+
+        let shared_bytes = (((ne0 * 5) / 4) * 4 + 256) as u32;
         let grid_x = (ne1 as u32).div_ceil(cols_per_block);
 
         self.device.bind_to_thread()?;
-
-        if batch_size > 1 && batch_size <= 4 && !self.fn_q6k_multi_row.is_null() {
-            let shared_bytes_mr = (((ne0 * 5) / 4) * batch_size + 256) as u32;
-            let grid_y_mr = 1u32;
-            unsafe {
-                let lib = sys::lib();
-                let res = lib.cuLaunchKernel(
-                    self.fn_q6k_multi_row,
-                    grid_x,
-                    grid_y_mr,
-                    1,
-                    256,
-                    1,
-                    1,
-                    shared_bytes_mr,
-                    stream.raw(),
-                    args.as_ptr() as *mut *mut std::ffi::c_void,
-                    std::ptr::null_mut(),
-                );
-                if res != CUresult::CUDA_SUCCESS {
-                    return Err(CudaError::KernelLaunch("cuLaunchKernel (GEMM Q6_K Multi-Row)", res));
-                }
-            }
-            return Ok(());
-        }
 
         let grid_y = batch_size as u32;
 
         unsafe {
             let lib = sys::lib();
             let res = lib.cuLaunchKernel(
-                self.fn_q6k,
+                kernel_fn,
                 grid_x,
                 grid_y,
                 1,
@@ -1030,6 +1595,23 @@ impl BatchedGEMM {
             }
         }
 
+        self.record_dispatch(
+            "gemm",
+            "Q6K",
+            ne0,
+            ne1,
+            batch_size,
+            [grid_x, grid_y, 1],
+            [256, 1, 1],
+            if kernel_fn == self.fn_q6k_splitk2 {
+                FUNC_NAME_Q6K_SPLITK2
+            } else if kernel_fn == self.fn_q6k_2col {
+                FUNC_NAME_Q6K_2COL
+            } else {
+                FUNC_NAME_Q6K
+            },
+            None,
+        );
         Ok(())
     }
 
@@ -1099,10 +1681,24 @@ impl BatchedGEMM {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedGateUpSwiGLU)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (FusedGateUpSwiGLU)",
+                    res,
+                ));
             }
         }
 
+        self.record_dispatch(
+            "gemm_fused_gate_up_swiglu",
+            "Q4K",
+            ne0,
+            ne1,
+            batch_size,
+            [grid_x, grid_y, 1],
+            [256, 1, 1],
+            FUNC_NAME_Q4K_FUSED_GATE_UP_SWIGLU,
+            None,
+        );
         Ok(())
     }
 
@@ -1171,10 +1767,24 @@ impl BatchedGEMM {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (gemm_q4k_splitk)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (gemm_q4k_splitk)",
+                    res,
+                ));
             }
         }
 
+        self.record_dispatch(
+            "gemm",
+            "Q4K",
+            ne0,
+            ne1,
+            batch_size,
+            [grid_x, grid_y, 1],
+            [256, 1, 1],
+            FUNC_NAME_Q4K_SPLITK,
+            None,
+        );
         Ok(())
     }
 
@@ -1266,9 +1876,23 @@ impl BatchedGEMM {
                     std::ptr::null_mut(),
                 );
                 if res != CUresult::CUDA_SUCCESS {
-                    return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedQKV Multi-Row)", res));
+                    return Err(CudaError::KernelLaunch(
+                        "cuLaunchKernel (FusedQKV Multi-Row)",
+                        res,
+                    ));
                 }
             }
+            self.record_dispatch(
+                "gemm_fused_qkv",
+                "Q8",
+                ne0,
+                qdim + kvd + kvd,
+                batch_size,
+                [grid_x, grid_y_mr, 1],
+                [256, 1, 1],
+                FUNC_NAME_FUSED_QKV_MULTI_ROW,
+                None,
+            );
             return Ok(());
         }
 
@@ -1295,6 +1919,17 @@ impl BatchedGEMM {
             }
         }
 
+        self.record_dispatch(
+            "gemm_fused_qkv",
+            "Q8",
+            ne0,
+            qdim + kvd + kvd,
+            batch_size,
+            [grid_x, grid_y, 1],
+            [256, 1, 1],
+            FUNC_NAME_FUSED_QKV,
+            None,
+        );
         Ok(())
     }
 
@@ -1320,7 +1955,7 @@ impl BatchedGEMM {
         kb: Option<&DeviceBuffer>,
         vb: Option<&DeviceBuffer>,
     ) -> Result<(), CudaError> {
-        if batch_size == 0 || ne0 == 0 || qdim == 0 || kvd == 0 {
+        if batch_size == 0 || ne0 == 0 || (qdim == 0 && kvd == 0) {
             return Ok(());
         }
 
@@ -1361,41 +1996,13 @@ impl BatchedGEMM {
             &vb_addr as *const u64 as *mut std::ffi::c_void,
         ];
 
-        let cols_per_block = 4u32;
         let total_cols = (qdim + kvd + kvd) as u32;
+        let cols_per_block = 8u32;
         let grid_x = total_cols.div_ceil(cols_per_block);
-
-        self.device.bind_to_thread()?;
-
-        if batch_size > 1 && batch_size <= 4 && !self.fn_fused_qkv_q4k_multi_row.is_null() {
-            let shared_bytes_mr = (((ne0 * 5) / 4) * batch_size + 256) as u32;
-            let cols_mr = 8u32;
-            let grid_x_mr = total_cols.div_ceil(cols_mr);
-            let grid_y_mr = 1u32;
-            unsafe {
-                let lib = sys::lib();
-                let res = lib.cuLaunchKernel(
-                    self.fn_fused_qkv_q4k_multi_row,
-                    grid_x_mr,
-                    grid_y_mr,
-                    1,
-                    256,
-                    1,
-                    1,
-                    shared_bytes_mr,
-                    stream.raw(),
-                    args.as_ptr() as *mut *mut std::ffi::c_void,
-                    std::ptr::null_mut(),
-                );
-                if res != CUresult::CUDA_SUCCESS {
-                    return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedQKV_Q4K Multi-Row)", res));
-                }
-            }
-            return Ok(());
-        }
-
         let grid_y = batch_size as u32;
         let shared_bytes = (((ne0 * 5) / 4) + 256) as u32;
+
+        self.device.bind_to_thread()?;
 
         unsafe {
             let lib = sys::lib();
@@ -1413,10 +2020,24 @@ impl BatchedGEMM {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (FusedQKV_Q4K)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (GEMM Fused QKV Q4_K)",
+                    res,
+                ));
             }
         }
 
+        self.record_dispatch(
+            "gemm_fused_qkv",
+            "Q4K",
+            ne0,
+            qdim + kvd + kvd,
+            batch_size,
+            [grid_x, grid_y, 1],
+            [256, 1, 1],
+            FUNC_NAME_FUSED_QKV_Q4K,
+            None,
+        );
         Ok(())
     }
 
@@ -1619,6 +2240,7 @@ impl BatchedGEMM {
     }
 
     /// Unified GPU embedding row lookup dispatching to format-specific kernels.
+    #[allow(clippy::too_many_arguments)] // Public dispatch facade mirrors kernel inputs.
     pub fn get_rows(
         &self,
         stream: &CudaStream,
@@ -1630,10 +2252,38 @@ impl BatchedGEMM {
         format: GemvFormat,
     ) -> Result<(), CudaError> {
         match format {
-            GemvFormat::Q6K => self.get_rows_q6k(stream, emb_weights, token_ids_dev, x_out, hidden_dim, n_tokens),
-            GemvFormat::Q8  => self.get_rows_q8_0(stream, emb_weights, token_ids_dev, x_out, hidden_dim, n_tokens),
-            GemvFormat::F16 => self.get_rows_f16(stream, emb_weights, token_ids_dev, x_out, hidden_dim, n_tokens),
-            _ => self.get_rows_q4k(stream, emb_weights, token_ids_dev, x_out, hidden_dim, n_tokens),
+            GemvFormat::Q6K => self.get_rows_q6k(
+                stream,
+                emb_weights,
+                token_ids_dev,
+                x_out,
+                hidden_dim,
+                n_tokens,
+            ),
+            GemvFormat::Q8 => self.get_rows_q8_0(
+                stream,
+                emb_weights,
+                token_ids_dev,
+                x_out,
+                hidden_dim,
+                n_tokens,
+            ),
+            GemvFormat::F16 => self.get_rows_f16(
+                stream,
+                emb_weights,
+                token_ids_dev,
+                x_out,
+                hidden_dim,
+                n_tokens,
+            ),
+            _ => self.get_rows_q4k(
+                stream,
+                emb_weights,
+                token_ids_dev,
+                x_out,
+                hidden_dim,
+                n_tokens,
+            ),
         }
     }
 
@@ -1687,7 +2337,10 @@ impl BatchedGEMM {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (SampleGreedy)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (SampleGreedy)",
+                    res,
+                ));
             }
         }
 
@@ -1737,10 +2390,221 @@ impl BatchedGEMM {
                 std::ptr::null_mut(),
             );
             if res != CUresult::CUDA_SUCCESS {
-                return Err(CudaError::KernelLaunch("cuLaunchKernel (AdvanceTokenStep)", res));
+                return Err(CudaError::KernelLaunch(
+                    "cuLaunchKernel (AdvanceTokenStep)",
+                    res,
+                ));
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod dispatch_telemetry_tests {
+    use super::{
+        BatchedGemmDispatchRecord, select_ffn_down_variant, select_ffn_gate_up_variant,
+        select_ffn_quantization_variant,
+    };
+
+    #[test]
+    fn ffn_quantization_selector_scope_and_default() {
+        assert!(
+            select_ffn_quantization_variant(
+                false,
+                Some("activation_quantization"),
+                8192,
+                1,
+                true,
+                Some("cached"),
+                true
+            )
+            .is_none()
+        );
+        let selected = select_ffn_quantization_variant(
+            true,
+            Some("activation_quantization"),
+            3072,
+            1,
+            true,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(selected.variant, "quantize_row_q8_1_kernel");
+        assert_eq!(selected.fallback_reason, None);
+    }
+
+    #[test]
+    fn ffn_quantization_selector_cached_request() {
+        let selected = select_ffn_quantization_variant(
+            true,
+            Some("activation_quantization"),
+            3072,
+            1,
+            true,
+            Some("cached"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(selected.variant, "quantize_row_q8_1_cached_kernel");
+        assert_eq!(selected.fallback_reason, None);
+    }
+
+    #[test]
+    fn ffn_quantization_selector_incompatible_fallback() {
+        let selected = select_ffn_quantization_variant(
+            true,
+            Some("activation_quantization"),
+            3072,
+            1,
+            true,
+            Some("cached"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(selected.variant, "quantize_row_q8_1_kernel");
+        assert_eq!(
+            selected.fallback_reason,
+            Some("requested_ffn_quant_cached_abi_incompatible")
+        );
+    }
+
+    #[test]
+    fn ffn_gate_up_selector_scope_default_candidates_and_unknown_fallback() {
+        let all = [true, true, true];
+        assert!(
+            select_ffn_gate_up_variant(false, Some("ffn_gate_up"), "Q4K", 3072, 8192, 1, None, all)
+                .is_none()
+        );
+        assert_eq!(
+            select_ffn_gate_up_variant(true, Some("ffn_gate_up"), "Q4K", 3072, 8192, 1, None, all)
+                .unwrap()
+                .variant,
+            "gemm_q4k_fused_gate_up_swiglu_mma_kernel"
+        );
+        for variant in [
+            "gemm_q4k_fused_gate_up_swiglu_mma_kernel",
+            "gemm_q4k_fused_gate_up_swiglu_mma_2col_kernel",
+            "gemm_q4k_fused_gate_up_swiglu_mma_splitk2_kernel",
+        ] {
+            let selected = select_ffn_gate_up_variant(
+                true,
+                Some("ffn_gate_up"),
+                "Q4K",
+                3072,
+                8192,
+                1,
+                Some(variant),
+                all,
+            )
+            .unwrap();
+            assert_eq!(selected.variant, variant);
+            assert_eq!(selected.fallback_reason, None);
+        }
+        let unknown = select_ffn_gate_up_variant(
+            true,
+            Some("ffn_gate_up"),
+            "Q4K",
+            3072,
+            8192,
+            1,
+            Some("bogus"),
+            all,
+        )
+        .unwrap();
+        assert_eq!(unknown.variant, "gemm_q4k_fused_gate_up_swiglu_mma_kernel");
+        assert_eq!(unknown.fallback_reason, Some("unknown_ffn_gate_up_variant"));
+    }
+
+    const ALL: [bool; 4] = [true, true, true, true];
+
+    #[test]
+    fn selects_requested_ffn_down_variant_only_for_exact_shape() {
+        let selected = select_ffn_down_variant(
+            Some("ffn_down"),
+            "Q4K",
+            8192,
+            3072,
+            1,
+            Some("gemm_q4k_2col_kernel"),
+            ALL,
+        )
+        .unwrap();
+        assert_eq!(selected.variant, "gemm_q4k_2col_kernel");
+        assert_eq!(selected.cols_per_block, 16);
+        assert_eq!(selected.fallback_reason, None);
+        assert!(
+            select_ffn_down_variant(
+                Some("ffn_up"),
+                "Q4K",
+                8192,
+                3072,
+                1,
+                Some("gemm_q4k_mma_kernel"),
+                ALL
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn unknown_and_incompatible_values_use_safe_default_with_reason() {
+        let unknown =
+            select_ffn_down_variant(Some("ffn_down"), "Q4K", 8192, 3072, 1, Some("bogus"), ALL)
+                .unwrap();
+        assert_eq!(unknown.variant, "gemm_q4k_mma_splitk2_kernel");
+        assert_eq!(unknown.fallback_reason, Some("unknown_ffn_down_variant"));
+
+        let incompatible = select_ffn_down_variant(
+            Some("ffn_down"),
+            "Q4K",
+            8192,
+            3072,
+            1,
+            Some("gemm_q4k_multi_row_kernel"),
+            [true, true, true, false],
+        )
+        .unwrap();
+        assert_eq!(incompatible.variant, "gemm_q4k_mma_splitk2_kernel");
+        assert_eq!(
+            incompatible.fallback_reason,
+            Some("requested_ffn_down_variant_abi_incompatible")
+        );
+    }
+
+    #[test]
+    fn unset_value_keeps_current_default_and_non_target_shape_is_untouched() {
+        let selected =
+            select_ffn_down_variant(Some("ffn_down"), "Q4K", 8192, 3072, 1, None, ALL).unwrap();
+        assert_eq!(selected.variant, "gemm_q4k_mma_splitk2_kernel");
+        assert!(
+            select_ffn_down_variant(Some("ffn_down"), "Q4K", 8192, 3072, 2, None, ALL).is_none()
+        );
+    }
+
+    #[test]
+    fn constructs_and_serializes_dispatch_record() {
+        let record = BatchedGemmDispatchRecord {
+            operation: "gemm".to_owned(),
+            kernel_variant: "gemm_q4k_kernel".to_owned(),
+            ne0: 4096,
+            ne1: 11008,
+            batch_size: 2,
+            grid_x: 1376,
+            grid_y: 2,
+            grid_z: 1,
+            block_x: 256,
+            block_y: 1,
+            block_z: 1,
+            fallback_reason: None,
+        };
+
+        let json = serde_json::to_value(&record).expect("dispatch record serializes");
+        assert_eq!(json["operation"], "gemm");
+        assert_eq!(json["kernel_variant"], "gemm_q4k_kernel");
+        assert_eq!(json["grid_x"], 1376);
+        assert!(json.get("fallback_reason").is_none());
     }
 }

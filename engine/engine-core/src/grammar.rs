@@ -72,10 +72,12 @@ impl JsonGrammar {
 
     /// Returns true if the accumulated output is complete and valid JSON.
     pub fn is_complete(&self) -> bool {
-        self.state == JsonParserState::Complete || (self.depth == 0 && !self.buffer.trim().is_empty())
+        self.state == JsonParserState::Complete
+            || (self.depth == 0 && !self.buffer.trim().is_empty())
     }
 
     /// Returns true if `token_str` is allowed at the current parser state.
+    #[allow(clippy::collapsible_if)] // Rust 2021 keeps these guards explicitly nested.
     pub fn is_token_valid(&self, token_str: &str) -> bool {
         if token_str.is_empty() {
             return false;
@@ -86,7 +88,10 @@ impl JsonGrammar {
             JsonParserState::ExpectKey => {
                 let trimmed = token_str.trim_start();
                 if trimmed.is_empty() {
-                    if self.buffer.ends_with(' ') || self.buffer.ends_with('\n') || self.buffer.ends_with('\t') {
+                    if self.buffer.ends_with(' ')
+                        || self.buffer.ends_with('\n')
+                        || self.buffer.ends_with('\t')
+                    {
                         return false;
                     }
                 } else if !trimmed.starts_with('"') && !trimmed.starts_with('}') {
@@ -96,7 +101,10 @@ impl JsonGrammar {
             JsonParserState::ExpectColon => {
                 let trimmed = token_str.trim_start();
                 if trimmed.is_empty() {
-                    if self.buffer.ends_with(' ') || self.buffer.ends_with('\n') || self.buffer.ends_with('\t') {
+                    if self.buffer.ends_with(' ')
+                        || self.buffer.ends_with('\n')
+                        || self.buffer.ends_with('\t')
+                    {
                         return false;
                     }
                 } else if !trimmed.starts_with(':') {
@@ -105,19 +113,27 @@ impl JsonGrammar {
             }
             JsonParserState::ExpectValue => {
                 let trimmed = token_str.trim_start();
-                if trimmed.is_empty() {
-                    if self.buffer.ends_with(' ') || self.buffer.ends_with('\n') || self.buffer.ends_with('\t') {
-                        return false;
-                    }
+                if trimmed.is_empty()
+                    && (self.buffer.ends_with(' ')
+                        || self.buffer.ends_with('\n')
+                        || self.buffer.ends_with('\t'))
+                {
+                    return false;
                 }
             }
             JsonParserState::ExpectCommaOrClose => {
                 let trimmed = token_str.trim_start();
                 if trimmed.is_empty() {
-                    if self.buffer.ends_with(' ') || self.buffer.ends_with('\n') || self.buffer.ends_with('\t') {
+                    if self.buffer.ends_with(' ')
+                        || self.buffer.ends_with('\n')
+                        || self.buffer.ends_with('\t')
+                    {
                         return false;
                     }
-                } else if !trimmed.starts_with(',') && !trimmed.starts_with('}') && !trimmed.starts_with(']') {
+                } else if !trimmed.starts_with(',')
+                    && !trimmed.starts_with('}')
+                    && !trimmed.starts_with(']')
+                {
                     return false;
                 }
             }
@@ -144,6 +160,8 @@ impl JsonGrammar {
         true
     }
 
+    #[allow(clippy::collapsible_if)] // Rust 2021 keeps these guards explicitly nested.
+    #[allow(clippy::if_same_then_else)] // Closing object/array delimiters share identical state transitions.
     fn consume_char(&mut self, ch: char) -> bool {
         self.buffer.push(ch);
 
@@ -194,7 +212,11 @@ impl JsonGrammar {
                 } else if ch == '}' && self.stack.last() == Some(&'}') {
                     self.stack.pop();
                     self.depth -= 1;
-                    self.state = if self.depth == 0 { JsonParserState::Complete } else { JsonParserState::ExpectCommaOrClose };
+                    self.state = if self.depth == 0 {
+                        JsonParserState::Complete
+                    } else {
+                        JsonParserState::ExpectCommaOrClose
+                    };
                     true
                 } else {
                     false
@@ -269,20 +291,38 @@ impl JsonGrammar {
                 true
             }
             JsonParserState::InNumber => {
-                if ch.is_ascii_digit() || ch == '.' || ch == 'e' || ch == 'E' || ch == '+' || ch == '-' {
+                if ch.is_ascii_digit()
+                    || ch == '.'
+                    || ch == 'e'
+                    || ch == 'E'
+                    || ch == '+'
+                    || ch == '-'
+                {
                     true
                 } else if ch == ',' {
-                    self.state = if self.stack.last() == Some(&'}') { JsonParserState::ExpectKey } else { JsonParserState::ExpectValue };
+                    self.state = if self.stack.last() == Some(&'}') {
+                        JsonParserState::ExpectKey
+                    } else {
+                        JsonParserState::ExpectValue
+                    };
                     true
                 } else if ch == '}' && self.stack.last() == Some(&'}') {
                     self.stack.pop();
                     self.depth -= 1;
-                    self.state = if self.depth == 0 { JsonParserState::Complete } else { JsonParserState::ExpectCommaOrClose };
+                    self.state = if self.depth == 0 {
+                        JsonParserState::Complete
+                    } else {
+                        JsonParserState::ExpectCommaOrClose
+                    };
                     true
                 } else if ch == ']' && self.stack.last() == Some(&']') {
                     self.stack.pop();
                     self.depth -= 1;
-                    self.state = if self.depth == 0 { JsonParserState::Complete } else { JsonParserState::ExpectCommaOrClose };
+                    self.state = if self.depth == 0 {
+                        JsonParserState::Complete
+                    } else {
+                        JsonParserState::ExpectCommaOrClose
+                    };
                     true
                 } else if ch.is_whitespace() {
                     self.state = JsonParserState::ExpectCommaOrClose;
@@ -309,12 +349,22 @@ impl JsonGrammar {
                         return false;
                     }
                     if ch == ',' {
-                        self.state = if self.stack.last() == Some(&'}') { JsonParserState::ExpectKey } else { JsonParserState::ExpectValue };
+                        self.state = if self.stack.last() == Some(&'}') {
+                            JsonParserState::ExpectKey
+                        } else {
+                            JsonParserState::ExpectValue
+                        };
                         true
-                    } else if (ch == '}' && self.stack.last() == Some(&'}')) || (ch == ']' && self.stack.last() == Some(&']')) {
+                    } else if (ch == '}' && self.stack.last() == Some(&'}'))
+                        || (ch == ']' && self.stack.last() == Some(&']'))
+                    {
                         self.stack.pop();
                         self.depth -= 1;
-                        self.state = if self.depth == 0 { JsonParserState::Complete } else { JsonParserState::ExpectCommaOrClose };
+                        self.state = if self.depth == 0 {
+                            JsonParserState::Complete
+                        } else {
+                            JsonParserState::ExpectCommaOrClose
+                        };
                         true
                     } else if ch.is_whitespace() {
                         self.state = JsonParserState::ExpectCommaOrClose;
@@ -328,17 +378,29 @@ impl JsonGrammar {
                 if ch.is_whitespace() {
                     true
                 } else if ch == ',' {
-                    self.state = if self.stack.last() == Some(&'}') { JsonParserState::ExpectKey } else { JsonParserState::ExpectValue };
+                    self.state = if self.stack.last() == Some(&'}') {
+                        JsonParserState::ExpectKey
+                    } else {
+                        JsonParserState::ExpectValue
+                    };
                     true
                 } else if ch == '}' && self.stack.last() == Some(&'}') {
                     self.stack.pop();
                     self.depth -= 1;
-                    self.state = if self.depth == 0 { JsonParserState::Complete } else { JsonParserState::ExpectCommaOrClose };
+                    self.state = if self.depth == 0 {
+                        JsonParserState::Complete
+                    } else {
+                        JsonParserState::ExpectCommaOrClose
+                    };
                     true
                 } else if ch == ']' && self.stack.last() == Some(&']') {
                     self.stack.pop();
                     self.depth -= 1;
-                    self.state = if self.depth == 0 { JsonParserState::Complete } else { JsonParserState::ExpectCommaOrClose };
+                    self.state = if self.depth == 0 {
+                        JsonParserState::Complete
+                    } else {
+                        JsonParserState::ExpectCommaOrClose
+                    };
                     true
                 } else {
                     false
@@ -350,7 +412,11 @@ impl JsonGrammar {
                 } else if ch == ']' && self.stack.last() == Some(&']') {
                     self.stack.pop();
                     self.depth -= 1;
-                    self.state = if self.depth == 0 { JsonParserState::Complete } else { JsonParserState::ExpectCommaOrClose };
+                    self.state = if self.depth == 0 {
+                        JsonParserState::Complete
+                    } else {
+                        JsonParserState::ExpectCommaOrClose
+                    };
                     true
                 } else {
                     self.state = JsonParserState::ExpectValue;
@@ -402,7 +468,10 @@ impl GrammarParser for JsonObjectGrammar {
         if self.inner.advance(piece) && self.inner.state != JsonParserState::Error {
             Ok(())
         } else {
-            Err(format!("Syntax error advancing grammar with piece {:?}", piece))
+            Err(format!(
+                "Syntax error advancing grammar with piece {:?}",
+                piece
+            ))
         }
     }
 }
@@ -433,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_schema_guided_allowed_keys() {
-        let mut grammar = JsonGrammar::inside_object().with_keys(&["city", "weather"]);
+        let grammar = JsonGrammar::inside_object().with_keys(&["city", "weather"]);
         assert!(grammar.is_token_valid("\"city\":"));
         assert!(!grammar.is_token_valid("\"invalid_key\":"));
     }

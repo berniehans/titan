@@ -7,6 +7,8 @@
 //! error per element must stay `< 0.01`. Runs only on a CUDA machine
 //! (`#[ignore]`).
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_cuda::paged_kv::{PagedKvGpu, PagedKvLayout};
 use engine_cuda::{CudaError, CudaStream, DeviceBuffer};
@@ -66,6 +68,7 @@ fn generate_rows(seed: u32, n_tokens: usize, row_len: usize) -> (Vec<f32>, Vec<f
 #[test]
 #[ignore]
 fn gpu_append_read_matches_cpu_block_by_block() -> Result<(), CudaError> {
+    common::initialize_cuda();
     const HEAD_DIM: usize = 8;
     const HEADS: usize = 2;
     const BLOCK_TOKENS: usize = 6;

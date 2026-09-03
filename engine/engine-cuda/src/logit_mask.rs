@@ -77,7 +77,7 @@ impl LogitMaskGpu {
         mask_dev: &DeviceBuffer,
         vocab_size: usize,
     ) -> Result<(), CudaError> {
-        let required_words = (vocab_size + 31) / 32;
+        let required_words = vocab_size.div_ceil(32);
         let required_mask_bytes = required_words * 4;
         let required_logits_bytes = vocab_size * 4;
 
@@ -97,7 +97,7 @@ impl LogitMaskGpu {
         self.device.bind_to_thread()?;
 
         let block_x: u32 = 256;
-        let grid_x: u32 = ((vocab_size as u32) + block_x - 1) / block_x;
+        let grid_x: u32 = (vocab_size as u32).div_ceil(block_x);
 
         let logits_addr = logits_dev.device_ptr();
         let mask_addr = mask_dev.device_ptr();

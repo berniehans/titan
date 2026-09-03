@@ -190,7 +190,8 @@ impl ContinuousBatchManager {
 
     /// Finds a free slot ID in 0..max_slots.
     fn find_free_slot_id(&self) -> usize {
-        let used: std::collections::HashSet<usize> = self.active_slots.iter().map(|s| s.slot_id).collect();
+        let used: std::collections::HashSet<usize> =
+            self.active_slots.iter().map(|s| s.slot_id).collect();
         for id in 0..self.max_slots {
             if !used.contains(&id) {
                 return id;

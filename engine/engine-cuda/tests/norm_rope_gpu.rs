@@ -5,6 +5,8 @@
 //! reference oracle. Cosine similarity must be >= 0.9999 and relative L2 error
 //! must be < 0.02. Runs only on a CUDA machine (`#[ignore]`).
 
+mod common;
+
 use cudarc::driver::CudaDevice;
 use engine_cuda::{CudaError, CudaStream, DeviceBuffer, MODE_FUSED, NormRope};
 use std::sync::Arc;
@@ -72,6 +74,7 @@ fn rel_l2(a: &[f32], b: &[f32]) -> f64 {
 #[test]
 #[ignore]
 fn test_fused_norm_rope_swiglu_parity() -> Result<(), CudaError> {
+    common::initialize_cuda();
     const N: usize = 256;
     const N_DIMS: usize = 64;
     const FREQ_BASE: f32 = 10000.0;

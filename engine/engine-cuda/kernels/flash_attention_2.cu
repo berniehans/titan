@@ -68,7 +68,7 @@ extern "C" __global__ void flash_attention_2_kernel(
     for (int k_pos = 0; k_pos <= global_q_pos; ++k_pos) {
         const int b = k_pos / block_tokens;
         const int in_block = k_pos % block_tokens;
-        const unsigned phys = block_table[b];
+        const unsigned phys = __shfl_sync(0xffffffff, (tid == 0) ? block_table[b] : 0u, 0);
 
         const float4* k_ptr4 = (const float4*)(pool + (size_t)phys * (size_t)floats_per_block + (size_t)kh * (size_t)head_dim + (size_t)in_block * (size_t)floats_per_token + (size_t)elem_idx);
         const float4* v_ptr4 = (const float4*)(pool + (size_t)phys * (size_t)floats_per_block + (size_t)kh * (size_t)head_dim + (size_t)row_len + (size_t)in_block * (size_t)floats_per_token + (size_t)elem_idx);
