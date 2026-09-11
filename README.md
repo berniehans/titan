@@ -3,11 +3,45 @@
 [![Rust](https://img.shields.io/badge/rust-1.85%2B%20(edition%202024)-orange.svg)](https://www.rust-lang.org)
 [![CUDA](https://img.shields.io/badge/CUDA-12.0%2B-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![OpenAI API](https://img.shields.io/badge/OpenAI_API-Compatible-blue.svg)](https://platform.openai.com/docs/api-reference)
-[![License](https://img.shields.io/badge/license-MIT-purple.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-purple.svg)](https://opensource.org/license/mit)
 
-**Titan** is an ultra-high-throughput, 100% Pure Rust LLM inference engine designed from scratch for consumer and datacenter NVIDIA GPUs. 
+**Titan** is a 100% Pure Rust LLM inference engine with CUDA/NVRTC kernels for consumer and datacenter NVIDIA GPUs. It supports resident GPU execution, layer streaming, paged KV-cache, CUDA Graphs, multi-model speculation, OpenAI-compatible serving, and an experimental MoE path.
 
-By eliminating much of the host-side CPU dispatch overhead through **Autonomous CUDA Graphs in GPU VRAM** and utilizing vectorized **DP4A integer SIMD kernels with 128-bit `uint4` coalesced loads**, Titan reached **228.2 tok/s on Qwen3 0.6B** in the historical 2026-09-01 head-to-head checkpoint. The current 2026-09-02 workspace checkpoint is tracked separately because the release gate remains open; see [`docs/WORKSPACE_STATE.md`](docs/WORKSPACE_STATE.md).
+---
+
+## 🛑 Current Status & Execution Boundary
+
+| Dimension | Current Value | Authority / Artifact |
+| :--- | :--- | :--- |
+| **Functional MVP Status** | **`mvp_blocked_evidence`** (NOT accepted) | [`local-artifacts/reviews/mvp-decision-20260911T162326Z.json`](docs/MVP.md) |
+| **Strict Production Release** | **`not_accepted`** / **`rejected`** | `local-artifacts/reviews/p5-release-gate-20260912T130000Z.json` |
+| **Release Approval** | **`not_granted`** | [`docs/RELEASE_ENVELOPE_V1.json`](docs/RELEASE_ENVELOPE_V1.json) |
+| **Production Promotion** | **`promotion_authorized = false`** | No candidate promoted to default |
+| **Default Runtime Dispatch** | **`production_dispatch_changed = false`** | Verified default F32 resident baseline |
+| **Release Candidate Generation** | **`rc_generated = false`** | No release candidate generated |
+| **MVP Gate Unit Suite** | **`25 passed, 0 failed`** (100%) | `uv run --project tools --no-sync pytest tools/test_mvp_gate.py` |
+| **Full Python Tooling Suite** | **`88 passed, 0 failed; 8 subtests passed`** (100%) | `uv run --project tools --no-sync pytest tools` |
+| **OpenSpec Live State** | **`40 passed, 0 failed`** (40 items) | `openspec validate --all` |
+| **Detailed MVP Contract** | See [`docs/MVP.md`](docs/MVP.md) | Comprehensive acceptance contract & reproduction |
+
+> [!IMPORTANT]
+> **Functional MVP vs. Strict Production Release:**
+> * A throughput ratio of $\ge 0.95\times$ compared to `llama.cpp` is **NOT** an acceptance criterion for the Stable Functional MVP. The $0.95\times$ comparison remains a separate strict production-performance diagnostic enforced by `tools/release_gate.py`.
+> * In the functional MVP evaluation, throughput ratios (aggregate median `0.5286115177544821`) and baseline regressions are **advisory warnings** (`ratio_advisory: advisory_warning`, `regression_advisory: failed`). They do not block MVP acceptance.
+> * Conversely, **generation correctness, operational E2E behavior, and clean benchmark execution safety remain strictly blocking**.
+>
+> **Exact MVP Blockers:**
+> 1. **`build_binding_unverified` (F8-to-Final-Titan-Build/Source Binding Not Proven):** The independent F32 correctness run (F8.R1.P) verified model correctness across all 5 models, but does not record the Titan binary or source identity matching the clean benchmark's build hash (`sha256:bc92211356bb0eb87ddd59e252d9d4497f8669d7257ac0133459040ce4eb131c`).
+> 2. **`model_hash_missing` (P5 Benchmark Lacks Per-Result Model Hashes):** The final clean benchmark (`local-artifacts/benchmarks/p5-final-clean-20260911T151844Z.json`, 30 rows) records model names and prompt contracts, but lacks per-result GGUF weight file hashes required for exact binding to F8.
+>
+> **Verified Evidence Summary:**
+> * **Generation Correctness:** Verified 5/5 models on F32, batch 1, resident KV, Graph=false, candidate selectors absent (`local-artifacts/reviews/f32-five-model-correctness-matrix-1789097311038-15004.json`).
+> * **Operational E2E:** Resident JSON and Streaming SSE with N-gram speculative mode passed (`local-artifacts/reviews/p5o-e2e-unified-modes-20260912T090000Z.log`); grammar-constrained JSON decoded and parsed semantically via serde as `{"city": "Tokyo"}` (`local-artifacts/reviews/p5o-grammar-json-20260912T100000Z.log`); readiness, timeout bounds, and lifecycle cleanup passed.
+> * **Clean Benchmark:** 30 valid rows (5 models × 3 repetitions × cold/warm), 41 tokens/sample, clean telemetry (`instrumentation_mode = "clean_throughput"`), selector provenance (`candidate_selectors_absent = true`, `production_dispatch_changed = false`).
+> * **Strict Gate Diagnostic:** Failed with aggregate ratio `0.5286115177544821` (cold `0.5758x`, warm `0.4981x`) plus regression failure.
+>
+> **Local-Only Evidence & Publishing Boundary:**
+> Directories such as `local-artifacts/`, `.hermes/`, `models/`, and `target/` contain local execution logs, private model weights, and compiler targets. They are **not** publishable repository content. Advanced features (speculative decoding, layer streaming, APC, attention sinks) exist in the codebase but are **not** all production-integrated or certified under the release envelope.
 
 ---
 
@@ -16,19 +50,41 @@ By eliminating much of the host-side CPU dispatch overhead through **Autonomous 
 * 🧠 **100% Pure Rust with Zero C++ Build Toolchains:** Runs *out-of-the-box* without MSVC (`cl.exe`), CMake, Python, or external DLL wrappers. Compiles kernels at runtime via NVIDIA Driver NVRTC (`nvcuda.dll`).
 * ⚡ **Autonomous CUDA Graph Execution:** The entire 28-layer transformer forward pass (RMSNorm $\to$ Fused QKV GEMV $\to$ Paged Attention $\to$ SwiGLU $\to$ Down GEMV $\to$ LM Head $\to$ Greedy Argmax) is captured directly into a resident CUDA Graph in GPU VRAM with **0 host CPU roundtrips per token**.
 * 🏎️ **Hardware DP4A SIMD Vectorized GEMV (`compute_q4k_block_dp4a`):** 128-bit `uint4` vector loads with warp-level cooperative partition (4 groups $\times$ 8 threads) process all 8 sub-blocks of Q4_K super-blocks in parallel in a single cycle, achieving $\ge 160\text{ GB/s}$ effective bandwidth.
-* 🎯 **Multi-Model GPU Speculative Decoding:** Concurrent GPU-resident Draft and Target models with parallel candidate verification. The speculative-decoding figures are reported separately and are not used as single-model llama.cpp comparisons.
+* 🎯 **Multi-Model GPU Speculative Decoding:** Concurrent GPU-resident Draft and Target models with parallel candidate verification. Speculative-decoding figures are reported separately and are not used as single-model llama.cpp comparisons.
 * 🔁 **Multi-Slot Continuous Batching & Asynchronous Ingress:** Iteration-level continuous scheduling dynamically multiplexes 4–8 concurrent client generation slots without head-of-line blocking stalls.
 * 🌳 **Radix Tree Automatic Prefix Caching (APC):** Reuses pre-computed KV-cache for system prompts and tool schemas via Longest Common Prefix (LCP) matching, cutting **TTFT to <0.5 ms**.
 * 📦 **Chunked Prefill with Interleaved Decode:** Slices long prompt prefill into bounded chunks while preventing decode starvation.
-* 🎭 **Grammar-Constrained JSON & Tool Decoding:** RFC 8259 state-machine validation and fast GPU logit filtering via OpenAI `response_format: {"type": "json_object" | "json_schema"}` for **100% syntactically guaranteed JSON & Tool Calls**.
+* 🎭 **Grammar-Constrained JSON & Tool Decoding:** RFC 8259 state-machine validation and fast GPU logit filtering via OpenAI `response_format: {"type": "json_object" | "json_schema"}` for **100% syntactically guaranteed JSON & Tool Calls**. Verified on GPU with serde parse output `{"city": "Tokyo"}`.
 * 🛡️ **Attention Sinks & Infinite Context (StreamingLLM):** Retains initial sink tokens ($K=4$) with bounded KV-cache sliding windows for infinite context generation with 100% numerical stability.
 * 🌐 **Built-in OpenAI Compatible Server & CLI:** Native SSE streaming server (`/v1/chat/completions`) with tool-calling schema support and rich terminal CLI (`chat`, `serve`, `bench`, `agent`).
 
 ---
 
+## 🧭 Current Project Status and Roadmap
+
+The historical capability phases are implemented in code, but implementation presence does not mean all features are production-certified under the release envelope.
+
+### Stable Functional MVP Checkpoint — 2026-09-11
+
+The repository has established a dedicated Stable Functional MVP gate (`tools/mvp_gate.py`) and acceptance specification ([`docs/MVP.md`](docs/MVP.md)):
+1. **F32 generation correctness** is `verified` across all 5 declared models (`local-artifacts/reviews/f32-five-model-correctness-matrix-1789097311038-15004.json`).
+2. **Operational E2E** is `verified` across Resident, Streaming SSE with N-gram, grammar JSON, readiness, and lifecycle cleanup (`local-artifacts/reviews/p5o-e2e-unified-modes-20260912T090000Z.log`, `local-artifacts/reviews/p5o-grammar-json-20260912T100000Z.log`).
+3. **Clean benchmark structure** is complete across 30 rows with observed Graph disabled and clean telemetry (`local-artifacts/benchmarks/p5-final-clean-20260911T151844Z.json`).
+4. **Current MVP Verdict:** `mvp_blocked_evidence` due to missing F8-to-Titan-build binding and missing per-result model hashes. Strict production performance remains `not_accepted` / `rejected` (aggregate ratio `0.5286115177544821`). No release candidate is generated (`rc_generated = false`), and production dispatch remains strictly unchanged (`production_dispatch_changed = false`).
+
+### Historical Diagnostic Context (2026-09-07 – 2026-09-09)
+
+* **Projection Attribution:** Verified 5/5 groups in `local-artifacts/reviews/phase17-projection-attribution-decision-20260908.json` and `local-artifacts/reviews/five-model-projection-attribution-control-1788838534847-10564-0.json`, confirming QKV as the largest non-FFN projection group.
+* **FFN Candidates:** `q4k_multi_shape_single_row` remains accepted opt-in only (`TITAN_F32_FFN_GATE_UP_VARIANT=q4k_multi_shape_single_row`); fused Gate/Up and Q6_K single-row remain rejected; Q8 remains experimental; `ffn_sync` remains `not_available/missing_real_frontier`; Nsight profiling remains blocked by `ERR_NVGPUCTRPERM`.
+* **QKV Multi-Row Batch=1 Candidate:** Evaluated under `TITAN_F32_QKV_VARIANT=q4k_multi_row_batch1`. While 5/5 strict Q/K/V parity and dispatch smoke passed, benchmark evaluation failed the release gates and the formal decision was a decisive rejection (`candidate_status = "rejected_regression"`, `production_status = "not_promoted"`, `release_gate_status = "rejected"`, `local-artifacts/reviews/phase18-qkv-multi-row-batch1-decision-20260908.json`). The subsequent paired diagnostic exited `101` with `token_sequence_mismatch` on the first fixture (`local-artifacts/benchmarks/real-f32-qkv-multi-row-batch1-paired-diagnostic-1788956770585-6596-0.json`). Production dispatch remains strictly unchanged.
+
+See [`docs/MVP.md`](docs/MVP.md), [`docs/WORKSPACE_STATE.md`](docs/WORKSPACE_STATE.md), and [`docs/TITAN_PROJECT_DIAGNOSIS_AND_ROADMAP.md`](docs/TITAN_PROJECT_DIAGNOSIS_AND_ROADMAP.md) for full details.
+
+---
+
 ## 📊 Historical Reproduced Benchmark Results (2026-09-01)
 
-> **Workspace status:** the table below is a historical checkpoint, not current release evidence. The current 2026-09-02 evidence, Q8/Q6_K status, fresh llama.cpp comparison, and release blockers are documented in [`docs/WORKSPACE_STATE.md`](docs/WORKSPACE_STATE.md) and `local-artifacts/reviews/fresh-head-to-head-release-gate-20260902.json`.
+> **Workspace status:** The table below is a historical benchmark checkpoint (2026-09-01), preserved for historical reference and not a current release claim. Current verified clean benchmark data (30 rows, five models, cold/warm, 41 tokens) is in `local-artifacts/benchmarks/p5-final-clean-20260911T151844Z.json`, and the current strict release gate verdict (`rejected`, aggregate ratio `0.5286115177544821` plus regression failure) is preserved in `local-artifacts/reviews/p5-release-gate-20260912T130000Z.json`. For the stable functional MVP contract and status (`mvp_blocked_evidence`), see [`docs/MVP.md`](docs/MVP.md) and [`docs/WORKSPACE_STATE.md`](docs/WORKSPACE_STATE.md).
 
 The table below was rerun locally from the current checkout on 2026-09-01. It used the same GGUF file, two prompts, greedy sampling (`temperature = 0.0`), 41 generated tokens, three repetitions per model, and CUDA-enabled `llama-server.exe` and Titan. `llama.cpp` had CUDA Graphs enabled. These are decode-throughput measurements, not claims of numerical equivalence.
 
@@ -103,9 +159,14 @@ cargo test --release -p engine-server --test multi_model_comparison_bench -- --i
 
 The benchmark skips models whose GGUF is absent and reports the models actually executed. On Windows, the test uses the installed `llama-server.exe`; Titan's NVRTC DLL path must be available to the process. The 2026-09-01 run completed with `1 passed, 0 failed` in 100.76 seconds and measured all five models with three repetitions. Results: `local-artifacts/benchmarks/rerun-20260901-085229.json`; raw log: `local-artifacts/benchmarks/rerun-20260901-085229.log`.
 
-### Numerical validation status
+### Numerical and MVP validation status
 
-The current checkout passes the general Rust test suite and the benchmark test itself. GPU parity and production E2E gates are tracked separately and are not closed by this benchmark. The throughput table must not be read as a final correctness or release sign-off.
+The baseline checkout enforces separate Rust, GPU parity, E2E, attribution, MVP, and release gates. A benchmark test passing does not close those gates. The workspace currently records:
+* **Stable Functional MVP:** `mvp_blocked_evidence` due to unproven F8-to-Titan-build binding and missing per-result model hashes in the clean benchmark. Throughput ratios and regression are advisory; generation correctness and operational execution are blocking. See [`docs/MVP.md`](docs/MVP.md).
+* **Strict Production Release:** `not_accepted` / `rejected` (aggregate ratio `0.5286115177544821` vs required $\ge 0.95\times$; regression failed).
+* **Production Invariants:** `production_dispatch_changed = false`, `promotion_authorized = false`, `rc_generated = false`.
+* **Local-Only Evidence:** `local-artifacts/`, `.hermes/`, `models/`, and `target/` are local-only and not publishable repository content.
+* **Kernel Candidates:** The previously measured FFN candidate `q4k_multi_shape_single_row` remains accepted only as an opt-in selector (`TITAN_F32_FFN_GATE_UP_VARIANT=q4k_multi_shape_single_row`); the QKV multi-row batch=1 candidate was decisively rejected as a regression (`local-artifacts/reviews/phase18-qkv-multi-row-batch1-decision-20260908.json`). Neither is promoted to production default.
 
 To run the multi-model speculative decoding benchmark (1B Draft -> 3B Target):
 ```bash
@@ -115,4 +176,4 @@ cargo test --release -p engine-server --test speculative_speedup_bench -- --igno
 ---
 
 ## 📄 License
-Licensed under the [MIT License](LICENSE).
+Licensed under the [MIT License](https://opensource.org/license/mit).

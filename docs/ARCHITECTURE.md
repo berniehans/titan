@@ -1,9 +1,58 @@
 # 🏗️ Titan — Deep Technical Architecture
 
-> **Canonical Specifications:** [`openspec/specs/`](../openspec/specs/)  
+> **Canonical Specifications:** [`openspec/specs/`](../openspec/specs/)
 > **Constitutional Invariants:** [`openspec/constitution.md`](../openspec/constitution.md)
+> **Stable Functional MVP Contract:** [`docs/MVP.md`](MVP.md)
+> **Workspace State & Evidence:** [`docs/WORKSPACE_STATE.md`](WORKSPACE_STATE.md)
 
-**Titan** is a 100% Pure Rust, high-throughput LLM inference engine engineered specifically for consumer and datacenter NVIDIA GPUs. It implements both **GPU-Resident** execution (with Autonomous CUDA Graphs) for models that fit in VRAM, and **Layer-Streaming** execution (with double-buffered DMA) for models that exceed VRAM capacity.
+---
+
+## 🛑 Current Status & Architectural Boundary
+
+| Dimension | Current Value | Authority / Artifact |
+| :--- | :--- | :--- |
+| **Functional MVP Status** | **`mvp_blocked_evidence`** (NOT accepted) | [`local-artifacts/reviews/mvp-decision-20260911T162326Z.json`](MVP.md) |
+| **Strict Production Release** | **`not_accepted`** / **`rejected`** | `local-artifacts/reviews/p5-release-gate-20260912T130000Z.json` |
+| **Release Approval** | **`not_granted`** | [`docs/RELEASE_ENVELOPE_V1.json`](RELEASE_ENVELOPE_V1.json) |
+| **Production Promotion** | **`promotion_authorized = false`** | No candidate promoted to default |
+| **Default Runtime Dispatch** | **`production_dispatch_changed = false`** | Unchanged F32 resident baseline |
+| **Release Candidate Generation** | **`rc_generated = false`** | No release candidate generated |
+| **MVP Gate Unit Suite** | **`25 passed, 0 failed`** (100%) | `uv run --project tools --no-sync pytest tools/test_mvp_gate.py` |
+| **Full Python Tooling Suite** | **`88 passed, 0 failed; 8 subtests passed`** (100%) | `uv run --project tools --no-sync pytest tools` |
+| **OpenSpec Live State** | **`40 passed, 0 failed`** (40 items) | `openspec validate --all` |
+
+> [!IMPORTANT]
+> **Functional MVP vs. Strict Production Release:**
+> * The $\ge 0.95\times$ comparison against `llama.cpp` is **NOT** an acceptance criterion for the Stable Functional MVP; it remains a separate strict production-performance diagnostic.
+> * In the functional MVP evaluation, throughput ratios (aggregate median `0.5286115177544821`) and baseline regressions are advisory warnings (`ratio_advisory: advisory_warning`, `regression_advisory: failed`).
+> * **Blocking Gates:** Generation correctness (F8.R1.P verified for 5 models), operational E2E execution (Resident, Streaming SSE with N-gram, grammar JSON parsed as `{"city": "Tokyo"}`), and clean benchmark execution safety remain strictly blocking.
+>
+> **Exact MVP Blockers:**
+> 1. **`build_binding_unverified`:** The F8 correctness execution does not record the Titan binary/source identity matching the clean benchmark's `engine_identity.titan` build hash (`sha256:bc92211356bb0eb87ddd59e252d9d4497f8669d7257ac0133459040ce4eb131c`).
+> 2. **`model_hash_missing`:** The final clean benchmark artifact (`local-artifacts/benchmarks/p5-final-clean-20260911T151844Z.json`, 30 rows) records model names but lacks per-result GGUF weight file hashes required for exact binding to F8.
+>
+> **Architectural Capability vs. Envelope Certification:**
+> The deep technical architecture below details the complete capability surface of the engine (e.g., Autonomous CUDA Graphs, layer streaming, speculative decoding, continuous batching, attention sinks). However, **implementation presence does not mean all capabilities are production-integrated or certified under the release envelope**. At the current checkpoint:
+> * The verified production route is strictly non-Graph F32 batch 1 resident-KV decode (`CUDA Graphs = false` observed in clean baseline runs).
+> * Q8 activation quantization and alternative kernels remain experimental / opt-in.
+> * Local directories (`local-artifacts/`, `.hermes/`, `models/`, `target/`) are local runtime assets and not publishable repository content.
+
+---
+
+## 0. Current Implementation & Release Boundary
+
+At the current checkpoint:
+
+- **F32 Baseline:** F32 remains the production correctness default; Q8 is benchmark-only/experimental because its strict full-driver contract is not accepted.
+- **Production Dispatch:** The validated default dispatch paths and public APIs remain strictly unchanged (`production_dispatch_changed = false`).
+- **Rejected Kernels:** Fused Gate/Up, Q6_K single-row, and QKV multi-row batch 1 kernels remain rejected for production default.
+- **Grouped FFN Attribution:** `ffn_gate_up` and `ffn_down` timing is verified; `ffn_sync` remains explicitly `not_available/missing_real_frontier` as no independent stream dependency frontier exists.
+- **Hardware Profiling:** Nsight profiling remains blocked by Windows permission `ERR_NVGPUCTRPERM`.
+- **Opt-in FFN Candidate:** Multi-shape Gate/Up candidate `q4k_multi_shape_single_row` remains accepted opt-in only (`TITAN_F32_FFN_GATE_UP_VARIANT=q4k_multi_shape_single_row`).
+- **QKV Projection Attribution & RCA:** Projection attribution verified QKV as the largest non-FFN projection group. The QKV multi-row batch 1 candidate passed 5/5 parity and dispatch smoke, but was decisively rejected as a regression in the five-model benchmark (`local-artifacts/reviews/phase18-qkv-multi-row-batch1-decision-20260908.json`). The subsequent paired diagnostic exited `101` with sequence divergence on the first fixture (`local-artifacts/benchmarks/real-f32-qkv-multi-row-batch1-paired-diagnostic-1788956770585-6596-0.json`).
+- **Attention Bias Parity:** The default F32 path incorporates verified Q/K/V attention-bias handling for bias-bearing Qwen2 and DeepSeek fixtures, verified by the five-model F32 correctness matrix.
+
+See [`docs/MVP.md`](MVP.md) and [`docs/WORKSPACE_STATE.md`](WORKSPACE_STATE.md) for live state details.
 
 ---
 
